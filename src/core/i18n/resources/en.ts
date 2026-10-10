@@ -1,0 +1,58 @@
+export const en = {
+  translation: {
+    foundations: {
+      title: 'HerbStore',
+      subtitle: 'React Native foundations: components, hooks and Flexbox.',
+      languageHeading: 'Interface language',
+      spanish: 'Spanish',
+      english: 'English',
+      selectSpanishHint: 'Changes all text on this screen to Spanish.',
+      selectEnglishHint: 'Changes all text on this screen to English.',
+      systemPreferencesHeading: 'System preferences',
+      theme: 'Theme: {{theme}}',
+      themeLight: 'light',
+      themeDark: 'dark',
+      reducedMotion: 'Reduced motion: {{setting}}',
+      reducedMotionOn: 'on',
+      reducedMotionOff: 'off',
+      accessibilityNote:
+        'Text follows the system scale and every button is at least 48 points tall.',
+      hooks: {
+        heading: 'State, effect and cleanup',
+        description:
+          'The counter lives in this block. The timer starts an interval inside an effect and cleans it up when paused or hidden.',
+        tapCount: 'Taps: {{count}}',
+        addTap: 'Add 1',
+        addTapHint: 'Increments the local counter with a functional update.',
+        elapsed: 'Active seconds: {{seconds}}',
+        timerRunning: 'Status: running',
+        timerPaused: 'Status: paused',
+        timerUnmounted: 'Timer hidden: its state and interval were removed.',
+        startTimer: 'Start',
+        pauseTimer: 'Pause',
+        toggleRunningHint: 'Starts or pauses the timer interval.',
+        showTimer: 'Show timer',
+        hideTimer: 'Hide timer',
+        toggleMountedHint: 'Mounts or unmounts the timer and runs its effect cleanup.',
+      },
+      layout: {
+        heading: 'Flexbox and density-independent units',
+        description: 'The screen owns the direction and passes it to the block as a read-only prop.',
+        row: 'Row',
+        column: 'Column',
+        rowHint: 'Lays out the blocks horizontally.',
+        columnHint: 'Lays out the blocks vertically.',
+        containerLabel: 'Flexible container in {{direction}}',
+        tileLabel: 'Block with flex {{flex}}',
+        density: '1 design unit equals {{ratio}} physical pixels on this device.',
+      },
+      ref: {
+        heading: 'Imperative ref',
+        description:
+          'A ref points to the scroll view without causing renders. Scrolling is only animated when reduced motion is off.',
+        scrollToTop: 'Back to top',
+        scrollToTopHint: 'Scrolls the screen to the beginning.',
+      },
+    },
+  },
+} as const;
