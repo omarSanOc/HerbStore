@@ -1,5 +1,5 @@
 # Spec 001 — Día 1: fundamentos y preparación del entorno
-Estado: aprobada
+Estado: implementada
 
 ## Contexto y objetivo
 HerbStore prepara a un desarrollador Android sénior, nuevo en React Native, para explicar su modelo de ejecución y construir sobre una base reproducible. El entorno móvil ya está validado en Android e iOS; este día conserva esa base y completa el servidor ficticio, los fundamentos de componentes y el sistema visual inicial. Es requisito previo de los cinco días siguientes.
