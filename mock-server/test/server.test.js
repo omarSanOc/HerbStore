@@ -458,3 +458,76 @@ describe('order HTTP contracts', () => {
     }
   });
 });
+
+describe('JSON error envelope for unmatched routes and body errors', () => {
+  let baseUrl;
+  let server;
+
+  before(async () => {
+    server = createApp({ latencyMs: 0 }).listen(0, '127.0.0.1');
+    await new Promise((resolve, reject) => {
+      server.once('listening', resolve);
+      server.once('error', reject);
+    });
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+  });
+
+  after(async () => {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  });
+
+  it('answers unknown routes with a JSON NOT_FOUND envelope and no route echo', async () => {
+    for (const [method, path] of [
+      ['GET', '/nope'],
+      ['POST', '/nope'],
+      ['GET', '/orders/unknown/deep'],
+    ]) {
+      const response = await fetch(`${baseUrl}${path}`, { method });
+      const text = await response.text();
+
+      assert.equal(response.status, 404, `${method} ${path}`);
+      assert.match(response.headers.get('content-type'), /^application\/json/);
+      assert.deepEqual(JSON.parse(text), {
+        error: { code: 'NOT_FOUND', message: 'The requested route was not found.' },
+      });
+      assert.equal(text.includes('nope'), false);
+    }
+  });
+
+  it('answers bodies above the JSON limit with a 413 envelope instead of 500', async () => {
+    const response = await fetch(`${baseUrl}/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'big' },
+      body: JSON.stringify({ padding: 'x'.repeat(200 * 1024) }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 413);
+    assert.match(response.headers.get('content-type'), /^application\/json/);
+    assert.deepEqual(body, {
+      error: {
+        code: 'PAYLOAD_TOO_LARGE',
+        message: 'The request body is too large.',
+      },
+    });
+  });
+
+  it('keeps the existing malformed JSON contract for orders', async () => {
+    const response = await fetch(`${baseUrl}/orders`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'bad' },
+      body: '{"items": [',
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), {
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Order request validation failed',
+      },
+      fields: { root: 'INVALID_FORMAT' },
+    });
+  });
+});

@@ -78,7 +78,20 @@ export function createApp({
   app.use('/brands', createBrandsRouter(catalog));
   app.use('/orders', createOrdersRouter(orderStore));
 
+  app.use((_request, response) => {
+    sendError(response, 404, 'NOT_FOUND', 'The requested route was not found.');
+  });
+
   app.use((error, _request, response, _next) => {
+    if (error?.type === 'entity.too.large') {
+      sendError(
+        response,
+        413,
+        'PAYLOAD_TOO_LARGE',
+        'The request body is too large.',
+      );
+      return;
+    }
     if (error instanceof SyntaxError && error.status === 400) {
       response.status(400).json({
         error: {

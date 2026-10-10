@@ -322,6 +322,70 @@ describe('order idempotency, reservations, and retention', () => {
     assert.equal(JSON.stringify(tombstone).includes('order'), false);
   });
 
+  it('confirms in chronological order when no one polls before 24h', () => {
+    const { store, setNow } = createHarness({ processingMs: 1_000 });
+    store.submit(
+      'unpolled-key',
+      validRequest({ items: [{ productId: 'mx-low', quantity: 2 }] }),
+    );
+
+    setNow(START_MS + 24 * HOUR_MS);
+    assert.equal(store.getStatus('unpolled-key').kind, 'expired');
+    assert.deepEqual(store.inspect().inventory['mx-low'], { available: 0, reserved: 0 });
+  });
+
+  it('settles an unpolled pending before forgetting the key at 48h', () => {
+    const { store, setNow } = createHarness({ processingMs: 1_000 });
+    store.submit(
+      'forgotten-key',
+      validRequest({ items: [{ productId: 'mx-low', quantity: 2 }] }),
+    );
+
+    setNow(START_MS + 48 * HOUR_MS);
+    assert.equal(store.getStatus('forgotten-key').kind, 'not_created');
+    assert.deepEqual(store.inspect().inventory['mx-low'], { available: 0, reserved: 0 });
+
+    const slow = createHarness({ processingMs: 30 * HOUR_MS });
+    slow.store.submit(
+      'slow-forgotten',
+      validRequest({ items: [{ productId: 'mx-low', quantity: 2 }] }),
+    );
+    slow.setNow(START_MS + 48 * HOUR_MS);
+    assert.equal(slow.store.getStatus('slow-forgotten').kind, 'not_created');
+    assert.deepEqual(slow.store.inspect().inventory['mx-low'], { available: 2, reserved: 0 });
+  });
+
+  it('expires instead of confirming when the interval ends exactly at 24h', () => {
+    const { store, setNow } = createHarness({ processingMs: 24 * HOUR_MS });
+    store.submit(
+      'boundary-key',
+      validRequest({ items: [{ productId: 'mx-low', quantity: 2 }] }),
+    );
+
+    setNow(START_MS + 24 * HOUR_MS);
+    assert.equal(store.getStatus('boundary-key').kind, 'expired');
+    assert.deepEqual(store.inspect().inventory['mx-low'], { available: 2, reserved: 0 });
+  });
+
+  it('releases an expired pending reservation for other keys without polling it', () => {
+    const { store, setNow } = createHarness({ processingMs: 30 * HOUR_MS });
+    const first = store.submit(
+      'a',
+      validRequest({ items: [{ productId: 'mx-low', quantity: 2 }] }),
+    );
+    assert.equal(first.kind, 'pending');
+    assert.equal(store.submit('early', validRequest()).kind, 'out_of_stock');
+
+    setNow(START_MS + 25 * HOUR_MS);
+    const second = store.submit(
+      'b',
+      validRequest({ items: [{ productId: 'mx-low', quantity: 2 }] }),
+    );
+    assert.equal(second.kind, 'pending');
+    assert.equal(store.getStatus('a').kind, 'expired');
+    assert.deepEqual(store.inspect().inventory['mx-low'], { available: 0, reserved: 2 });
+  });
+
   it('keeps active data before 24h, tombstones until 48h, then forgets the key', () => {
     const { store, setNow } = createHarness();
     store.submit('retained-key', validRequest());

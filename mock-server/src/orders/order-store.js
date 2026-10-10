@@ -61,7 +61,7 @@ export class OrderStore {
       throw error;
     }
 
-    this.#refresh(key);
+    this.#reconcile();
     const existing = this.attempts.get(key);
     if (existing?.status === 'expired') {
       return { kind: 'expired' };
@@ -134,7 +134,7 @@ export class OrderStore {
       return { kind: 'not_created' };
     }
     const key = rawKey.trim();
-    this.#refresh(key);
+    this.#reconcile();
     const attempt = this.attempts.get(key);
     if (!attempt) {
       return { kind: 'not_created' };
@@ -147,6 +147,7 @@ export class OrderStore {
   }
 
   inspect() {
+    this.#reconcile();
     return {
       attempts: Object.fromEntries(
         [...this.attempts.entries()].map(([key, attempt]) => [key, clone(attempt)]),
@@ -170,34 +171,45 @@ export class OrderStore {
     };
   }
 
-  #refresh(key) {
-    const attempt = this.attempts.get(key);
-    if (!attempt) {
-      return;
-    }
-
+  // Lazy reconciliation: nothing runs on timers, so every observation first
+  // settles all attempts up to "now". Per attempt, events are applied in
+  // chronological order: confirm (if before 24h) -> expire at 24h -> forget at 48h.
+  // Stock effects of different attempts commute, so sweeping in insertion order
+  // gives the same inventory as replaying every event by timestamp.
+  #reconcile() {
     const now = this.clock();
-    if (now - attempt.createdAtMs >= RETENTION_MS) {
-      this.attempts.delete(key);
-      return;
-    }
-    if (now - attempt.createdAtMs >= ACTIVE_MS) {
-      if (attempt.status === 'pending') {
-        this.#release(attempt.reservation);
+    for (const [key, attempt] of [...this.attempts.entries()]) {
+      const expiresAtMs = attempt.createdAtMs + ACTIVE_MS;
+      const forgetAtMs = attempt.createdAtMs + RETENTION_MS;
+
+      if (
+        attempt.status === 'pending' &&
+        attempt.confirmAtMs <= now &&
+        attempt.confirmAtMs < expiresAtMs
+      ) {
+        this.#commit(attempt.reservation);
+        attempt.status = 'confirmed';
       }
-      this.attempts.set(key, {
-        key,
-        status: 'expired',
-        createdAtMs: attempt.createdAtMs,
-        expiresAtMs: attempt.createdAtMs + RETENTION_MS,
-      });
-      return;
-    }
-    if (attempt.status === 'pending' && now >= attempt.confirmAtMs) {
-      for (const { productId, quantity } of attempt.reservation) {
-        this.inventory.get(productId).reserved -= quantity;
+      if (now >= expiresAtMs && attempt.status !== 'expired') {
+        if (attempt.status === 'pending') {
+          this.#release(attempt.reservation);
+        }
+        this.attempts.set(key, {
+          key,
+          status: 'expired',
+          createdAtMs: attempt.createdAtMs,
+          expiresAtMs: forgetAtMs,
+        });
       }
-      attempt.status = 'confirmed';
+      if (now >= forgetAtMs) {
+        this.attempts.delete(key);
+      }
+    }
+  }
+
+  #commit(reservation) {
+    for (const { productId, quantity } of reservation) {
+      this.inventory.get(productId).reserved -= quantity;
     }
   }
 
