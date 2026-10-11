@@ -11,7 +11,8 @@
 - `src/core/storage/mmkv-storage.ts`, `persist-policy.ts`: adapter y whitelist explícita de carrito, historial, preferencias, intento no reversible y resúmenes sin dirección. RF-11, RF-12, RF-16–RF-27, RNF-1.
 - `src/features/preferences/domain/currency.ts`: conversión pura MXN/USD y formato. RF-5, RF-13.
 - `src/features/cart/store/cart-slice.ts`, `cart-selectors.ts`: operaciones inmutables, cantidades, subtotal canónico, badge y umbral.
-- `src/features/cart/screens/CartScreen.tsx`, `components/{CartLine,SwipeToDelete,ShippingProgress,EmptyCart}.tsx`: interfaz y gestos. RF-7–RF-13.
+- Limpieza del andamiaje temporal del Día 2 (H-4 del registro de hallazgos del Día 2 en `LEARNING.md`): `CartDevControls` (control `__DEV__` del badge: +1, +10, restablecer), los textos i18n `cartDev.*` (es/en), `src/features/cart/cart-count-source.ts`, `use-cart-count.ts` y `CartPlaceholderScreen` se retiran. El layout de tabs solo cambia la fuente del conteo: `tabBarBadge={getCartBadge(units)}` y la etiqueta hablada con plural pasan a leer `selectCartUnits` (suma de cantidades) con `useSelector`; `getCartBadge` (`undefined` si 0, número hasta 99, `'99+'` desde 100) y sus tests no cambian. El plan 002 ya fijó que el Día 4 conecta el store sin reescribir tabs. RF-7.
+- `src/features/cart/screens/CartScreen.tsx`, `components/{CartLine,SwipeToDelete,ShippingProgress,EmptyCart}.tsx`: interfaz y gestos; sustituye a `CartPlaceholderScreen`. RF-7–RF-13.
 - `src/features/products/screens/ProductDetailScreen.tsx`, `components/{ProductGallery,QuantitySelector,StickyAddBar}.tsx`: detalle, stock, cantidad y add. RF-4, RF-6, RF-7.
 - `src/features/checkout/domain/address-schema.ts`: reglas Zod y normalización de dirección. RF-14, RF-15.
 - `src/features/checkout/domain/{canonical-order-request,fingerprint,attempt-machine}.ts`: request canónico volátil, SHA-256 y máquina pura `idle → preliminary → unresolved | terminal`; distingue terminales coherentes de respuestas inciertas. RF-16–RF-27.
@@ -68,11 +69,13 @@
 - **Elegida:** bloquear otra orden mientras `unresolved`. **Trade-off:** usuario espera consulta/expiración. **Descartada:** nueva key inmediata con riesgo de duplicado.
 - **Elegida:** persistir `preliminary` antes del POST y promoverlo a unresolved tras restart. **Trade-off:** puede bloquear aunque el POST no llegara; 404 lo libera. **Descartada:** borrar preliminary al reiniciar, que permitiría duplicar si el servidor recibió el POST.
 - **Elegida:** liberar unresolved solo con 200 o pareja 404/410 coherente. **Trade-off:** payload inconsistente mantiene bloqueo. **Descartada:** tratar todo 4xx como terminal, que perdería un intento original ante `IDEMPOTENCY_KEY_REUSED` o respuesta tardía.
+- **Elegida:** retirar el andamiaje del badge en el mismo checkpoint que conecta el store (T2), dejando `CartPlaceholderScreen` solo hasta que T4 la sustituya. **Trade-off:** pierde el atajo para probar 0, 5 y 100 unidades sin pasar por el flujo real (se prueba agregando productos y con los tests de `getCartBadge`). **Descartada:** conservar los controles tras `__DEV__`, que dejarían código de prueba y textos `cartDev.*` sin uso.
 - **Elegida:** Reanimated/Gesture Handler para feedback/swipe. **Trade-off:** dependencia nativa y validación dual. **Descartada:** JS-thread animation para gestos continuos.
 
 ## Verificación
 - Sin Jest aún: lint, typecheck, Redux DevTools, inspección del storage, matrices manuales servidor/rehidratación y Android/iOS.
 - Matriz pura/manual: preliminary inicial; 400/OUT_OF_STOCK temprano limpia; los mismos tardíos con unresolved conservan; 202/IDEMPOTENCY_KEY_REUSED eleva; 200 confirma/deduplica; 404/410 coherentes liberan; payload incoherente y offline/timeout/5xx conservan; cancel solo oculta; restart preliminary→unresolved; stock se refresca antes de pending y se considera reservado durante pending; cero PII persistida.
+- Badge real: tras T2 el badge refleja el carrito persistido (0 sin badge, 5, 99, 100 → `99+` con etiqueta hablada "100 artículos"); `npm run test:logic` mantiene en verde los tests de `getCartBadge`; búsqueda en el repositorio sin `CartDevControls`, `cartDev`, `cart-count-source`, `use-cart-count` ni `CartPlaceholderScreen` al cerrar T4. RF-7.
 - Inspeccionar storage y logs tras cada transición: solo key/fingerprint/status/id remoto opcional/resumen sanitizado, nunca dirección, request reversible, field values ni error payload.
 - Día 6 automatizará reducers/selectors/schema/attempt machine con Jest y UI con RNTL; no instalar herramientas ahora.
 

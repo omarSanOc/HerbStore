@@ -2,17 +2,23 @@
 
 - [ ] **T1. Configurar Jest/RNTL y el harness determinista.** RF-1, RF-2, RF-4, RF-5, RNF-1
 - Hecho cuando: suite arranca sin internet, render helper aporta store/i18n y fetch controlado representa success/empty/4xx/5xx/timeout/latency.
+- Incluye (Día 2): declarar `engines` de Node (≥ 22.18) en `package.json` por `test:logic`; `npm run test:logic` sigue en verde.
 - [ ] **T2. Cubrir lógica acumulada de carrito, moneda, búsqueda y checkout.** RF-3, RF-5, RF-17
 - Hecho cuando: reducers/selectors, 800 MXN, tasa 18, normalización/merge/schema y estados idempotentes tienen casos deterministas en verde.
+- Incluye (Día 2): test del timeout/abort durante la lectura del cuerpo en `fetchJson` (`http.ts`) o en su equivalente si el Día 3 lo sustituyó; el abort propio gana a `network`.
 - [ ] **T3. Cubrir componentes y estados accesibles con RNTL.** RF-4, RF-5, RF-17
 - Hecho cuando: lista, carrito, formulario, unresolved, error/offline/empty y fallback se verifican por rol/texto/estado, no por internals.
+- Incluye (Día 2): comprobar si un doble toque rápido en Volver/Cerrar dispara `router.back()` dos veces; si se reproduce, corregir con un test que lo cubra, y si no, anotar la decisión.
 - [ ] **T4. Completar Cuenta, preferencias y auditoría i18n.** RF-7, RF-8, RF-9, RF-10, RF-11, RF-12, RNF-3
 - Hecho cuando: es/en, MXN/USD, system/light/dark y Mis pedidos sobreviven reinicio, vacío tiene CTA y ninguna traducción o dirección queda pendiente; validar Android/iOS.
 - [ ] **T5. Automatizar el flujo crítico con Maestro.** RF-6, RF-17, RNF-1, RNF-2
 - Hecho cuando: desde estado limpio busca, agrega, llena dirección, protege doble tap y observa una confirmación; se confirma manualmente la plataforma complementaria.
+- Incluye (Día 2): evaluar como candidatos opcionales, sin ampliar RF-6, los casos de la matriz T9 anotados en `LEARNING.md` (tabs y badge, reselección del tab, escáner modal, deep links, producto 404, doble toque, estados de Home con fixtures, autoplay con 2 banners); registrar cuáles se automatizan y por qué.
 - [ ] **T6. Ejecutar auditorías de accesibilidad y rendimiento.** RF-13, RF-14, RF-15, RF-16, RNF-4
 - Hecho cuando: contraste cumple ratios, TalkBack/VoiceOver y foco tienen evidencia bilateral, y baseline/after de Home/lista/carrito conserva solo mejoras sin regresión.
+- Incluye (Día 2): revisar y decidir H-1 (iconos `SymbolView` recortados en Android con fuente alta) y H-7 (separación escasa entre rótulos de categoría con texto grande), con evidencia a `font_scale` 1.5/2.0 y AX5; corregidos o con decisión documentada.
 - [ ] **T7. Realizar live coding y evaluación de 45 minutos.** RF-18, RF-19
 - Hecho cuando: cronómetro se detiene al minuto 45 y la rúbrica registra cada criterio y mejora sin extender el ejercicio.
 - [ ] **T8. Crear banco final y cerrar el programa.** RF-20, RF-21, RF-22, RF-23, RNF-2
 - Hecho cuando: existen exactamente 30 preguntas con respuesta y conexión individual, más ejercicio y 8–10 preguntas distintas; lint/typecheck/Jest/RNTL/Maestro y Android/iOS pasan, `LEARNING.md`, checklist y commit final quedan completos; detenerse.
+- Incluye (Día 2), antes de la validación final: H-4, comprobar que el bundle de producción no contiene código de prueba del badge ni fixtures por `__DEV__`; H-5, retirar `@expo/ui`, `expo-glass-effect`, `expo-web-browser`, `react-native-web` y `react-dom` con `npx expo install`/desinstalación coordinada, **solo con aprobación previa del usuario**, recompilar el Development Build y pasar `npx expo install --check` y Expo Doctor.

@@ -27,6 +27,7 @@
 - **RNTL, componentes:** assertions por texto/rol/state; loading/error/offline/empty, form errors, lock/unresolved/retry, reduced motion y foco observable. RF-4.
 - **RTK Query:** `global.fetch` controlado con colas de respuestas para success/empty/4xx/5xx/timeout/latency; no MSW ni dependencia extra. RF-5.
 - **Maestro:** reset determinista, servidor con seed, teclado cerrado explícitamente, identificadores accesibles estables y assertion de una confirmación. RF-6, RNF-1.
+- **Candidatos a Maestro heredados del Día 2** (anotados en `LEARNING.md`, matriz T9; sin añadir otros): tabs y badge, reselección del tab, escáner modal, deep links (activo y A→B), producto 404, doble toque, estados de Home con fixtures y autoplay con 2 banners. Son candidatos a elegir por riesgo y coste; el escenario obligatorio sigue siendo el flujo crítico (RF-6). No automatizables con facilidad: TalkBack/VoiceOver reales, escala de fuente y reduced motion del sistema, arranque en frío con el launcher del dev client.
 - Capacidades nativas físicas del Día 5 conservan evidencia manual Android/iOS; Jest no sustituye cámara/módulo/permiso real.
 
 ## Preferencias, Cuenta e i18n
@@ -50,6 +51,13 @@
 - **Elegida:** assertions accesibles en RNTL/Maestro. **Trade-off:** exige labels estables. **Descartada:** seleccionar por estructura interna.
 - **Elegida:** historial de pedidos local por instalación. **Trade-off:** no sincroniza. **Descartada:** inventar endpoint/autenticación.
 - **Elegida:** comparación de perfil relativa al baseline. **Trade-off:** no fija FPS universal. **Descartada:** umbral artificial no aprobado.
+
+## Hallazgos aceptados del Día 2 que la auditoría final decide
+Se registraron como limitaciones aceptadas en `LEARNING.md` (Día 2, decisiones H-1 a H-9). Cada uno se corrige o se cierra con una decisión escrita y evidencia (RNF-4); ninguno amplía el alcance de la spec (RF-7, RF-15, RNF-2).
+- **H-1** (iconos `SymbolView` recortados en Android con fuente alta, `font_scale` 1.5/2.0) y **H-7** (rótulos de categorías casi pegados con texto grande: separación constante de 8 dp): se revisan con la auditoría de texto ampliado. RF-15. Tarea T6.
+- **H-4** (código muerto de `CartDevControls`/fixtures en el bundle de producción): el Día 4 retira `CartDevControls`; aquí se comprueba con un bundle de producción que no queda código de prueba del badge ni fixtures por `__DEV__`. Tarea T8.
+- **H-5** (5 dependencias heredadas del template sin uso: `@expo/ui`, `expo-glass-effect`, `expo-web-browser`, `react-native-web`, `react-dom`): retirada coordinada con `npx expo install`/desinstalación, **con aprobación previa del usuario**; implica recompilar el Development Build, `npx expo install --check` y Expo Doctor, y validar Android/iOS. Alternativa descartada: dejarlas (superficie y peso sin uso). Tarea T8.
+- **Ideas pendientes del Día 2:** (a) test del caso timeout/abort durante la lectura del cuerpo de la respuesta en `fetchJson` (`http.ts`), o en su equivalente si el Día 3 lo sustituyó (tarea T2); (b) posible doble disparo de `router.back()` con doble toque rápido en Volver/Cerrar, con test RNTL o caso Maestro y arreglo solo si se reproduce (tarea T3); (c) declarar `engines` de Node (≥ 22.18) en `package.json` para `test:logic` (tarea T1).
 
 ## Live coding y banco final
 - Brief de 45 min: consumir endpoint dado, lista paginada, debounce y error/retry; detener cronómetro exactamente al minuto 45. RF-18.
