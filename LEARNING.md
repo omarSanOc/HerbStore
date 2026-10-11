@@ -267,7 +267,7 @@ Validación manual de T7 (tema claro/oscuro, idioma es/en, accesibilidad en Andr
 
 ## Día 2 — Navegación y Home
 
-Estado: **teoría y material de cierre redactados; matriz de verificación (T9) aprobada por el usuario; pendientes la revisión de @reviewer y la aprobación del usuario para el commit del día (T10).**
+Estado: **completado y validado en Android e iOS** (matriz de verificación aprobada por el usuario, revisión de @reviewer aprobada y cierre del día aprobado).
 
 Qué hay al terminar el día (spec `specs/002-dia-2-navegacion-home`):
 - Navegación: `Tabs` con un `Stack` por tab (Inicio, Categorías, Carrito, Cuenta), badge del carrito, escáner como modal, rutas dinámicas `product/[id]` y `category/[id]`, `search`, `+not-found` y enlaces `herbstore://product/<id>`.
@@ -568,7 +568,7 @@ shouldAutoplay = bannerCount >= 2 && isFocused && isAppActive && isRowVisible &&
 - **Aprobación del usuario (revisión de @reviewer, ronda 1).** El usuario aprobó, sin confirmación expresa caso por caso, las decisiones anteriores del implementador: un elemento malformado invalida todo `/home` (pantalla de error); un id de producto con forma inválida va a `/product/invalid`; el ejercicio `brand/[slug]`; el ancho de tarjeta creciente hasta 1.5x; y el test extra `parity.test.ts`.
 - **Deep links hacia rutas internas (I-3).** El usuario aceptó el comportamiento actual (ver Bloque D): se revisa con el escáner real del Día 5.
 - **Trasladados a otros días (M-4).** Dos puntos de la revisión quedan trasladados a los planes de los Días 4 y 6 (los registra el planificador en `specs/004` y `specs/006`).
-- **Ideas pendientes para la auditoría del Día 6** (opcionales, no aplicadas por decisión del usuario): M-5, M-6 y un test extra para `src/core/network/http.ts` (línea ~80).
+- **Ideas pendientes para la auditoría del Día 6** (opcionales, no aplicadas por decisión del usuario): (a) timeout/abort también durante la lectura del cuerpo en `fetchJson`; (b) posible doble disparo de `router.back()` con un doble toque rápido; (c) declarar `engines` de Node ≥ 22.18 en `package.json` para `test:logic`; y un test extra para `src/core/network/http.ts` (línea ~80).
 
 ---
 
@@ -926,7 +926,7 @@ Antes de pedir la revisión de @reviewer y la aprobación del commit, sin cambio
 1. **Iconos de `SymbolView` recortados en Android con `font_scale` alto** (tabs, cabecera, chevrons). Limitación previa de `expo-symbols` en Android (el icono se carga como fuente); la causa exacta del recorte no está investigada. Opciones: aceptar y documentar; fijar el tamaño del contenedor del icono; sustituir por iconos vectoriales (dependencia nueva, requiere aprobación).
 2. **Campo de búsqueda y barra de tabs apretados con fuente a 2.0.** La etiqueta del tab y el texto del campo pierden aire; con AX5 el texto puede truncarse. Opciones: aceptar (es el extremo del rango); `numberOfLines`/`maxFontSizeMultiplier` acotado en la barra y el campo; barra con altura flexible. **RESUELTO (N-2/N-3):** se acotó con `fontScaleLimits` (tabs 1.2, buscador 1.5) y el usuario repitió M15 en Android e iOS con resultado correcto.
 3. **El esqueleto de Home no reserva el texto ni los controles del banner**, así que al terminar la carga el contenido baja unos puntos. Opciones: aceptar como esqueleto estático (decisión previa); añadir líneas de texto y fila de controles al esqueleto.
-4. **El control `__DEV__` del badge y las fixtures siguen presentes como código muerto en el bundle de producción.** Hay que distinguir: el control no se renderiza (el árbol lo sustituye por `null`) y las fixtures quedan anuladas por `isDev:false`, pero el componente `CartDevControls`, los textos `cartDev.*` (es/en) y los nombres de fixtures viajan en el bundle. Opciones: aceptar y retirarlo en el Día 4 (el plan ya lo prevé); cargar el control con un `require` dentro de `if (__DEV__)` para que Metro lo elimine; mover los textos del control fuera de los recursos globales.
+4. **El control `__DEV__` del badge y las fixtures siguen presentes como código muerto en el bundle de producción.** Hay que distinguir: el control no se renderiza (el árbol lo sustituye por `null`) y las fixtures quedan anuladas por `isDev:false`, pero el componente `CartDevControls`, los textos `cartDev.*` (es/en) y los nombres de fixtures viajan en el bundle. Decisión del usuario: aceptarlo ahora y retirarlo en el Día 4 (el plan ya lo prevé).
 5. **Dependencias heredadas del template que el código no importa:** `@expo/ui`, `expo-glass-effect`, `expo-web-browser`, `react-native-web`, `react-dom` (las demás son peer de Expo Router o de los días siguientes). Quitarlas cambia dependencias nativas y exige recompilar; no se toca sin aprobación.
 6. **Barra de tabs y botón flotante del dev client.** El tamaño táctil de cada tab lo fija React Navigation (no hay código propio que lo garantice); comprobar en M15. El engranaje flotante que aparece sobre la cabecera es el menú del dev client: solo desarrollo, no es parte de la app.
 7. **Posible separación escasa entre rótulos de categoría en iOS** a tamaño normal (en la captura de humo "Vitaminas Minerales Proteínas" quedan casi juntos). Verificar en M12/M15; si se confirma, aumentar el espacio entre ítems.

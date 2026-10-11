@@ -1,5 +1,5 @@
 # Spec 002 — Día 2: navegación y Home
-Estado: aprobada
+Estado: implementada
 
 ## Contexto y objetivo
 Con el servidor y el sistema visual del Día 1 disponibles, este día convierte la entrada inicial en una experiencia navegable y completa Home. Home consume los datos remotos necesarios; el Día 3 incorporará el comportamiento definitivo de caché y estado remoto sin cambiar ni duplicar su experiencia observable.
