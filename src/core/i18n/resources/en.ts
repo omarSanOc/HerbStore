@@ -1,5 +1,162 @@
 export const en = {
   translation: {
+    tabs: {
+      home: 'Home',
+      categories: 'Categories',
+      cart: 'Cart',
+      account: 'Account',
+      cartLabel_one: 'Cart, {{count}} item',
+      cartLabel_other: 'Cart, {{count}} items',
+    },
+    placeholders: {
+      home: {
+        title: 'Home',
+      },
+      categories: {
+        title: 'Categories',
+        body: 'The catalog category list will appear here.',
+      },
+      cart: {
+        title: 'Cart',
+        body: 'The products you add to your cart will appear here.',
+      },
+      account: {
+        title: 'Account',
+        body: 'Your preferences and account details will appear here.',
+        openFoundations: 'React Native foundations',
+        openFoundationsHint: 'Opens the foundations demo screen.',
+      },
+      foundations: {
+        title: 'Foundations',
+      },
+    },
+    notFound: {
+      title: "We couldn't find this screen",
+      message: 'The address does not exist or is no longer available.',
+      back: 'Go back',
+      backHint: 'Returns to the previous screen.',
+      goHome: 'Go to Home',
+      goHomeHint: 'Opens the Home screen.',
+    },
+    product: {
+      title: 'Product',
+      loadingTitle: 'Loading product…',
+      idLabel: 'Identifier: {{id}}',
+      placeholderNote: 'The full product page will arrive later.',
+      notFoundTitle: 'Product not found',
+      notFoundMessage: 'The product does not exist or the link is not valid.',
+      offlineTitle: 'No connection to the server',
+      offlineMessage: 'Could not connect. Check your connection or that the server is running and try again.',
+      errorTitle: "The product couldn't be loaded",
+      errorMessage: 'The server did not respond as expected. Please try again.',
+      retry: 'Try again',
+      retryHint: 'Requests the product again.',
+    },
+    scanner: {
+      title: 'Scanner',
+      heading: 'Product scanner',
+      body: 'Camera scanning will arrive later. For now this screen demonstrates the modal.',
+      close: 'Close',
+      closeHint: 'Closes the scanner and returns to the previous screen.',
+    },
+    home: {
+      header: {
+        searchLabel: 'Search products',
+        searchPlaceholder: 'Search supplements',
+        searchHint: 'Opens the product search.',
+        scanLabel: 'Scan a product',
+        scanHint: 'Opens the product scanner.',
+      },
+      sections: {
+        best_sellers: 'Best sellers',
+        new: 'New',
+        offers: 'Offers',
+      },
+      categories: {
+        vitamins: 'Vitamins',
+        minerals: 'Minerals',
+        protein: 'Protein',
+        botanicals: 'Botanicals',
+        wellness: 'Wellness',
+      },
+      categoryHint: 'Opens the products in this category.',
+      product: {
+        hint: 'Opens the product.',
+        badge: {
+          offer: 'Offer',
+          new: 'New',
+          best_seller: 'Best seller',
+        },
+        noReviews: 'No reviews yet',
+        priceOffer: 'On sale, {{price}}, was {{listPrice}}',
+        ratingSpoken_one: 'Rated {{rating}} out of 5, {{countText}} review',
+        ratingSpoken_other: 'Rated {{rating}} out of 5, {{countText}} reviews',
+      },
+      banners: {
+        position: 'Banner {{current}} of {{total}}',
+        previous: 'Previous banner',
+        previousHint: 'Shows the previous banner.',
+        next: 'Next banner',
+        nextHint: 'Shows the next banner.',
+        openCategory: 'Open category',
+        items: {
+          'daily-wellness': {
+            title: 'Daily wellness essentials',
+            subtitle: 'Explore fictional products for everyday routines.',
+          },
+          'plant-powered': {
+            title: 'Plant-powered collection',
+            subtitle: 'Discover botanical and plant protein formulas.',
+          },
+        },
+      },
+      rows: {
+        categories: 'Categories',
+      },
+      loading: {
+        label: 'Loading Home',
+        text: 'Loading Home…',
+      },
+      notice: {
+        offline: 'You are offline. Showing the last data received.',
+        updateFailed: 'Home could not be updated. Showing the last data received.',
+      },
+      states: {
+        emptyTitle: 'Nothing to show yet',
+        emptyMessage: 'There are no banners, categories or products available right now.',
+        offlineTitle: 'No connection to the server',
+        offlineMessage: 'Could not connect. Check your connection or that the server is running and try again.',
+        errorTitle: "Home couldn't be loaded",
+        errorMessage: 'The server did not respond as expected. Please try again.',
+        retry: 'Try again',
+        retryHint: 'Requests Home again.',
+      },
+    },
+    image: {
+      unavailable: 'Image not available',
+    },
+    search: {
+      title: 'Search',
+      body: 'Product search with suggestions and history will arrive later.',
+    },
+    category: {
+      title: 'Category',
+      idLabel: 'Category: {{id}}',
+      note: 'The list of products in this category will arrive later.',
+      invalidTitle: 'Category not found',
+      invalidMessage: 'The category link is not valid.',
+    },
+    cartDev: {
+      heading: 'Development control',
+      description: 'Changes the cart counter to test the badge. It only exists in development.',
+      count: 'Units in the cart: {{count}}',
+      addOne: 'Add 1',
+      addOneHint: 'Adds one unit to the badge counter.',
+      addTen: 'Add 10',
+      addTenHint: 'Adds ten units to the badge counter.',
+      reset: 'Reset',
+      resetHint: 'Sets the badge counter to zero and hides it.',
+    },
     foundations: {
       title: 'HerbStore',
       subtitle: 'React Native foundations: components, hooks and Flexbox.',

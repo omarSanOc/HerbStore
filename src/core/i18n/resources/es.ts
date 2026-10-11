@@ -1,5 +1,162 @@
 export const es = {
   translation: {
+    tabs: {
+      home: 'Inicio',
+      categories: 'Categorías',
+      cart: 'Carrito',
+      account: 'Cuenta',
+      cartLabel_one: 'Carrito, {{count}} artículo',
+      cartLabel_other: 'Carrito, {{count}} artículos',
+    },
+    placeholders: {
+      home: {
+        title: 'Inicio',
+      },
+      categories: {
+        title: 'Categorías',
+        body: 'Aquí aparecerá el listado de categorías del catálogo.',
+      },
+      cart: {
+        title: 'Carrito',
+        body: 'Aquí aparecerán los productos que agregues al carrito.',
+      },
+      account: {
+        title: 'Cuenta',
+        body: 'Aquí aparecerán tus preferencias y datos de la cuenta.',
+        openFoundations: 'Fundamentos de React Native',
+        openFoundationsHint: 'Abre la pantalla de demostración de fundamentos.',
+      },
+      foundations: {
+        title: 'Fundamentos',
+      },
+    },
+    notFound: {
+      title: 'No encontramos esta pantalla',
+      message: 'La dirección no existe o ya no está disponible.',
+      back: 'Volver',
+      backHint: 'Regresa a la pantalla anterior.',
+      goHome: 'Ir a Inicio',
+      goHomeHint: 'Abre la pantalla de Inicio.',
+    },
+    product: {
+      title: 'Producto',
+      loadingTitle: 'Cargando producto…',
+      idLabel: 'Identificador: {{id}}',
+      placeholderNote: 'La ficha completa del producto llegará más adelante.',
+      notFoundTitle: 'Producto no encontrado',
+      notFoundMessage: 'El producto no existe o el enlace no es válido.',
+      offlineTitle: 'Sin conexión con el servidor',
+      offlineMessage: 'No se pudo conectar. Revisa tu conexión o que el servidor esté en marcha e inténtalo de nuevo.',
+      errorTitle: 'No se pudo cargar el producto',
+      errorMessage: 'El servidor no respondió como se esperaba. Inténtalo de nuevo.',
+      retry: 'Reintentar',
+      retryHint: 'Vuelve a consultar el producto.',
+    },
+    scanner: {
+      title: 'Escáner',
+      heading: 'Escáner de productos',
+      body: 'El escaneo con la cámara llegará más adelante. Por ahora esta pantalla demuestra el modal.',
+      close: 'Cerrar',
+      closeHint: 'Cierra el escáner y vuelve a la pantalla anterior.',
+    },
+    home: {
+      header: {
+        searchLabel: 'Buscar productos',
+        searchPlaceholder: 'Buscar suplementos',
+        searchHint: 'Abre la búsqueda de productos.',
+        scanLabel: 'Escanear un producto',
+        scanHint: 'Abre el escáner de productos.',
+      },
+      sections: {
+        best_sellers: 'Más vendidos',
+        new: 'Nuevos',
+        offers: 'Ofertas',
+      },
+      categories: {
+        vitamins: 'Vitaminas',
+        minerals: 'Minerales',
+        protein: 'Proteínas',
+        botanicals: 'Botánicos',
+        wellness: 'Bienestar',
+      },
+      categoryHint: 'Abre los productos de esta categoría.',
+      product: {
+        hint: 'Abre el producto.',
+        badge: {
+          offer: 'Oferta',
+          new: 'Nuevo',
+          best_seller: 'Más vendido',
+        },
+        noReviews: 'Aún sin reseñas',
+        priceOffer: 'En oferta, {{price}}, antes {{listPrice}}',
+        ratingSpoken_one: 'Calificación {{rating}} de 5, {{countText}} reseña',
+        ratingSpoken_other: 'Calificación {{rating}} de 5, {{countText}} reseñas',
+      },
+      banners: {
+        position: 'Banner {{current}} de {{total}}',
+        previous: 'Banner anterior',
+        previousHint: 'Muestra el banner anterior.',
+        next: 'Banner siguiente',
+        nextHint: 'Muestra el banner siguiente.',
+        openCategory: 'Abrir categoría',
+        items: {
+          'daily-wellness': {
+            title: 'Esenciales de bienestar diario',
+            subtitle: 'Explora productos ficticios para las rutinas de cada día.',
+          },
+          'plant-powered': {
+            title: 'Colección de origen vegetal',
+            subtitle: 'Descubre fórmulas botánicas y proteínas vegetales.',
+          },
+        },
+      },
+      rows: {
+        categories: 'Categorías',
+      },
+      loading: {
+        label: 'Cargando Inicio',
+        text: 'Cargando Inicio…',
+      },
+      notice: {
+        offline: 'Sin conexión. Se muestran los últimos datos recibidos.',
+        updateFailed: 'No se pudo actualizar Inicio. Se muestran los últimos datos recibidos.',
+      },
+      states: {
+        emptyTitle: 'Todavía no hay nada que mostrar',
+        emptyMessage: 'Ahora mismo no hay banners, categorías ni productos disponibles.',
+        offlineTitle: 'Sin conexión con el servidor',
+        offlineMessage: 'No se pudo conectar. Revisa tu conexión o que el servidor esté en marcha e inténtalo de nuevo.',
+        errorTitle: 'No se pudo cargar Inicio',
+        errorMessage: 'El servidor no respondió como se esperaba. Inténtalo de nuevo.',
+        retry: 'Reintentar',
+        retryHint: 'Vuelve a solicitar Inicio.',
+      },
+    },
+    image: {
+      unavailable: 'Imagen no disponible',
+    },
+    search: {
+      title: 'Búsqueda',
+      body: 'La búsqueda de productos con sugerencias e historial llegará más adelante.',
+    },
+    category: {
+      title: 'Categoría',
+      idLabel: 'Categoría: {{id}}',
+      note: 'El listado de productos de esta categoría llegará más adelante.',
+      invalidTitle: 'Categoría no encontrada',
+      invalidMessage: 'El enlace de la categoría no es válido.',
+    },
+    cartDev: {
+      heading: 'Control de desarrollo',
+      description: 'Cambia el contador del carrito para probar la insignia. Solo existe en desarrollo.',
+      count: 'Unidades en el carrito: {{count}}',
+      addOne: 'Sumar 1',
+      addOneHint: 'Suma una unidad al contador de la insignia.',
+      addTen: 'Sumar 10',
+      addTenHint: 'Suma diez unidades al contador de la insignia.',
+      reset: 'Restablecer',
+      resetHint: 'Pone el contador de la insignia en cero y la oculta.',
+    },
     foundations: {
       title: 'HerbStore',
       subtitle: 'Fundamentos de React Native: componentes, hooks y Flexbox.',

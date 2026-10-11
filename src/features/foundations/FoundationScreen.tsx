@@ -26,7 +26,8 @@ export function FoundationScreen() {
 
   return (
     <AppSurface level="page" style={styles.page}>
-      <SafeAreaView style={styles.safeArea}>
+      {/* The stack header owns the top inset and the tab bar owns the bottom one. */}
+      <SafeAreaView edges={['left', 'right']} style={styles.safeArea}>
         <ScrollView
           ref={scrollViewRef}
           contentContainerStyle={styles.content}

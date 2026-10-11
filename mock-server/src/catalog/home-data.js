@@ -1,5 +1,23 @@
 const HOME_ITEM_LIMIT = 10;
 
+/** Fictional promotional banners. Their ids also name the generated images. */
+export const HOME_BANNERS = Object.freeze([
+  Object.freeze({
+    id: 'daily-wellness',
+    title: 'Daily wellness essentials',
+    subtitle: 'Explore fictional products for everyday routines.',
+    imageUrl: '/images/banners/daily-wellness.png',
+    categoryId: 'vitamins',
+  }),
+  Object.freeze({
+    id: 'plant-powered',
+    title: 'Plant-powered collection',
+    subtitle: 'Discover botanical and plant protein formulas.',
+    imageUrl: '/images/banners/plant-powered.png',
+    categoryId: 'botanicals',
+  }),
+]);
+
 function displayName(identifier) {
   return identifier
     .split('-')
@@ -53,22 +71,7 @@ export function createHomeData(products) {
   const categoryTree = createCategoryTree(products);
 
   return {
-    banners: [
-      {
-        id: 'daily-wellness',
-        title: 'Daily wellness essentials',
-        subtitle: 'Explore fictional products for everyday routines.',
-        imageUrl: '/images/banners/daily-wellness.png',
-        categoryId: 'vitamins',
-      },
-      {
-        id: 'plant-powered',
-        title: 'Plant-powered collection',
-        subtitle: 'Discover botanical and plant protein formulas.',
-        imageUrl: '/images/banners/plant-powered.png',
-        categoryId: 'botanicals',
-      },
-    ],
+    banners: HOME_BANNERS.map((banner) => ({ ...banner })),
     categories: categoryTree.map(({ subcategories: _subcategories, ...category }) => ({
       ...category,
       imageUrl: `/images/categories/${category.id}.png`,

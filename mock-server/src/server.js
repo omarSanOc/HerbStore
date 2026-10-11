@@ -7,6 +7,7 @@ import { OrderStore } from './orders/order-store.js';
 import { createBrandsRouter } from './routes/brands.js';
 import { createCategoriesRouter } from './routes/categories.js';
 import { createHomeRouter } from './routes/home.js';
+import { createImagesRouter } from './routes/images.js';
 import { sendError } from './routes/http-response.js';
 import { createOrdersRouter } from './routes/orders.js';
 import { createProductsRouter } from './routes/products.js';
@@ -77,6 +78,8 @@ export function createApp({
   app.use('/products', createProductsRouter(catalog));
   app.use('/brands', createBrandsRouter(catalog));
   app.use('/orders', createOrdersRouter(orderStore));
+  // Generated placeholders: outside the catalog latency on purpose (image speed is not under test).
+  app.use('/images', createImagesRouter(catalog));
 
   app.use((_request, response) => {
     sendError(response, 404, 'NOT_FOUND', 'The requested route was not found.');

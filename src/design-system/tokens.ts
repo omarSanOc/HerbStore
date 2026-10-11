@@ -39,3 +39,17 @@ export const sizes = {
   minimumTouchTarget: 48,
   contentMaxWidth: 560,
 } as const;
+
+/**
+ * Upper bounds for system font scaling (`Text.maxFontSizeMultiplier`), only for chrome whose box
+ * cannot grow with the text. Body content keeps scaling freely (accessibility first).
+ *
+ * - `tabLabel`: the tab bar has a fixed height and a 10 pt label; 1.2 keeps it at 12 pt on one line.
+ *   Measured on Android at font scale 2.0: 1.3 still cut the descender of "Categorías"; 1.2 fits.
+ * - `searchField`: the search "field" sits beside the scanner button; 1.5 (24 pt) fits a long
+ *   Spanish word per line, while iOS AX5 (about 3x) broke "suplemen-tos" in the middle.
+ */
+export const fontScaleLimits = {
+  tabLabel: 1.2,
+  searchField: 1.5,
+} as const;
