@@ -14,6 +14,46 @@ export function categoryLabelKey(
 }
 
 /**
+ * Translation key (`subcategories.*`) of each subcategory of the mock catalog, by server id. Fifteen:
+ * three in each of the five categories. The key is camelCase because an id such as `vitamin-c`
+ * is not a pleasant object property in the resource files.
+ */
+const SUBCATEGORY_LABEL_KEYS = {
+  multivitamins: 'subcategories.multivitamins',
+  'vitamin-c': 'subcategories.vitaminC',
+  'vitamin-d': 'subcategories.vitaminD',
+  magnesium: 'subcategories.magnesium',
+  zinc: 'subcategories.zinc',
+  calcium: 'subcategories.calcium',
+  'plant-protein': 'subcategories.plantProtein',
+  'whey-protein': 'subcategories.wheyProtein',
+  'amino-blends': 'subcategories.aminoBlends',
+  'herbal-blends': 'subcategories.herbalBlends',
+  'mushroom-blends': 'subcategories.mushroomBlends',
+  'root-extracts': 'subcategories.rootExtracts',
+  probiotics: 'subcategories.probiotics',
+  omegas: 'subcategories.omegas',
+  'sleep-support': 'subcategories.sleepSupport',
+} as const;
+
+type KnownSubcategoryId = keyof typeof SUBCATEGORY_LABEL_KEYS;
+
+export const KNOWN_SUBCATEGORY_IDS = Object.keys(SUBCATEGORY_LABEL_KEYS) as KnownSubcategoryId[];
+
+/**
+ * Translation key for a subcategory id, or `undefined` for any id that is not one of the 15 known:
+ * the caller then shows the text the server sent (and, failing that, the value itself). Searching
+ * the explicit list (instead of indexing the object with the id) keeps a name such as
+ * `constructor` from resolving to something that is not text.
+ */
+export function subcategoryLabelKey(
+  id: string,
+): (typeof SUBCATEGORY_LABEL_KEYS)[KnownSubcategoryId] | undefined {
+  const known = KNOWN_SUBCATEGORY_IDS.find((candidate) => candidate === id);
+  return known === undefined ? undefined : SUBCATEGORY_LABEL_KEYS[known];
+}
+
+/**
  * First visible character of a name, uppercased: what a circular category shows when its image
  * cannot load. `Array.from` iterates by code point, so an emoji is not cut in half.
  */

@@ -942,3 +942,1240 @@ Antes de pedir la revisión de @reviewer y la aprobación del commit, sin cambio
 - Qué implica: el compilador memoiza componentes y hooks automáticamente (compila los 58 archivos, 64 funciones, sin omisiones ni errores), por lo que **enmascara renders innecesarios**. Es el equivalente a que Compose omitiera recomposiciones por estabilidad de parámetros (*skipping*) sin que lo pidas, o a que SwiftUI comparara las dependencias de `body`.
 - Para la demo didáctica: poner `"use no memo"` en el componente de ejemplo y medir con el Profiler antes y después; no memoizar a mano sin medir (regla del proyecto).
 - Opción elegida: dejarlo activo. Trade-off: se obtiene la optimización automática y se mantiene la configuración heredada del template (opt-in experimental, no un valor por defecto de SDK 57), pero los renders redundantes son menos visibles para enseñar. Descartada: desactivarlo con `experiments.reactCompiler: false` (más renders visibles para enseñar, pero se pierde la optimización y se aleja del template).
+
+---
+
+## Día 3 — Datos remotos, listas y rendimiento
+
+Estado: **T1–T16 hechas y validadas** (spec `specs/003-dia-3-datos-listas-rendimiento`); T15 y T16 aprobadas explícitamente por el usuario; cierre del día pendiente solo del commit (tras la re-validación de @reviewer). Cada bloque se lee en 10 minutos o menos (RF-1); código e identificadores en inglés, explicación en español.
+
+### Bloque T1 — Estado de servidor, RTK Query y módulos nativos de Expo (≈10 min)
+
+**Estado de servidor frente a estado de cliente.** El catálogo, Home y las órdenes viven en el servidor: la app solo tiene una copia prestada que puede quedarse vieja, que puede fallar al pedirse y que otro usuario puede cambiar. Tiene sus propias preguntas: ¿está fresca?, ¿se está pidiendo ya?, ¿hay que reintentar?, ¿qué invalida qué? El estado de cliente (carrito, historial de búsqueda, filtros elegidos) es del usuario, es síncrono y la app es su única dueña. Mezclar los dos en un mismo `slice` obliga a reescribir a mano la caché, la deduplicación y los reintentos. Por eso en HerbStore RTK Query es la única fuente del estado remoto y Redux guarda solo estado de cliente.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Capa de datos remota con caché | RTK Query (`createApi`, endpoints, tags) | `Repository` + fuente remota/local + caché, expuesto como `Flow`/`StateFlow` | `async/await` + un modelo `@Observable` (o Combine) que guarda el resultado |
+| Estado que consume la UI | hooks `useGetXQuery` (`data`, `isFetching`, `error`) | `collectAsStateWithLifecycle()` sobre el `StateFlow` del `ViewModel` | propiedades del `@Observable` leídas en `body` |
+| Invalidar caché | `invalidatesTags` / `providesTags` | borrar o refrescar la caché del repositorio, emitir de nuevo en el `Flow` | volver a lanzar la tarea y publicar el nuevo valor |
+| Reintento con espera | `retry` de RTK sobre el base query | interceptor de OkHttp/Retrofit | reintento propio sobre `URLSession` |
+| Estado de cliente | slice de Redux (`configureStore`) | `ViewModel` con `StateFlow` / `SavedStateHandle` | `@State` / `@Observable` / `AppStorage` |
+
+Idea para entrevista: RTK Query es "un repositorio con caché, deduplicación y reintentos ya escrito", con la diferencia de que la identidad de cada consulta es el nombre del endpoint más sus argumentos serializados. Dos componentes que piden lo mismo comparten una sola petición, igual que dos colectores del mismo `StateFlow` compartido.
+
+**Qué es un módulo nativo de Expo y por qué Fast Refresh no basta.** `expo-network` no es solo JavaScript: trae código Kotlin y Swift (`NetworkModule`) que el *autolinking* de Expo compila dentro de la app. En Android registra un `ConnectivityManager.NetworkCallback` (`registerDefaultNetworkCallback`) y en iOS usa un `NWPathMonitor`; el módulo reenvía esos eventos a JS (`onNetworkStateChanged`). Fast Refresh y Metro solo reemplazan el bundle de JavaScript. Un módulo nuevo cambia el binario (Gradle/CocoaPods/Xcode), así que hay que **recompilar el Development Build** en las dos plataformas; con el binario viejo la llamada fallaría porque el módulo no existe. Es el mismo motivo por el que, en nativo, añadir una dependencia con código obliga a recompilar y no basta con "aplicar cambios".
+
+| `expo-network` | Android | iOS |
+| --- | --- | --- |
+| Lectura inicial | `getNetworkStateAsync()` ↔ `ConnectivityManager.getNetworkCapabilities(activeNetwork)` | `getNetworkStateAsync()` ↔ la última `NWPath` del monitor |
+| Cambios | `addNetworkStateListener` ↔ `NetworkCallback` | `addNetworkStateListener` ↔ `pathUpdateHandler` de `NWPathMonitor` |
+| Permisos | `ACCESS_NETWORK_STATE`, añadidos por el propio manifiesto del módulo | ninguno |
+
+### Decisiones de T1 (RF-3)
+
+- **RTK Query como única fuente remota.**
+  - Elegida: RTK Query para Home, listas, detalle, facets y órdenes.
+  - Trade-off: hay que configurar tags e infinite queries.
+  - Descartada: copiar las respuestas a slices de Redux, porque duplica la fuente de verdad y obliga a escribir a mano la frescura, la deduplicación y la invalidación.
+- **Reconexión con `expo-network` (5.ª dependencia, aprobada por el usuario).**
+  - Elegida: `expo-network ~57.0.2`, el módulo que mantiene Expo y fija el SDK 57.
+  - Trade-off: es nativo, así que obliga a recompilar en Android e iOS; además mide la red del dispositivo, no si el servidor mock responde (con `adb reverse` pueden diferir).
+  - Descartadas: `@react-native-community/netinfo` (también nativo y fijado por el SDK, pero del repositorio de la comunidad y sin nada que RF-5 necesite de más) y la heurística sin dependencia ("la primera respuesta correcta tras un fallo de red es la reconexión"), que no se entera de que vuelve la red hasta que se hace una petición y confunde la caída del servidor con la del dispositivo.
+- **Constitución, punto 1 (stack mínimo).** Toda dependencia fuera del stack exige necesidad demostrable, compatibilidad con Expo y aprobación previa. Las 5 de hoy están en el plan aprobado; `expo-network` la aprobó el usuario al resolver P1 y es la 5.ª.
+
+### Registro de T1: versiones, código nativo y API real (comprobado el 2026-10-11)
+
+Instalación con `npx expo install @reduxjs/toolkit react-redux @shopify/flash-list @gorhom/bottom-sheet expo-network`, sin `--force`, `--legacy-peer-deps` ni `npm audit fix --force`.
+
+| Paquete | Versión instalada | `package.json` | Código nativo propio |
+| --- | --- | --- | --- |
+| `@reduxjs/toolkit` | 2.13.0 (≥ 2.6, trae `build.infiniteQuery` y `refetchCachedPages`) | `^2.13.0` | No (solo `dist`, `query`, `react`, `src`) |
+| `react-redux` | 9.3.0 (con `redux` 5.0.1) | `^9.3.0` | No (solo `dist`, `src`) |
+| `@shopify/flash-list` | 2.0.2 | `2.0.2` | No (solo `dist`, `src`; v2 exige New Architecture) |
+| `@gorhom/bottom-sheet` | 5.2.14 | `^5.2.14` | No (solo `lib`, `src`; usa Reanimated y Gesture Handler) |
+| `expo-network` | 57.0.2 | `~57.0.2` | **Sí**: `android/` (Kotlin), `ios/` (Swift + `ExpoNetwork.podspec`) y `expo-module.config.json` |
+
+- **Peers de Gorhom 5.2.14:** `react-native-gesture-handler >=2.16.1` (instalado 2.32.0) y `react-native-reanimated >=3.16.0 || >=4.0.0-` (instalado 4.5.1, con Worklets 0.10.1). Satisfechos sin forzar nada. Peers de `react-redux` (`react` ^18 || ^19, `redux` ^5) y de RTK (`react-redux` ^9) también satisfechos.
+- **Búsqueda de código nativo:** solo `expo-network` trae `android/`, `ios/`, podspec y `expo-module.config.json`. Los otros cuatro son JavaScript puro, así que la recompilación se debe solo a `expo-network`.
+- **`app.json`:** sin cambios. La documentación de SDK 57 dice que `expo-network` no necesita config plugin y que `ACCESS_NETWORK_STATE` y `ACCESS_WIFI_STATE` los añade el manifiesto de la librería (fusionado por Gradle). iOS no pide permisos.
+- **API real de `expo-network` 57.0.2** (tipos instalados en `node_modules/expo-network/build/Network.d.ts`):
+  - Escucha: `addNetworkStateListener(listener: (event: NetworkStateEvent) => void): EventSubscription`. Devuelve una suscripción con `remove()`; la página de documentación la describe como "función para cancelar", pero **manda el tipo instalado**: se cancela con `subscription.remove()`.
+  - Lectura inicial: `getNetworkStateAsync(): Promise<NetworkState>`.
+  - Forma del estado: `NetworkState = { type?: NetworkStateType; isConnected?: boolean; isInternetReachable?: boolean }` (todos opcionales); `NetworkStateEvent` es el mismo tipo. En iOS `isInternetReachable` es siempre igual a `isConnected`; en Android exige capacidad de internet y conexión validada.
+  - Extras que HerbStore no usa: `getIpAddressAsync`, `isAirplaneModeEnabledAsync` (solo Android) y el hook `useNetworkState`.
+  - Plan de uso (T3): `core/network/reconnection.ts` será el único punto de suscripción; el resto de la app nunca importa `expo-network`.
+
+### Raíz de gestos (T1)
+
+`src/app/_layout.tsx` envuelve toda la app en `GestureHandlerRootView` con `style={{ flex: 1 }}`. Gesture Handler necesita una vista raíz para registrar sus reconocedores; Gorhom la necesitará para las hojas de T10. Equivale a tener un único `Window`/`UIWindow` que recibe los toques y los reparte a los reconocedores (`GestureDetector` en Compose, `UIGestureRecognizer` en UIKit). Es JavaScript: no requiere recompilar por sí mismo.
+
+### Recompilación del Development Build (T1, 2026-10-11)
+
+- **Android** (Samsung SM-A037M, USB, `adb reverse tcp:8081` y `tcp:3001`): `npx expo run:android --device SM_A037M` con Java 21 y `ANDROID_HOME`. `BUILD SUCCESSFUL`; Gradle autolinkeó `expo-network (57.0.2)`; APK instalado y JS arrancado (`Running "main"`). Dos tropiezos de entorno, no del proyecto: `--device` pide el **nombre** del dispositivo (`SM_A037M`), no el serial de `adb`, y sin `ANDROID_HOME` Gradle falla con "SDK location not found" (no hay `local.properties`; no se editó `android/`).
+- **iOS** (simulador iPhone 17 Pro, no dispositivo físico, igual que el Día 2): `npx expo run:ios --device "iPhone 17 Pro"`. CocoaPods instaló `ExpoNetwork (57.0.2)`, Xcode compiló y empaquetó `libExpoNetwork.a` y terminó con 0 errores y 1 aviso; la Home se ve igual que en el Día 2 (buscador, carrusel, categorías, tabs).
+- `android/` e `ios/` siguen siendo salidas CNG ignoradas por Git y no se tocaron a mano.
+- **Validado por el usuario** en Android (físico) e iOS (simulador): Home, tabs y enlaces como en el Día 2.
+
+### Bloque T2 — Base query, reintentos con backoff e idempotencia (≈10 min)
+
+**Base query.** RTK Query no hace peticiones por sí mismo: cada endpoint solo describe *qué* pedir (`query: () => ({ path, parse })`) y delega el *cómo* en una función única, el base query: `(args, api) => { data } | { error }`. Es el sitio donde viven el origen, las cabeceras, la cancelación y la traducción de errores. En HerbStore es un adaptador pequeño sobre `fetchJson` (`core/api/fetch-json-base-query.ts`): suma el origen al `path`, pasa `api.signal` (así un desmontaje o un refetch cancelan la petición) y convierte el resultado a `{ data }` o `{ error: ApiError }`. Los errores salen tipados: `network`, `http` (con `status`), `invalid`, `timeout` y `aborted`.
+
+**Reintentos con backoff.** Si una lectura falla por algo pasajero, repetirla casi siempre funciona; si falla por algo permanente, repetirla solo gasta batería y tiempo. Por eso la decisión es una función pura (`shouldRetryRequest`) que se prueba sin red, y la espera crece (500 ms y 1000 ms): dar margen al servidor sin que el usuario espere de más. Con 2 reintentos, una lectura que falla hace 3 peticiones. El *intento* cuenta los fallos acumulados: tras el primer fallo vale 1.
+
+| Resultado | ¿Reintenta una lectura (`GET`)? | Por qué |
+| --- | --- | --- |
+| `network` | Sí (hasta 2) | Puede volver la red en un segundo |
+| `http` 5xx | Sí (hasta 2) | El servidor falló, no la petición |
+| `http` 4xx | No | La petición es el problema; repetirla da la misma respuesta |
+| `timeout` | No | No prueba que el servidor no la procesara y el usuario ya esperó 8 s |
+| `invalid` | No | Un contrato roto no se arregla repitiendo |
+| `aborted` | No | Lo cancelamos nosotros a propósito |
+| Cualquier `POST` | No | Ver idempotencia |
+
+**Idempotencia.** Una operación es idempotente si repetirla deja el mundo igual que hacerla una vez. `GET` lo es: pedir dos veces el catálogo no cambia nada. `POST /orders` no: si se pierde la respuesta, la app no sabe si la orden se creó; reenviar a ciegas puede crear dos. La solución del proyecto es la `Idempotency-Key`: el servidor reconoce la misma clave y devuelve la misma orden. Aun así, el reintento automático se descarta para las escrituras; la spec 004 consultará el estado de la clave. El segundo `POST` tras un `202 pending` no es un reintento por fallo: es el protocolo de órdenes (misma clave, mismo cuerpo), y se verá en T13.
+
+| Idea | React Native (HerbStore) | Android (Kotlin) | iOS (Swift) |
+| --- | --- | --- | --- |
+| Punto único de red | base query de RTK sobre `fetchJson` | `Interceptor` de OkHttp / `Retrofit` | `URLSession` con un envoltorio propio |
+| Reintento con espera | `retry` de RTK con `shouldRetryRequest` y `retryDelayMs` | interceptor que repite y duerme (o `retryWhen` en un `Flow`) | bucle `async` con `Task.sleep` o `retry` de Combine |
+| Errores tipados | unión discriminada `ApiError` | `sealed interface` / `Result` | `enum` con valores asociados / `Result` |
+| Cancelación | `AbortSignal` del base query | `Call.cancel()` / cancelación de la corrutina | `Task.cancel()` / `URLSessionTask.cancel()` |
+
+Idea para entrevista: "no reintentes a ciegas": un reintento solo es seguro si la operación es idempotente y el fallo es transitorio. Clasificar el error (red, 4xx, 5xx, timeout) vale más que un número mágico de reintentos.
+
+### Decisiones de T2 (RF-3)
+
+- **Reintentar solo lecturas `GET`.**
+  - Elegida: 2 reintentos (500 ms y 1000 ms) ante `network` y 5xx, solo en `GET`.
+  - Trade-off: `createOrder` falla a la primera ante un corte de red y la recuperación llega con la consulta de estado del Día 4.
+  - Descartada: reintentar todo (incluido `POST`), porque podría duplicar una orden si la respuesta se perdió; y reintentar `timeout`, que alargaría la espera a ~25 s sin garantía.
+- **Base query propio sobre `fetchJson`.**
+  - Elegida: reutilizar `fetchJson`, que ya clasifica `FetchError` de `expo/fetch`, el timeout y el abort propio.
+  - Trade-off: mantener un adaptador pequeño y probado.
+  - Descartada: `fetchBaseQuery` de RTK, que perdería la taxonomía `network/timeout/invalid` y la validación del contrato por endpoint (`parse`).
+- **Logs por `onSettled` inyectado.** El base query no lee `__DEV__`; informa método, ruta sin query, resultado y status, nunca cabeceras ni cuerpo (una búsqueda o una dirección son datos del usuario). Trade-off: un parámetro más. Descartado: `console.log` dentro del módulo, que no se puede probar y ataría la lógica pura a `__DEV__`.
+- **Backoff determinista.** `retryDelayMs(n) = 500 * 2^(n-1)`. Trade-off: sin *jitter*, así que muchos clientes fallando a la vez reintentarían a la vez (irrelevante en una app didáctica). Descartado: el backoff aleatorio por defecto de RTK, que no garantiza "exactamente dos" ni una espera creciente verificable.
+
+### Bloque T3 — Caché, frescura, suscripciones, tags y conectividad (≈10 min)
+
+**Cómo piensa la caché de RTK Query.** Cada consulta se guarda en una *entrada* cuya clave es el endpoint más sus argumentos serializados (`getProducts({ category: 'x' })`). Todo componente que usa un hook `useXQuery` es un **suscriptor** de esa entrada: dos pantallas que piden lo mismo comparten datos y una sola petición. Cuando el último suscriptor se va, la entrada no se borra de inmediato: se queda `keepUnusedDataFor` segundos (300 en HerbStore) y después se elimina. Mientras existe, reabrir la pantalla muestra la caché al instante.
+
+**Frescura frente a retención: dos relojes distintos.**
+
+| Ajuste | Qué mide | Valor en HerbStore | Qué pasa al vencer |
+| --- | --- | --- | --- |
+| `keepUnusedDataFor` | Cuánto vive una entrada **sin suscriptores** | 300 s | Se borra; la próxima apertura es una carga inicial (skeleton) |
+| `refetchOnMountOrArgChange: 60` | Desde cuándo un dato se considera **viejo** al montar un suscriptor | 60 s | Se muestra la caché y se revalida en segundo plano (`isFetching` sin `isLoading`) |
+| `shouldRevalidate` (`freshness.ts`) | La misma regla de 60 s para foco, primer plano y reconexión | 60 s | Una sola revalidación; con datos frescos, ninguna petición |
+
+Si solo usáramos el valor por defecto de `keepUnusedDataFor` (60 s), la caché se borraría justo cuando RF-5 pide mostrarla mientras se revalida. Por eso 300 s: la retención debe ser mayor que la ventana de frescura.
+
+**Tags: invalidar sin saber quién depende de qué.** Una consulta declara qué datos *provee* (`providesTags: ['Home']`) y una mutación qué *invalida* (`invalidatesTags: ['Home']`). Al confirmarse una orden, RTK busca las entradas con esos tags: las suscritas se vuelven a pedir ya; las inactivas se borran y se piden de nuevo al abrirse. La mutación no conoce las pantallas, solo etiquetas. En HerbStore `tagTypes` es `Home`, `ProductList` y `Product` (este último con `id`).
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Caché con TTL | entrada RTK con `keepUnusedDataFor` + sello `fulfilledTimeStamp` | caché de repositorio con marca de tiempo y TTL (Room + `lastFetched`, o `Cache` de OkHttp) | `NSCache` en memoria; `URLCache` con `Cache-Control`/`max-age` en disco |
+| Suscriptores | hooks `useXQuery` (cuenta de referencias) | colectores de un `StateFlow` con `WhileSubscribed(5_000)` | observadores de un `@Observable` compartido |
+| Dato viejo mientras revalida | `isFetching` verdadero con `data` presente | `stateIn` con valor previo + `refresh()` | `.task` que actualiza sin vaciar el modelo |
+| Invalidación | `invalidatesTags` | borrar la clave del repositorio y reemitir | `URLCache.removeCachedResponse` / recargar el modelo |
+| Revalidar al volver al foco | `useRevalidateWhenStale` (foco + `AppState`) | `repeatOnLifecycle(STARTED)` que llama a `refresh()` | `.task`/`onChange(of: scenePhase)` |
+
+**Eventos de conectividad y por qué un solo listener nativo.** `expo-network` expone al JavaScript lo que cada sistema ya emite: en Android un `ConnectivityManager.NetworkCallback` (`onAvailable`, `onLost`, `onCapabilitiesChanged`) y en iOS un `NWPathMonitor` con `pathUpdateHandler`. Cada `addNetworkStateListener` registra un callback nativo y cada evento cruza el puente a JS. Si cada pantalla suscribiera el suyo, el mismo cambio de red se repetiría N veces. `core/network/reconnection.ts` es el único archivo que importa `expo-network`: crea **una** suscripción cuando llega el primer oyente, la retira con `subscription.remove()` cuando se va el último y guarda el estado previo (sembrado con `getNetworkStateAsync`) para detectar el paso **offline → online**. Es el patrón `callbackFlow { registerNetworkCallback … awaitClose { unregister } }` compartido con `shareIn(WhileSubscribed)` en Android, o un `NWPathMonitor` envuelto en un publisher con `.share()` en iOS.
+
+La regla de decisión está separada del evento y es pura (`connectivity.ts`): `isOnline` (conectado y `isInternetReachable` no `false`; `null`/ausente = desconocido, cuenta como alcanzable) e `isReconnection(previous, next)` (el estado previo era *explícitamente* offline y el nuevo es online; sin estado previo, o con uno desconocido, nunca). Así se prueba sin dispositivo.
+
+**Pieza por pieza (qué hace cada archivo).**
+- `base-api.ts`: la única `createApi`. Envuelve el base query de T2 en `retry` y fija la política de caché. Las features añaden endpoints con `injectEndpoints`.
+- `store.ts` y `hooks.ts`: un único `configureStore` con el reducer y el middleware de la API; hooks tipados (`useAppDispatch`, `useAppSelector`). No hay `setupListeners` porque solo sirve a `refetchOnFocus`/`refetchOnReconnect`, que están apagados. Nada se persiste hasta el Día 4.
+- `useRevalidateWhenStale`: foco + primer plano + reconexión con la regla de 60 s; no actúa al montar (lo cubre `refetchOnMountOrArgChange`), ni con la pantalla oculta, ni sin datos.
+- `usePullToRefresh`: llama a `refetch()` sin consultar la frescura (RF-6) y mantiene su propio `isRefreshing`, así la revalidación silenciosa nunca enciende el spinner.
+
+**Errores típicos al venir de nativo.** (1) Esperar que `refetchOnFocus` funcione como `onResume`: en RN depende de eventos web y no respeta los 60 s. (2) Suscribirse a la red en cada pantalla y olvidar el `remove()`: fuga de callbacks nativos. (3) Confundir "sin red del dispositivo" con "el servidor no responde": con `adb reverse` el mock se alcanza sin red, por eso la UI offline sale del fallo de `fetch` y no de `expo-network`. (4) Pasar `maxRetries` y `retryCondition` a `retry`: los tipos de RTK lo prohíben y la condición reemplaza al límite, que por eso vive en `shouldRetryRequest`.
+
+### Decisiones de T3 (RF-3)
+
+- **Frescura con un hook propio.**
+  - Elegida: `refetchOnMountOrArgChange: 60` + `useRevalidateWhenStale` (foco, primer plano y reconexión con la misma regla).
+  - Trade-off: un hook más que mantener.
+  - Descartada: `refetchOnFocus`/`refetchOnReconnect` con `setupListeners`, porque ignoran los 60 s (refrescarían en cada foco) y dependen de eventos web que no existen en React Native.
+- **Un solo listener nativo.**
+  - Elegida: `reconnection.ts` con suscripción perezosa compartida por todos los oyentes.
+  - Trade-off: estado de módulo (un singleton) que hay que limpiar bien al quedar sin oyentes.
+  - Descartada: `useNetworkState` de `expo-network` o un `addNetworkStateListener` por pantalla, que repiten el callback nativo y los eventos por cada pantalla montada.
+- **Estado offline desde `fetch`, no desde `expo-network`.**
+  - Elegida: la UI sigue mostrando offline cuando `fetch` falla sin respuesta; `expo-network` solo dispara la revalidación. El aviso se retira únicamente tras una respuesta satisfactoria.
+  - Trade-off: el aviso no desaparece "por sí solo" al volver la red hasta que llega una respuesta.
+  - Descartada: derivar el estado de pantalla de `isConnected`, que con `adb reverse` o un servidor caído diría lo contrario de lo que ve el usuario.
+- **Reconexión solo con la pantalla visible.**
+  - Elegida: el oyente se registra solo mientras la pantalla tiene foco y la app está activa; al recuperar el foco, la regla de 60 s se aplica igual.
+  - Trade-off: una pantalla oculta no se actualiza hasta volver a verse.
+  - Descartada: que cada pantalla montada (tabs ocultos) revalide al reconectar, que dispararía peticiones que nadie ve.
+- **`ProductList` como nombre del tag de listas.** El plan aprobado usa `ProductList`; es el nombre que usarán `getProducts` (T7) y la invalidación de órdenes (T13).
+
+### Bloque T4 — Migrar la capa de datos sin tocar la UI y deduplicar peticiones (≈10 min)
+
+**Cambiar la fuente sin que la pantalla se entere.** En el Día 2 `useHome` mantenía su propio reductor (identidad de petición, un request a la vez, abort, aviso conservado). En el Día 3 esa maquinaria la hace RTK Query, y `useHome` queda como un adaptador fino con **la misma firma** (`{ state, isRefreshing, refetch }`). `HomeScreen.tsx` no cambia ni una línea: es el patrón "un ViewModel que cambia de fuente". Lo que se borra es código que RTK ya sabe hacer (`home-client`, `home-request-state`, `refetch-policy`); lo que se conserva son las **reglas de producto** del Día 2 (offline solo con `network`, aviso sobre datos previos, colecciones vacías), que ahora leen un resumen del hook: `{ data, error, isFetching }`.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Quién habla con la UI | `useHome()` devuelve el mismo `HomeViewModel` | `HomeViewModel` expone el mismo `StateFlow<HomeUiState>` | el `@Observable` expone las mismas propiedades |
+| Cambio de fuente | del reductor propio a `useGetHomeQuery` | el `ViewModel` pasa de un caso de uso a un `Repository` y `repository.home().stateIn(...)` | `load()` pasa de `URLSession` a un cliente compartido; la `View` lee lo mismo |
+| Reglas de producto | `classifyHomeResult` (pura, con test) | un `map` puro del `Flow` a `UiState` | una función pura de estado remoto a estado de vista |
+| Pantalla | `HomeScreen` intacta | `@Composable HomeScreen(state)` intacto | `View` intacta |
+
+**Deduplicación de peticiones en vuelo.** Una consulta es una *entrada* (`getHome(undefined)`). Si un disparador pide la entrada mientras otra petición de **esa misma entrada** está en curso (pull + volver a primer plano, dos pantallas, foco + reconexión), RTK no lanza una segunda: la segunda llamada espera a la primera y comparte su resultado. Es el equivalente de que dos colectores de un `StateFlow` compartido (`shareIn`/`stateIn`) usen **un** productor, o de reutilizar la misma `Task` de `async/await` guardada en un diccionario por clave. Por eso el aviso de "una sola petición" se prueba contando líneas `[api] GET /home` en Metro.
+
+**Cómo se enchufan las piezas de T3 (primera vez).**
+- Abrir Home: `refetchOnMountOrArgChange: 60` (en `baseApi`). Sin datos, carga inicial; con datos de ≥ 60 s, caché + revalidación; con menos, nada.
+- `useRevalidateWhenStale({ fulfilledTimeStamp, isFetching, refetch })`: foco, primer plano y reconexión con la regla de 60 s, sin spinner. Sustituye la política del Día 2 (primer plano siempre, foco solo tras fallo).
+- `usePullToRefresh(refetch)`: fuerza la petición (RF-6) y controla el spinner. `isRefreshing` solo se muestra sobre datos visibles (`&& state.status === 'ready'`): en la primera carga o al reintentar desde la pantalla de error se ve el skeleton, como en el Día 2.
+- `getHome` usa `providesTags: ['Home']` para que T13 pueda invalidarlo al confirmar una orden.
+
+**Tipado por endpoint.** El base query es único para toda la API y devuelve `unknown` (su `parse` valida cada contrato). Cada endpoint declara su resultado con `build.query<HomeData, void>` y un `transformResponse: (response) => response as HomeData`. El cast está **acotado a un punto por endpoint** y es honesto porque `buildHomeRequest(...).parse` ya devuelve exactamente `HomeData | undefined`. El `error` del hook llega tipado como `ApiError | SerializedError`; `toApiError(error)` lo estrecha a `ApiError` (cualquier forma ajena, como un `CUSTOM_ERROR` de `retry`, pasa a `invalid` para que se vea el error con reintento y no un skeleton eterno).
+
+**Comprobado (d): ¿persiste `error` durante `pending`?** Sí. Leído en RTK 2.13 (`buildSlice`: el caso `pending` solo cambia `status`, `requestId` y `startedTimeStamp`; únicamente `fulfilled` borra el error; el hook lo documenta: "the cache entry keeps `error` set through a pending refetch") y confirmado con un `configureStore` real y un `fetch` simulado:
+
+| Momento | `status` | `data` | `error` |
+| --- | --- | --- | --- |
+| Éxito inicial | fulfilled | sí | — |
+| Refetch que falla tras 3 intentos | rejected | **se conserva** | `http` |
+| Reintento en curso (con datos) | pending | sí | **`http` (persiste)** |
+| Primera carga que falla | rejected | no | `network` |
+| Reintento en curso (sin datos) | pending | no | **`network` (persiste)** |
+| Éxito del reintento | fulfilled | nuevo | — (se borra) |
+
+Dos refetch forzados a la vez sobre la misma entrada hicieron 3 intentos en total (no 6): la deduplicación funciona también con los reintentos dentro. **Solución elegida:** no guardar nada propio; las reglas leen `{ data, error, isFetching }`. Con datos, el aviso del fallo anterior se mantiene durante el reintento y se retira solo con un éxito (el caso límite de la spec); sin datos, `isFetching` manda y el reintento muestra el skeleton, no la pantalla de error otra vez. Descartada: un `lastError` propio en `useRef`/estado, que duplicaría lo que RTK ya conserva y añadiría un efecto.
+
+**Errores típicos al venir de nativo.** (1) Dejar el reductor del Día 2 "por si acaso" junto a RTK: dos fuentes de verdad que discrepan. (2) Asumir que `isFetching` implica spinner: en RTK `isFetching` es cierto también en la revalidación silenciosa; el spinner del pull es estado local. (3) Mirar solo `error` para decidir "hay fallo": con RTK el error persiste durante el reintento, hay que cruzarlo con `isFetching` y `data`. (4) Esperar que `refetch()` lance una petición nueva siempre: si ya hay una en vuelo se une a ella.
+
+**Logs `__DEV__` para contar (sin datos de usuario).** El Día 2 imprimía `[home] request N settled`; esa cuenta la sustituye la de `base-api` por **intento**: `[api] GET /home -> ok`, `-> http 503`, `-> network`, `-> timeout`. Se añaden `[home] manual refetch (pull or retry button)`, `[home] background revalidation: data is 60 s old or more` y, desde `reconnection.ts`, `[net] offline -> online (N listener)`. Así se distingue "no pasó nada" de "el evento no llegó": una revalidación por reconexión muestra `[net]`, luego `[home] background revalidation` y luego `[api] GET /home -> ok`. (El log imprime el estado solo cuando hay uno: un éxito sale como `ok`, sin `200`; los fallos HTTP sí lo llevan, p. ej. `http 503`.)
+
+### Decisiones de T4 (RF-3)
+
+- **`useHome` conserva su firma; `HomeScreen` no cambia.**
+  - Elegida: adaptador sobre `useGetHomeQuery` + `classifyHomeResult`.
+  - Trade-off: la pantalla sigue dependiendo de un `HomeScreenState` propio y hay que mantener ese traductor (con sus tests).
+  - Descartada: que `HomeScreen` consuma `useGetHomeQuery` directamente, que mezclaría las reglas de producto (offline/error/vacío) con el JSX y obligaría a tocar la UI que debe quedar igual.
+- **RTK Query como único dueño de la petición.**
+  - Elegida: borrar reductor, `requestId`, abort manual y política de refetch del Día 2.
+  - Trade-off: se depende de comportamientos de RTK (deduplicación, `error` persistente) que hay que conocer y comprobar.
+  - Descartada: conservar el reductor dentro del hook, que duplicaría caché, deduplicación y descarte de respuestas tardías.
+- **Tipado: `transformResponse` con cast acotado por endpoint.**
+  - Elegida: `build.query<HomeData, void>` + `response as HomeData`.
+  - Trade-off: un cast por endpoint que confía en que su `parse` coincide con el tipo declarado.
+  - Descartada: hacer genérico el base query por endpoint (RTK fija un solo tipo de argumentos para toda la API) y repartir casts por pantallas y hooks.
+- **Error y datos tal como los deja RTK.**
+  - Elegida: leer `error` aunque haya `pending` y combinarlo con `data` e `isFetching`.
+  - Trade-off: la regla depende de que RTK conserve el error hasta un éxito (probado, y cubierto por tests de `classifyHomeResult`).
+  - Descartada: un `lastError` propio.
+
+### Registro de T4
+
+- Archivos nuevos: `home/data/home-request.ts` (+test), `home/data/home-api.ts`. Adaptados: `classify-home-result.ts` (+test), `use-home.ts`, `core/api/api-error.ts` (+`toApiError`, con test) y un log `__DEV__` en `core/network/reconnection.ts`. Borrados: `home-client`, `home-request-state` y `refetch-policy`, cada uno con su test.
+- Los hooks `useRevalidateWhenStale` y `usePullToRefresh` de T3 se revisaron al conectarlos y no se cambiaron.
+- Tests: 335 → 304. Sale lo que RTK asume (10 de `home-client`, 27 de `home-request-state`, 13 de `refetch-policy`); entran 12 de `home-request` (los casos de fixture, `?fail=true`, timeout y aborto se migraron), 4 más en `classify-home-result` y 3 de `toApiError`. Ninguna regla conservada se queda sin test.
+
+### Validación de T4 (2026-10-11): Android e iOS por el usuario y comprobación independiente en el Samsung
+
+- T4 queda validada. Una comprobación independiente en el Samsung dio 8/8 puntos de la matriz.
+- **Logs reales que salen** (Metro, `__DEV__`): `[api] GET /home -> ok` (sin `200`), `[api] GET /home -> http 503` / `-> network` / `-> timeout`, `[net] offline -> online (N listener)`, `[home] background revalidation: data is 60 s old or more` y `[home] manual refetch (pull or retry button)`.
+- **Pull por `adb`**: `adb shell input swipe 360 450 360 1300 400` (de arriba hacia abajo en 400 ms) dispara el `RefreshControl` y produce `[home] manual refetch` seguido de una petición aunque la caché esté fresca.
+- **Enlace del dev client por `adb`**: debe ser `exp+herbstore://expo-development-client/?url=…`. Sin el prefijo `exp+` el esquema es el de la app y cae en `+not-found`: el dev client solo reconoce `exp+<slug>`.
+- Mock con latencia: `MOCK_LATENCY_MS=2000 npm --prefix mock-server run dev` (o `start`; ambos scripts existen, `dev` añade `--watch`).
+
+
+### Bloque T5 — Identidad de caché, normalización Unicode y por qué la página no es identidad (≈10 min)
+
+**La clave de caché es el argumento.** En RTK Query una entrada de caché se identifica por el nombre del endpoint más el *argumento serializado* (claves ordenadas, `JSON`). Si `"Vitamina Ç"` y `"vitamina c"` producen argumentos distintos, hay dos entradas y dos peticiones para lo mismo; si las marcas llegan como `['b', 'a']` y `['a', 'b']`, otra vez. La solución es que el argumento se construya **canónico**: `buildProductQueryArgs` normaliza el texto, normaliza, deduplica y ordena los facets, y omite las claves de flags inactivos (no existe `inStock: false`: el flag apagado no tiene clave). Así "consulta equivalente" (definición de la spec) se convierte en algo comprobable: dos argumentos equivalentes son **profundamente iguales** y comparten caché y petición en vuelo.
+
+**Normalización Unicode (NFD).** `"Ç"` puede ser un solo carácter (`U+00C7`, forma compuesta) o `C` + `U+0327` (la cedilla como *marca combinante*, forma descompuesta). NFD descompone todo; después se eliminan las marcas (`\p{M}`) y queda la letra base. El orden de los pasos es el mismo que usa el servidor mock (`normalizeText`): NFD → sin marcas → minúsculas → `trim` → espacios internos a uno. Resultado: `"  Vitamina   Ç "` → `"vitamina c"`. La UI conserva el texto humano más reciente (para el historial); la forma normalizada es solo la identidad.
+
+| Idea | React Native (HerbStore) | Android (Kotlin) | iOS (Swift) |
+| --- | --- | --- | --- |
+| Quitar diacríticos | `text.normalize('NFD').replace(/\p{M}/gu, '')` | `Normalizer.normalize(text, Normalizer.Form.NFD)` + `Regex("\\p{Mn}")`; el patrón habitual usa `Mn`, aquí usamos `M` (incluye `Mn`, `Mc`, `Me`) para coincidir con el servidor, y en datos latinos dan lo mismo | `text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: .init(identifier: "en"))` (hace el plegado Unicode por ti; ojo con la `locale`, p. ej. turco) |
+| Espacios y minúsculas | `.toLowerCase().trim().replace(/\s+/g, ' ')` | `lowercase(Locale.ROOT).trim().replace(Regex("\\s+"), " ")` | `lowercased()`, `trimmingCharacters(in: .whitespacesAndNewlines)` y `split` + `joined(separator: " ")` |
+| Clave de caché | el argumento canónico (objeto) serializado por RTK | una `data class` inmutable como clave de un `Map`/`LruCache`; sus `equals` y `hashCode` estructurales equivalen al "profundamente iguales" (con `Set` o listas ordenadas en los facets). Retrofit/OkHttp cachean por **URL**, así que `?brand=b,a` y `?brand=a,b` serían entradas distintas | una `struct` `Hashable` como clave de un `Dictionary` o de un `NSCache` (con `NSCache` hay que envolverla en una clase, porque la clave debe ser un objeto); `URLCache` también cachea por URL |
+| Facet OR/AND | `brand=a,b` (OR dentro) y facets distintos (AND) | un `Set<String>` por facet en el `Query`/`Specification` | un `Set<String>` por facet en el predicado |
+
+**La página no es identidad.** `getProducts` es una *infinite query*: **una** entrada de caché guarda *todas* las páginas de una lista, y la página es el `pageParam` con el que se pide la siguiente. `toProductQueryString(args, page)` recibe la página aparte justo por eso. Si la página fuese parte del argumento, "cargar más" crearía otra entrada por página, el refresco no sabría qué páginas rehacer, no habría forma de "volver a la página 1 y arriba" con un solo gesto, y cambiar un filtro dejaría páginas viejas huérfanas. Con la página fuera, cambiar un filtro cambia el argumento y por tanto de entrada (los datos de otros filtros no se mezclan), y pull-to-refresh actúa sobre una sola entrada. Nota: la spec define "consulta equivalente" incluyendo página y límite; en la práctica la página se resuelve dentro de la entrada (`pageParam`) y el límite es constante (20), así que nada de la definición queda sin cubrir.
+
+**Contrato real del servidor.** `GET /products?category&q&brand&subcategory&inStock&minRating&ownBrand&subscribeAndSave&sort&page&limit` → `{ items, page, totalPages, total }`. La búsqueda va en `q` (marca + nombre + descripción, normalizada también en el servidor) y la categoría en `category` (su id). `limit` va de 1 a 50 (por defecto 20); `sort` es uno de `featured`, `price_asc`, `price_desc`, `rating`, `best_selling`. Un `page` más allá de la última no es error: devuelve `items: []`. `brand` y `subcategory` son CSV sin vacíos. `GET /brands` → `[{ name, productCount }]`; `GET /categories` → `[{ id, name, productCount, subcategories: [{ id, name, productCount }] }]`.
+
+**Validar la página.** `parseProductPage` mantiene la política de Home: un elemento malformado, un id repetido, o `page` (≥ 1), `totalPages` (≥ 0) o `total` (≥ 0) fuera de rango invalidan **toda** la página (la pantalla muestra error con reintento, no una lista a medias). `parseCatalogProduct` es el mismo parser que usaba Home, extraído sin cambiar reglas.
+
+**Errores típicos al venir de nativo.** (1) Usar el texto crudo del usuario como clave: cada espacio extra o mayúscula es otra petición. (2) Normalizar solo en el cliente o solo en el servidor y suponer que coinciden: aquí se comprueba con un test contra el `normalizeText` real del mock. (3) Dejar `inStock: false` en el argumento: parece "sin filtro" pero para la clave es una identidad distinta. (4) Ordenar con `sort()` sin pensar en la `locale`: se usa el orden por unidades de código, que no depende de la plataforma. (5) Incluir la página en la clave "porque así lo hace Paging 3 en su `PagingSource`": allí la clave de página es el *cursor* interno, no la identidad de la consulta.
+
+### Decisiones de T5 (RF-3)
+
+- **Normalizar en el cliente para la identidad.**
+  - Elegida: el cliente normaliza (misma regla que el servidor) y envía la forma normalizada.
+  - Trade-off: la regla vive en dos sitios (cliente y mock) y debe mantenerse sincronizada; un test contra el módulo real del mock lo vigila.
+  - Descartada: enviar el texto crudo como identidad, porque rompería la caché compartida y la deduplicación (RF-4, RF-5).
+- **La página fuera de la identidad.**
+  - Elegida: una entrada de caché por lista (`pageParam` dentro de la infinite query).
+  - Trade-off: la entrada crece con las páginas y hay que refrescarla como un todo (T9).
+  - Descartada: una entrada por página, que multiplicaría entradas, tags y carreras entre refresh y página siguiente.
+- **Facets ordenados y deduplicados; flags inactivos sin clave.**
+  - Elegida: el argumento canónico se construye en una función pura.
+  - Trade-off: el orden de selección del usuario se pierde en la identidad (no importa: es OR).
+  - Descartada: dejar al serializador de RTK la igualdad, que solo ordena claves, no arrays.
+- **Un `CatalogProduct` compartido, `HomeProduct` como alias.**
+  - Elegida: una sola proyección del producto para Home y listas; los guards JSON comunes en `core/validation`.
+  - Trade-off: los campos extra del servidor (`isOwnBrand`, `description`…) no se conservan hasta el detalle (Día 4).
+  - Descartada: duplicar el parser en `product/` y en `home/`, que divergería.
+
+### Registro de T5
+
+- Archivos nuevos: `core/validation/json-guards.ts` (guards JSON compartidos, movidos desde `parse-home.ts`), `product/contracts/{catalog-product,parse-catalog-product}.ts` y `product/logic/product-query.ts`, cada uno con su test. Modificados: `home/contracts/{home,parse-home}.ts` (`HomeProduct` es un alias; `parse-home` importa `parseCatalogProduct`; sus reglas y `parse-home.test.ts` no cambian) y `product/logic/product-card.ts` (+ el import de tipo de su test).
+- Tests: 304 → 363 (+38 de `parse-catalog-product`, +21 de `product-query`). Incluyen comprobaciones contra el código real del mock (las 15 páginas del catálogo, página vacía y página fuera de rango, `GET /brands`, `GET /categories`, `normalizeText` y el filtrado de `queryProducts` con la query string generada).
+- Sin cambios visibles ni en dispositivo: T5 es lógica pura y no requiere validación manual.
+
+
+### Bloque T6 — Paginación, infinite queries y respuestas obsoletas (≈10 min)
+
+**Paginación por offset frente a cursor.** El mock pagina por *offset*: `page` + `limit` → `{ items, page, totalPages, total }`. Es simple y permite saltar a cualquier página, pero la lista del servidor puede cambiar entre dos peticiones: si se inserta un producto antes de tu posición, el último elemento de la página 1 reaparece como primero de la página 2 (un **duplicado**); si se borra uno, se **salta** un elemento. Con un *cursor* (un token opaco o el último id visto: "dame los 20 siguientes a este") la posición no se desplaza, pero el servidor tiene que soportarlo y no se puede ir a "la página 7". HerbStore usa el offset del mock y compensa el duplicado en el cliente (`flattenUniqueProducts`, primer ejemplar por id); el salto no se corrige: aceptarlo es el trade-off, y el pull-to-refresh reconstruye la lista desde la página 1.
+
+**Infinite query de RTK.** `build.infiniteQuery` guarda **todas las páginas de una lista en una sola entrada de caché** (`{ pages, pageParams }`). Se declara con `initialPageParam: 1` y `getNextPageParam`; el hook da `fetchNextPage`, `hasNextPage`, `isFetchingNextPage`, `isFetchNextPageError` y `currentData`. `getNextPageParam({ page, totalPages })` es una función pura: devuelve `page + 1` o `undefined`, y de ese `undefined` sale `hasNextPage = false`. Por eso `page = totalPages` no pide otra y `totalPages = 0` (sin resultados) tampoco.
+
+**"Cargar más" por posición, no por `onEndReached`.** La regla (RF-10) es: cuando entra en pantalla cualquiera de los **últimos 4** elementos. `shouldLoadNextPage` recibe el índice visible más alto, la longitud de la lista, `hasNextPage`, `isFetching` y la **última longitud para la que ya se pidió**. Con 20 elementos el índice 15 no carga y el 16 sí. El *guard* por longitud existe porque los callbacks de visibilidad se disparan varias veces por gesto y `isFetching` solo cambia cuando la petición ya salió: mientras la longitud no crezca, no se vuelve a pedir. Lo guarda quien llama (un `useRef` en T9); se reinicia al cambiar la identidad de la consulta, al empezar un refresh y al abortar la página en vuelo por ese refresh. Un **fallo** de la página siguiente no lo reinicia: el pie ofrece un reintento manual y no hay bucle automático contra un servidor que falla.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Paginación | `build.infiniteQuery` + `getNextPageParam`; páginas en una sola entrada de caché | **Paging 3**: `PagingSource.load()` devuelve `LoadResult.Page(data, prevKey, nextKey)`; `Pager` + `cachedIn(viewModelScope)` | No hay equivalente de serie: un `@Observable` con el array, la página actual y un `loadMore()` |
+| Cuándo pedir más | Viewability de FlashList + `shouldLoadNextPage` (últimos 4) | `PagingConfig(prefetchDistance = 4)`: Paging dispara solo al leer `items[i]` cerca del final | `.onAppear` de las últimas celdas dentro de `LazyVGrid`, con un guard propio |
+| Pie de carga/error | `footer: 'loading-more' \| 'load-more-failed'` | `LoadState.Append` (`Loading`/`Error`) con `retry()` | Un estado propio (`enum`) y un botón de reintento |
+| Refresh | `refetch` + `usePullToRefresh`; la lista se conserva | `pagingItems.refresh()` (conserva items mientras `LoadState.Refresh` carga) | `.refreshable { await vm.reload() }` |
+| Descartar respuestas viejas | cada args = su entrada; la pantalla lee `currentData` | `flatMapLatest { args -> pager(args).flow }` cancela el flujo anterior | `.task(id: args)` cancela la tarea anterior al cambiar `id`; en Combine, `switchToLatest()` |
+| Duplicados por offset | `flattenUniqueProducts` (primer ejemplar por id) | `distinctBy { it.id }` al mapear, o `RemoteMediator` con base de datos como fuente de verdad | `Dictionary`/`Set` de ids al hacer `append` |
+
+**Descartar respuestas obsoletas por identidad.** La clave de la entrada es el argumento canónico (T5). Si el usuario cambia un filtro mientras una petición vuela, esa petición termina escribiendo en **su** entrada (los args viejos), no en la vigente; la pantalla lee `currentData`, que es solo la entrada de los args actuales, así que nunca muestra datos de otra consulta. `data`, en cambio, conserva el resultado anterior mientras cargan los nuevos: sirve para evitar parpadeos pero **no** para listas filtradas, porque mostraría productos que ya no cumplen el filtro. No hay que cancelar ni comparar `requestId` a mano: la identidad hace el trabajo. Es el mismo principio de `flatMapLatest` y `.task(id:)`, con la diferencia de que aquí el resultado viejo se queda en caché por si el usuario vuelve a esos filtros.
+
+**El estado de la lista.** `classifyProductListState` es la hermana de `classifyHomeResult` y sigue sus reglas: sin productos, `loading` (primera carga, args nuevos sin `currentData`, reintento), `offline` (fallo de `fetch` sin respuesta) o `error` (5xx, timeout, inválido); sin coincidencias, `empty`; con productos, siempre `ready`, con un pie (`idle`, `loading-more`, `load-more-failed`) y, si el fallo no es de la página siguiente, un aviso (`offline` o `update-failed`) que **no desaparece al reintentar** y solo se retira cuando un éxito borra el `error` (RTK 2.13 lo conserva durante `pending`; ver T4). El refresh no tiene variante: la lista sigue como `ready` y el spinner del pull es estado local. Detalle fino: mientras se carga o falla la página *siguiente* no se deriva aviso, porque el `error` conservado no distingue un fallo viejo de un refresh del que el usuario está reintentando; el pie ya dice qué falló.
+
+**Errores típicos al venir de nativo.** (1) Leer `data` en vez de `currentData` y mostrar productos de otro filtro. (2) Disparar `fetchNextPage` desde `onEndReached` sin guard: se piden varias páginas a la vez. (3) Guardar el guard en `useState`: provoca un render por cada callback de visibilidad; es un `useRef`. (4) Concatenar páginas con `[...a, ...b]` sin deduplicar y obtener dos tarjetas con el mismo `key` (React avisa y FlashList recicla mal). (5) Tratar `total` como la longitud de la lista: `total` son las coincidencias del servidor, la lista crece página a página. (6) Meter la página en la identidad de la consulta (ver T5).
+
+### Decisiones de T6 (RF-3)
+
+- **Offset del mock + deduplicación por id en el cliente.**
+  - Elegida: paginar por `page`/`limit` y conservar el primer ejemplar de cada id.
+  - Trade-off: un elemento puede saltarse si el catálogo se reduce entre dos páginas; solo el refresh lo corrige.
+  - Descartada: paginación por cursor, que exigiría cambiar el contrato del servidor y no aporta nada visible con un catálogo estático de 300 productos.
+- **Umbral de los últimos 4 elementos con un guard por longitud.**
+  - Elegida: `index >= itemCount - 4` y una sola petición por longitud de lista.
+  - Trade-off: el guard vive fuera de la función pura (en el hook) y hay que reiniciarlo en tres momentos; si una página llegara con todos sus ids repetidos, la longitud no crece y el guard sigue cerrado hasta un refresh o el reintento del pie.
+  - Descartada: `onEndReached` con un umbral en píxeles, que depende de la altura de las celdas y de la fuente y no coincide con la regla de la spec.
+- **Una entrada por lista y `flattenUniqueProducts` en cada render.**
+  - Elegida: aplanar sin memoizar (como mucho 300 elementos, O(n)).
+  - Trade-off: se recalcula en cada render; se medirá en T15 y solo se memoizará si la medida lo justifica.
+  - Descartada: copiar las páginas a un `slice` de Redux, que duplicaría la caché y obligaría a descartar a mano las respuestas tardías.
+- **El refresh no es un estado propio de la lista.**
+  - Elegida: `ready` conserva los productos y el spinner del pull es estado local.
+  - Trade-off: el clasificador no sabe si hay un pull en curso (no lo necesita).
+  - Descartada: un flag `isPullRefreshing` dentro del clasificador, que mezclaría estado de gesto con estado de datos.
+
+### Registro de T6
+
+- Archivos nuevos: `product/logic/product-pages.ts` (`getNextPageParam`, `flattenUniqueProducts`, `shouldLoadNextPage`, `LOAD_MORE_THRESHOLD`) y `product/logic/product-list-state.ts` (`classifyProductListState`), cada uno con su test.
+- Tests: 363 → 411 (+23 de `product-pages`, +25 de `product-list-state`). Sin cambios visibles ni en dispositivo: T6 es lógica pura y no requiere validación manual.
+
+### Bloque T7 — `injectEndpoints`, tags por lista y por id, infinite query (≈10 min)
+
+**`injectEndpoints`: una sola API, endpoints repartidos por feature.** `core/api/base-api.ts` crea la API única (un reducer, un middleware, una política de caché y de reintentos) con `endpoints: () => ({})`. Cada feature la amplía con `baseApi.injectEndpoints({ endpoints: (build) => ({ ... }) })`: Home en `home/data/home-api.ts` y el catálogo en `product/data/products-api.ts` (`getProducts`, `getProduct`, `getBrands`, `getCategories`). El resultado es tipado y se puede importar sin que `core` conozca a ninguna feature.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Endpoints por feature | `baseApi.injectEndpoints` en cada `*-api.ts` | una interfaz Retrofit por feature (`ProductsService`) sobre un único `OkHttpClient`/`Retrofit` compartido (interceptores, reintentos, caché) | un cliente por feature (`ProductsClient`) sobre un `URLSession` compartido |
+| Detalle por id | `getProduct(id)` con tag `{ Product, id }` | `ProductsService.getProduct(id)` + `Room` (`@Query ... WHERE id = :id`) | `func product(id:)` con `NSCache`/`URLCache` o un diccionario por id |
+| Invalidar | `invalidatesTags` borra o refetchea lo que lo provee | `Room` notifica por `Flow` al cambiar una tabla; sin base de datos, se vacía la caché del repositorio | se invalida la clave en el `NSCache` o se emite un evento (`Combine`/`AsyncStream`) |
+| Paginar | `build.infiniteQuery` (`initialPageParam`, `getNextPageParam`) | `Pager` + `PagingSource.load()` (Paging 3) | `loadMore()` en un `@Observable`, disparado por `.onAppear` de las últimas celdas |
+
+**Tags por lista y por id (RF-7).** Un tag es una etiqueta que una consulta *declara* que "contiene" (`providesTags`) y que una mutación puede *invalidar* (`invalidatesTags`). En HerbStore:
+- `getProducts` provee `{ ProductList, LIST }` (un tag para **todas** las listas: categoría, búsqueda, filtros) y un `{ Product, id }` **por cada producto cargado**, así que a medida que se cargan páginas la entrada va ganando tags.
+- `getProduct(id)` provee solo `{ Product, id }`.
+- Una orden confirmada (T13) invalidará `Home`, `{ ProductList, LIST }` y `{ Product, id }` de cada producto comprado: las consultas con suscriptores refetchean al instante y las inactivas quedan marcadas y se piden al abrirlas.
+- `getBrands` y `getCategories` no llevan tags: son opciones de filtro, no dependen de ninguna orden.
+Los tags son lógica pura (`product/logic/product-tags.ts`, con test): `productListTags(pages)` genera la lista sin repetidos aunque un id aparezca en dos páginas.
+
+**Infinite query.** `build.infiniteQuery<ProductPage, ProductQueryArgs, number>` guarda **todas las páginas de una lista en una sola entrada** (`{ pages, pageParams }`). `initialPageParam: 1` es la primera página; `getNextPageParam` (la función pura de T6, pasada tal cual) devuelve el número siguiente o `undefined`, y de ahí sale `hasNextPage`. La función `query` recibe `{ queryArg, pageParam }`: el `queryArg` es la identidad de la lista y el `pageParam` es solo "qué página pedir ahora" (T5: la página no es identidad). `fetchNextPage()` pide `pageParam + 1` y la añade a `pages`; la entrada entera tiene **un** `providesTags` calculado sobre todas las páginas.
+
+**Detalle de producto.** `GET /products/:id` devuelve el producto completo del catálogo (los mismos campos de la lista más `ean13`, `servingInfo`, `description`...). Para el placeholder basta `parseCatalogProduct`, que valida y proyecta lo que la app ya usa (se comprobó contra los 300 productos del mock: 0 inválidos). El Día 4 ampliará el contrato en vez de reparsear desde cero. El `id` solo llega a la petición si pasó `parseProductId`; un id con forma inválida usa `skipToken` y **no hace ninguna petición**.
+
+**Clasificar el resultado.** `classifyProductLookup({ data, error, isFetching })` es la hermana de `classifyHomeResult` (T4): `network` → `offline`; 5xx, otro 4xx, timeout o inválido → `error`; **404 → `not-found`**; sin datos y con una petición en vuelo → `loading` (el `error` que RTK conserva durante `pending` no se ve en el reintento); con datos, un fallo posterior no los tapa (no hay franja de aviso en el placeholder), salvo un 404, que es una respuesta más nueva que la caché. Con RF-8: el 404 hace **una** petición (los 4xx no se reintentan); `network` y 5xx hacen 3.
+
+**Errores típicos al venir de nativo.** (1) Una API por feature, cada una con su reducer y middleware: duplica caché y reintentos; se inyectan endpoints en la misma. (2) Tags sin id (`'Product'` a secas): invalidar un producto refetchea todos. (3) Llamar a un hook con un argumento condicional con `if`: los hooks no pueden ir bajo una condición; se usa `skipToken`. (4) Poner `page` dentro del argumento de la consulta y obtener una entrada por página, sin lista acumulada. (5) Mantener el `ProductSummary` del Día 2 junto al contrato compartido: dos tipos de producto que divergen.
+
+### Decisiones de T7 (RF-3)
+
+- **Detalle por id con tag propio.**
+  - Elegida: `getProduct(id)` pide `GET /products/:id` y provee `{ Product, id }`.
+  - Trade-off: abrir un producto ya visto en una lista hace una petición más; a cambio, el detalle y los datos de la lista se invalidan por separado y el Día 4 podrá ampliar el contrato.
+  - Descartada: derivar el detalle de la lista cacheada (`selectFromResult` sobre `getProducts`), que no funciona al entrar por un enlace, ni con la entrada ya expulsada de la caché, y que acoplaría el detalle a una consulta concreta.
+- **Endpoints inyectados por feature.**
+  - Elegida: `injectEndpoints` sobre la `baseApi` de `core`.
+  - Trade-off: hay que recordar importar el módulo `*-api.ts` antes de usar el endpoint (los hooks se exportan del propio archivo, así que ocurre solo).
+  - Descartada: una API monolítica con todos los endpoints de la app en un archivo, que concentra todas las features en `core` y crece sin control.
+- **Tags de la lista con un id fijo (`LIST`) y uno por producto cargado.**
+  - Elegida: `productListTags(pages)` sin repetidos.
+  - Trade-off: la entrada recalcula sus tags al llegar cada página (O(n) sobre 300 productos como máximo).
+  - Descartada: un tag solo por lista (no se sabría qué listas contienen el producto comprado) o un tag solo por producto (invalidar "todas las listas" exigiría enumerarlas).
+- **`skipToken` para un id inválido.**
+  - Elegida: el hook se ejecuta siempre y se omite la consulta; la pantalla muestra no encontrado sin petición.
+  - Trade-off: el hook sigue montado aunque no haga nada.
+  - Descartada: resolver la ruta en dos componentes (uno con y otro sin hook) solo para evitar el `skipToken`.
+
+### Registro de T7
+
+- Archivos nuevos: `product/logic/{product-lookup,product-tags}.ts` (+tests), `product/data/products-api.ts`. Adaptado: `ProductPlaceholderScreen.tsx` (misma interfaz y textos). Borrados: `product-client.ts` (+test) y `use-product-exists.ts`.
+- Tests: 411 → 422. Salen los 6 de `product-client.test.ts`; entran 12 de `product-lookup` y 5 de `product-tags`. No hay textos nuevos.
+- Comprobación fuera del repo (store RTK real + mock real en :3001, ya borrada): `getProduct` ok y 404 (una sola petición); `getBrands` (8) y `getCategories` (5); `getProducts` página 1 → 15 (14 peticiones más, ninguna extra al llegar a la última; 300 productos, `hasNextPage = false`); `selectInvalidatedBy` confirma que `{ Product, id }` toca `getProducts` y `getProduct`, y `ProductList/LIST` toca solo la lista; con el origen caído, 3 intentos y `offline`.
+
+### Validación de T7 (2026-10-11): Android e iOS por el usuario
+
+- **Android (Samsung, por adb): 7/7.** Producto existente (nombre e id como en el Día 2), id con forma válida pero inexistente (no encontrado tras una sola petición, 0 reintentos), id inválido (ninguna petición), mock detenido (offline tras 3 intentos) y reintento manual que recupera.
+- **iOS (simulador): 6/6** en los mismos casos aplicables.
+- **Aprendizajes de la validación.**
+  - En iOS los logs `[api]` solo llegan a Metro tras reconectar el dev client con `exp+herbstore://expo-development-client/?url=…`.
+  - El simulador de iOS es `DeviceHub.app` (Xcode 27) y `osascript` no llega a su pantalla; sirve un clic CGEvent compilado con `swiftc` (con el permiso de Accesibilidad concedido).
+  - `adb reverse` no cambia el estado de red del sistema, así que `expo-network` no emite reconexión. Para probar la reconexión real hay que cortar Wi-Fi y datos con `adb shell svc`.
+  - En desarrollo aparece `ERROR … injectEndpoints … getHome without overrideExisting: true` tras un Fast Refresh de un archivo con `injectEndpoints`: es ruido solo de desarrollo (decisión pendiente: `overrideExisting` o ignorarlo; no se cambia código).
+- `product-tags.ts` queda como archivo aparte (aceptado por el usuario). La sesión 1 (T1–T7) se cierra sin commit intermedio; la sesión 2 empieza en T8.
+
+---
+
+## Sesión 2 — Cuadrícula, filtros, búsqueda y cierre (T8–T16)
+
+### Bloque T8 — Virtualización, reciclaje y FlashList v2 (≈10 min)
+
+**Por qué una lista no renderiza todo.** El catálogo tiene 300 productos. Crear 300 tarjetas con imagen cuesta memoria y tiempo de arranque, y casi todas están fuera de pantalla. Una lista **virtualizada** solo mantiene vivas las celdas cercanas a la ventana visible. Hay dos estrategias:
+- **Ventana (FlatList / `VirtualizedList`):** monta las celdas que entran y **desmonta** las que salen (las sustituye por un hueco del tamaño estimado). Al volver, las crea de nuevo.
+- **Reciclaje (FlashList, `RecyclerView`, `UICollectionView`):** cuando una celda sale, su vista **se reutiliza** para otro dato que entra por el otro extremo. No se crea ni se destruye vista: solo cambian los props. Es mucho más barato, pero **cualquier estado local de la celda sobrevive al reciclaje** (por eso `RemoteImage` ya usa `recyclingKey`).
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose y Views) | iOS (Swift/SwiftUI y UIKit) |
+| --- | --- | --- | --- |
+| Lista virtualizada con reciclaje | `FlashList` v2 (`data`, `renderItem`) | `RecyclerView` + `ViewHolder` reciclado; en Compose `LazyColumn`/`LazyVerticalGrid` **no recicla vistas** (compone solo lo visible y reutiliza por `key`/`contentType`) | `UICollectionView` con celdas en cola (`dequeueReusableCell`); `LazyVGrid` crea las vistas perezosamente |
+| Cuadrícula de 2 columnas | `numColumns={2}` | `GridLayoutManager(ctx, 2)` o `GridCells.Fixed(2)` | `UICollectionViewCompositionalLayout` o `[GridItem(.flexible()), GridItem(.flexible())]` |
+| Identidad estable de la celda | `keyExtractor={(p) => p.id}` | `items(list, key = { it.id })` / `DiffUtil` con `areItemsTheSame` | `ForEach(list, id: \.id)` / `Identifiable` / diffable data source |
+| Tipos de celda para reciclar mejor | `getItemType` | `contentType` / `getItemViewType` | varios identificadores de reuso (`register(forCellWithReuseIdentifier:)`) |
+| Cabecera, pie y vacío | `ListHeaderComponent`, `ListFooterComponent`, `ListEmptyComponent` | `item { }`/`stickyHeader`, `ConcatAdapter`/`MergeAdapter` | `Section` header/footer, `ContentUnavailableView` |
+| Tamaño de las celdas | **v2 las mide sola** | `RecyclerView` mide al enlazar; Compose mide en la composición | `UICollectionView` con `estimatedItemSize`/self-sizing |
+
+**Por qué v2 ya no usa `estimatedItemSize`.** En v1 había que decirle a la lista el tamaño medio de una celda para que calculara el alto total y cuántas pintar. En v2 (arquitectura nueva) la lista **mide cada celda real tras montarla** y ajusta posiciones en el siguiente frame; para lo no medido usa una estimación interna. Resultado: menos configuración, menos saltos y ninguna propiedad que mantener a mano. El propio paquete de `2.0.2` no tiene la propiedad en sus tipos. En una cuadrícula la fila mide lo que mide su celda más alta, y la lista pasa ese alto como `minHeight` a las demás celdas de la fila (por eso la tarjeta puede crecer hasta igualar a su vecina).
+
+**Keys estables.** `keyExtractor` devuelve el **id del producto**, no la posición. Con posición, un dato que cambia de lugar (nuevas páginas, reordenar, borrar) parecería otra celda y se perdería el seguimiento del reciclaje y de las animaciones. Es el mismo principio que `key` en React, `key =` en Compose y `id:` en `ForEach`.
+
+**Estados en lugar de una lista rota.** El skeleton, el vacío, el offline y el error **no son una lista**: son vistas cortas. Solo cuando hay productos se monta la cuadrícula. La clasificación (`classifyProductListState`, T6) decide cuál; la pantalla solo pinta.
+
+**Errores típicos al venir de nativo.** (1) Esperar que `renderItem` se vuelva a ejecutar al cambiar un valor capturado: FlashList solo repinta una celda si cambia su `item` o `extraData`. (2) Guardar estado local en la celda sin acordarse de que se recicla. (3) Usar el índice como key. (4) Meter una `FlatList`/`FlashList` dentro de una `ScrollView` vertical: se pierde la virtualización. (5) Dar `padding` al `style` en vez de al `contentContainerStyle`. (6) Resolver el hueco entre columnas con `ItemSeparatorComponent` (ver abajo). (7) Memoizar a ojo: con React Compiler activo no hace falta y se mide en T15.
+
+### APIs reales de FlashList 2.0.2 que usa T8 (comprobadas en la documentación oficial y en los tipos/código de `node_modules`)
+
+| API | Cómo se usa | Diferencia con lo supuesto en el plan |
+| --- | --- | --- |
+| `numColumns` | `getGridColumnCount(fontScale)`: 2, o 1 con fuente > 1.5x | El plan decía "2 columnas"; la columna única a fuente muy grande es nueva (ver decisiones). La lista re-maqueta sola al cambiar `numColumns`: no hace falta `key`. |
+| `keyExtractor` | `(product) => product.id`, a nivel de módulo | Sin diferencia. |
+| `renderItem` + `extraData` | `renderItem` de módulo; el `onOpenProduct` viaja en `extraData` | **Nuevo:** `renderItem` recibe `{ item, index, target, extraData }`. Una celda solo se vuelve a ejecutar si cambia `item` o `extraData`, así que un closure no basta. |
+| `ListHeaderComponent` / `ListFooterComponent` | elementos React (título, contador y aviso; progreso del pie) | Sin diferencia. Hay también `ListHeaderComponentStyle`/`ListFooterComponentStyle`. |
+| `ListEmptyComponent` | **No se usa**: el vacío es una pantalla (`ProductListStatus`), no una lista sin filas | El plan lo mencionaba para la cuadrícula; el clasificador ya separa `empty` y la cuadrícula solo se monta con productos. |
+| `ItemSeparatorComponent` | **No se usa** | En v2 el separador se dibuja **debajo** de cada celda (`trailingItem`), no entre columnas: en una cuadrícula no sirve para el hueco horizontal. |
+| `contentContainerStyle` | `paddingHorizontal` y `paddingBottom` | En v2 solo admite padding y `backgroundColor`; el `style` no debe llevar padding. El hueco entre tarjetas es **padding en la celda** (`GRID_CELL_PADDING` = 4, 8 entre vecinas) más padding del contenedor (`GRID_EDGE_PADDING` = 12, para llegar a 16). |
+| `contentInsetAdjustmentBehavior` | `"automatic"` (pasa a la `ScrollView`) | Sin diferencia (igual que Home). |
+| `maintainVisibleContentPosition` | **valor por defecto** | Viene **activada** por defecto en v2 (`disabled` para apagarla). T9 la valida con las páginas adicionales. |
+| `drawDistance` | **valor por defecto** | Solo se toca si T15 lo justifica midiendo. |
+| `onEndReached`, `onViewableItemsChanged`, `viewabilityConfig` | **no se usan en T8** | Existen. `viewabilityConfig` **no se puede cambiar en caliente**; `ViewToken` trae `index`, `isViewable`, `item`, `key`, `timestamp`. Para T9. |
+| `refreshing` + `onRefresh` / `refreshControl` | **no se usan en T8** | Existen (T9 usará `refreshControl`, como Home). |
+| `onLoad` | **no se usa** | Da `elapsedTimeInMs`, útil para la métrica de T15. |
+| `estimatedItemSize` | **no existe** | Confirmado: no está en los tipos de 2.0.2. |
+
+### Decisiones de T8 (RF-3)
+
+- **FlashList en la cuadrícula frente a `FlatList`.**
+  - Elegida: `FlashList` v2 (reciclaje de celdas) solo en `ProductGrid`.
+  - Trade-off: una dependencia con vistas nativas propias; hay que recordar que las celdas se reciclan y que `renderItem` solo se repinta con `item`/`extraData`.
+  - Descartada: `FlatList` con `numColumns`, que desmonta y remonta celdas con imagen (más trabajo en el hilo JS al hacer scroll). Home sigue en `FlatList`: sus filas tienen 10 elementos y no hay mejora medida.
+- **`ProductCard` compartida frente a duplicada.**
+  - Elegida: una sola tarjeta en `product/components/` con `width` opcional (Home pasa el ancho del Día 2; la cuadrícula la deja llenar su celda).
+  - Trade-off: Home gana la línea "Agotado" cuando corresponde, y el ancho deja de ser un detalle interno de la tarjeta.
+  - Descartada: copiar la tarjeta para la cuadrícula, que obligaría a mantener dos veces la etiqueta hablada, el formato de precio y la insignia.
+- **Skeleton estático frente a shimmer.**
+  - Elegido: bloques con la forma de la cuadrícula, sin animación, un único elemento accesible marcado `busy`.
+  - Trade-off: se ve menos "vivo".
+  - Descartado: shimmer con Reanimated: exigiría una rama para movimiento reducido (RNF-3) y no mejora la comprensión del estado.
+- **Una columna con fuente muy grande: excepción a RF-9 (decisión del usuario, por RNF-2).**
+  - Elegida: `getGridColumnCount`: 2 columnas hasta 1.5x de escala de fuente y 1 por encima. RF-9 pide dos columnas "con el tamaño normal"; con texto muy grande se prioriza RNF-2 (nombre, precio y estado visibles). Validada: Android 1.0 y 1.5 en 2 columnas, 2.0 en 1; iOS `extra-large` en 2 y AX5 en 1.
+  - Trade-off: con fuente muy grande la cuadrícula deja de ser de dos columnas y se ven menos productos por pantalla.
+  - Descartada: mantener 2 columnas siempre: una celda de unos 150 dp no cabe un precio y una palabra de un nombre a 2x/AX5 (se rompería a mitad de palabra).
+- **Título de la categoría: tope de escala `fontScaleLimits.listTitle` = 2.**
+  - Problema (hallazgo de la validación): en iOS con AX5 (`xcrun simctl ui booted content_size accessibility-extra-extra-extra-large`, unas 3.1x) el título de 28 pt pasa a unos 87 pt y "Vitaminas" es una sola palabra más ancha que los 370 pt útiles: iOS la partía como "Vitamin / as". Android no lo mostraba porque su escala máxima es 2.0 (56 pt, cabe).
+  - Elegida: `maxFontSizeMultiplier={fontScaleLimits.listTitle}` (2.0) solo en el `AppText` del título (mismo patrón que `tabLabel` 1.2 y `searchField` 1.5). El título sigue creciendo con el sistema hasta 56 pt, en Android no cambia nada y en iOS AX5 se queda en una línea (68 pt de alto, unos 255 pt de ancho de 370 pt útiles, medido en Vitaminas y Botánicos). No es lógica pura: es una constante de diseño sin cálculo que probar, así que no hay test nuevo.
+  - Trade-off: por encima de 2x (en la práctica solo iOS AX3–AX5) el título deja de crecer, aunque sigue siendo un título de 56 pt, mayor que el contador y el texto de las tarjetas; un nombre de categoría desconocido y muy largo del servidor aún podría partirse (aceptado: los cinco conocidos caben).
+  - Descartada: `adjustsFontSizeToFit`/`minimumFontScale` con `numberOfLines={1}` (el título encoge a un tamaño arbitrario según la palabra, difícil de explicar y de probar, y trunca o reduce textos largos), y dejar el título partirse (incumple RNF-2 y el criterio (f)).
+  - Equivalencias: en Compose se limita con `sp` y `maxLines`/`TextAutoSize`, o con `LocalDensity` y un `fontScale` acotado; en iOS equivale a limitar Dynamic Type con `UIFontMetrics(forTextStyle:).scaledFont(for:maximumPointSize:)` o `.dynamicTypeSize(...DynamicTypeSize.accessibility2)` en SwiftUI, y `minimumScaleFactor`/`lineLimit` si se prefiere encoger.
+- **Nombre de la categoría.**
+  - Elegida: traducción propia (`categoryLabelKey`); solo un id sin traducción pregunta al servidor por `GET /categories` (con `skipToken` si no hace falta) y, si tampoco la conoce, el título genérico "Categoría".
+  - Trade-off: una petición más solo en ese caso raro.
+  - Descartada: pedir siempre `GET /categories`, una petición que los cinco ids conocidos no necesitan.
+- **Acción del vacío en una categoría.**
+  - Elegida: "Ir a Inicio" (la categoría aún no tiene filtros que limpiar). `ProductListView` recibe la acción como prop; T10/T11/T12 la cambiarán por "Limpiar".
+  - Descartada: un botón "Limpiar" que no hace nada.
+
+### Registro de T8
+
+- Cierre de la sesión 1: T7 validada (Android 7/7 por adb, iOS 6/6) y `MEMORY.md` apunta T1–T7 validadas.
+- Lógica nueva con test primero: `getGridColumnCount` (+3 tests) e `inStock` en `buildProductCardModel` (+1). 422 → 426.
+- Archivos nuevos: `product/components/ProductCard.tsx` (movido desde Home), `product/list/{ProductGrid,ProductGridSkeleton,ProductListStatus,ProductListView}.tsx`, `product/list/{use-product-list,grid-layout}.ts`, `categories/screens/CategoryProductsScreen.tsx`. Borrado: `CategoryPlaceholderScreen.tsx`. Textos: `home.product.*` → `productCard.*` (+ `outOfStock`), `productList.*`, y `category.idLabel`/`category.note` eliminadas.
+- Con React Compiler activo, los 9 componentes y el hook nuevos compilan sin omisiones; no hay `memo`/`useMemo`/`useCallback`.
+- Home: sin cambios visibles salvo la línea "Agotado" (en el mock, `product-261009-001` en "Nuevos" y "Ofertas", y `product-261009-027` en "Más vendidos").
+- Corrección tras la validación por adb y simulador: hallazgo 1 (título partido en AX5) corregido con `fontScaleLimits.listTitle` (arriba). Revalidado: iOS AX5 en las cinco categorías (una línea), `extra-large`, `large` y oscuro; Android 1.0/1.5/2.0 en es y en en. El hallazgo 2 (tamaño de texto en vivo en iOS) pasa a la auditoría del Día 6 (H-10 en `MEMORY.md`).
+- **TalkBack real en el Samsung (SM-A037M, Android 13, TalkBack 13.5): PASA.** Se activó el servicio por `adb` y se leyó lo que TalkBack enuncia con su opción de desarrollador "Mostrar la salida de voz" (un cuadro oscuro con el texto hablado); no se oye el audio. `adb shell input` no pasa por la exploración táctil de TalkBack (un toque es un clic normal y el swipe no navega), así que el foco se movió con una herramienta `UiAutomation` (`ACTION_ACCESSIBILITY_FOCUS`/`ACTION_CLICK`), que es lo mismo que TalkBack hace con un swipe y un doble toque. El orden de recorrido sale del árbol de accesibilidad (no se probó el swipe físico).
+  - Cada tarjeta es UN solo foco (el anillo envuelve la tarjeta): "Complete Daily Powder. En oferta, USD 12.99, antes USD 15.59. Calificación 3.1 de 5, 815 reseñas. Agotado, Botón, Abre el producto." Nombre, precio y rating sueltos no reciben foco. La insignia "Nuevo" / "Más vendido" va al final ("… Agotado. Más vendido").
+  - Orden: "Navegar hacia arriba, Botón" → "Categoría" → "Vitaminas, Encabezado" → "60 productos" → tarjetas por filas (izquierda, derecha, siguiente fila). Home dice "Agotado" en Nuevos y en Ofertas.
+  - Skeleton: un solo elemento, "Cargando productos, ocupado" (región viva, anunciada al aparecer). Offline: "Sin conexión con el servidor, Encabezado" y "Reintentar, Botón, Vuelve a solicitar los productos." (botón de 204×90 px = 109×48 dp, y recupera la lista). Vacío: "No hay productos, Encabezado" e "Ir a Inicio, Botón, Abre la pantalla de Inicio." (lleva a Home).
+  - Al abrir un producto el foco pasa a "Navegar hacia arriba" de la pantalla nueva; Atrás devuelve a la categoría con el foco en ese mismo botón (no vuelve a la tarjeta).
+  - No se pudo ver "Aún sin reseñas": el mock no tiene productos con 0 reseñas (se cubre con el test de `buildProductCardModel`). Observación menor, no es un fallo: TalkBack deletrea "USD" en voz alta; VoiceOver real queda sin probar (decisión del usuario) para la auditoría del Día 6.
+
+### Bloque T9 — Scroll infinito, refresh y carreras (≈10 min)
+
+**Cargar más por viewability, no por `onEndReached`.** FlashList avisa con `onViewableItemsChanged` cada vez que cambia el conjunto de elementos visibles y entrega `viewableItems` completo. `getLastVisibleIndex` toma el índice más alto (`ViewToken.index` es `number | null`: se saltan los `null` a mano, porque `Math.max(null, 3)` da 3 pero `Math.max(...[null])` da 0) y `shouldLoadNextPage` decide: último índice ≥ longitud − 4. `onEndReached` mide una fracción de la pantalla (`onEndReachedThreshold`), no "elementos", y con celdas de alto distinto o fuente grande no coincide con la regla de la spec. `viewabilityConfig` no se puede cambiar en caliente (por eso es una constante de módulo) y `minimumViewTime` vale 250 ms por defecto: se pone a 0 para que la petición salga en cuanto aparece el último bloque; el callback solo compara unos pocos números. El umbral de visibilidad por defecto es 0 (un píxel basta), que es el "entra en pantalla" de RF-10.
+
+**El guard cuenta páginas, no elementos.** T6 guardaba la longitud de la lista; si una página llegaba con todos sus ids repetidos (RF-11), `flattenUniqueProducts` los descartaba, la longitud no crecía y el guard quedaba cerrado hasta un refresh. Ahora el `useRef` guarda el **número de páginas cargadas** para el que ya se pidió la siguiente: cada página que aterriza suma una, sea cual sea su contenido. El umbral sigue usando la longitud (lo que el usuario ve). Límite residual: tras una página de repetidos nada "entra" en pantalla, así que la siguiente petición espera al próximo cambio de elementos visibles (cualquier scroll). Se reinicia a `undefined` al cambiar la identidad, al empezar un pull y al abortar la página en vuelo; un fallo de página **no** lo reinicia (sin bucles).
+
+**Carrera entre refresh y página siguiente.** Comprobado con un store RTK real y el mock (ver "Comprobación" abajo): RTK descarta un `refetch()` mientras la entrada está `pending` (`condition` rechaza), y el hook de RTK espera a la petición en vuelo. Sin abortar, un pull durante "cargar más" termina con la página 2 ya añadida y no empieza en la 1. Por eso el pull hace: `promise.abort()` → `await promise` → `refetch({ refetchCachedPages: false })`. El `await` es imprescindible: `abort()` solo *pide* la cancelación; si se hace `refetch` justo después, RTK lo descarta en silencio y la entrada se queda `rejected` sin refrescar. Además, RTK registra el abort como un `SerializedError` `AbortError` y deja `isFetchNextPageError = true` hasta que el refetch pasa a `pending`: `toApiError` lo traduce ahora a `aborted` (la UI nunca trata una cancelación propia como fallo; antes se vería un pie de error y luego el aviso "no se pudo actualizar" durante todo el refresh).
+
+**`refetchCachedPages` (RTK 2.13).** Por defecto un `refetch` rehace **todas** las páginas cacheadas en secuencia y cambia la entrada al final (con *structural sharing*: las páginas iguales conservan su identidad, así que FlashList no ve cambios y `maintainVisibleContentPosition` mantiene la posición). Con `refetchCachedPages: false` pide solo la página 1 y descarta el resto. Se aplican las dos: **revalidación tras 60 s** = todas las páginas (no mover lo que el usuario está mirando); **pull** = solo la primera (RF-6: "termina desde la página 1 nueva"; el pull se hace arriba del todo, así que reducir la lista no mueve nada visible y evita N peticiones).
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Pedir más al acercarse al final | `onViewableItemsChanged` + `shouldLoadNextPage` (últimos 4) | `PagingConfig(prefetchDistance)`; o `snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }.distinctUntilChanged()` | `.onAppear` de las últimas celdas de `LazyVGrid` llamando a `loadMore()` con un guard |
+| Cancelar la página en vuelo | `promise.abort()` + `await` | cancelar el `Job` (`job.cancelAndJoin()`) | cancelar el `Task` (`task.cancel()`; `await task.value`) |
+| Pull-to-refresh | `RefreshControl` en `refreshControl` de FlashList | `PullToRefreshBox(isRefreshing, onRefresh)` | `.refreshable { await vm.reload() }` |
+| No saltar al añadir elementos | `maintainVisibleContentPosition` (activa por defecto en v2) | `key` estable en `items(key = …)` mantiene la posición en `LazyColumn` | `ScrollViewReader`/ids estables en `LazyVStack` |
+| Rehacer lo cargado sin mover la lista | `refetch()` de todas las páginas + structural sharing | `PagingSource.invalidate()` + `getRefreshKey` (anchor position) | recargar y reemplazar el array conservando ids |
+
+### APIs reales usadas en T9 (documentación oficial y tipos/código de `node_modules`)
+
+| API | Uso | Notas |
+| --- | --- | --- |
+| RTK `fetchNextPage()` (hook) | devuelve `InfiniteQueryActionCreatorResult` (promesa + `abort()` + `unsubscribe()`) | La guardamos en un ref y la limpiamos al resolver. Con la entrada `pending` no hace nada (la doc: "bail out si ya hay una petición en vuelo"). En la última página tampoco (`getNextPageParam` → `undefined`). |
+| RTK `refetch({ refetchCachedPages })` | `false` en el pull; sin opciones en la revalidación | La opción por llamada existe en 2.13 (`Pick<…, 'refetchCachedPages'>`); el hook solo la tiene por defecto `true`. |
+| `isFetchNextPageError` | solo es `true` con `isError` y `direction === 'forward'` | Un `refetch` pone `direction` a `undefined` al pasar a `pending`: tras un pull el flag es `false` (éxito o fallo del refresh). El `error` anterior sí persiste hasta un éxito (T4). |
+| FlashList `onViewableItemsChanged`, `viewabilityConfig` | callback del hook + constante `{ minimumViewTime: 0 }` | La librería lee `props.onViewableItemsChanged` en vivo, no hay callback obsoleto. |
+| FlashList `refreshControl` | `<RefreshControl>` con los colores del tema (como Home) | `refreshing` solo es `true` durante un pull. |
+| FlashList `maintainVisibleContentPosition`, `drawDistance` | valores por defecto | Se valida en el dispositivo (f). |
+| FlashList `onLoad` | solo bajo `__DEV__`: `[products] grid onLoad N ms` | Dato de partida para T15. |
+
+### Comprobación con un store real (fuera del repo, borrada después)
+
+Store RTK real + `baseApi`/`productsApi` reales + el mock de `:3001` (con un `fetch` envuelto para latencia y fallos). Peticiones por escenario:
+- Paginación en `vitamins` (60 productos): 1 → 2 → 3 = 3 peticiones; `fetchNextPage` en la página 3 = **0** peticiones (`hasNextPage = false`).
+- Ráfaga de 6 eventos de visibilidad por página con la lógica del hook: 1 petición por página; ninguna en la última.
+- Pull durante "cargar más" (latencia 300 ms): `[api] … -> aborted` de la página 2 y después 1 petición de la página 1; el resultado queda en 1 página, sin error. Sin esperar al abort, el `refetch` se descarta y la entrada queda `rejected`/`AbortError`. Sin abortar, el pull termina con 2 páginas.
+- Fallo de la página 2 (503): 3 peticiones (1 + 2 reintentos), `isFetchNextPageError = true`, la lista conserva la página 1; el reintento pide **solo** la página 2 y limpia el error.
+- Pull tras un fallo de página: `isFetchNextPageError` pasa a `false` en cuanto empieza el refresh, tanto si el refresh tiene éxito (error limpio) como si falla (queda `http 503` con `direction` indefinido: aviso, no pie de error). Durante ese refresh el aviso "no se pudo actualizar" se ve hasta que llega la respuesta (el `error` viejo persiste): es coherente con el resto de la pantalla.
+- 3 páginas en caché: `refetch()` = 3 peticiones secuenciales y la entrada cambia al final (la página 1 conserva su identidad); `refetch({ refetchCachedPages: false })` = 1 petición y la entrada pasa de 3 a 1 página.
+- Página 2 con todos los ids de la página 1: la lista sigue en 20 elementos pero con 2 páginas; el guard por páginas se reabre y pide la 3.
+- Un `fetchNextPage` o un pull con otra petición (revalidación) en vuelo no inician otra: se unen a la que corre.
+
+### Decisiones de T9 (RF-3)
+
+- **Cargar más por viewability y guard frente a `onEndReached`.**
+  - Elegida: `onViewableItemsChanged` + `shouldLoadNextPage` (últimos 4 elementos) con un guard en un `useRef`.
+  - Trade-off: más lógica propia y un `minimumViewTime` que elegir.
+  - Descartada: `onEndReached` con `onEndReachedThreshold`, que mide fracciones de pantalla y no elementos.
+- **Pull durante "cargar más": abortar y refrescar frente a dejar terminar la página.**
+  - Elegida: `abort()` + `await` + `refetch({ refetchCachedPages: false })`, como pide la spec (el resultado parte de la página 1 nueva).
+  - Trade-off: una petición tirada y una espera de un microtask; hay que traducir el `AbortError` de RTK.
+  - Descartada: dejar terminar la página y refrescar después (el usuario vería la página 2 añadida y luego desaparecer) o ignorar el pull mientras carga (el spinner no respondería).
+- **Guard por páginas frente a por elementos.**
+  - Elegida: `pageCount` como base del guard; la longitud solo para el umbral.
+  - Trade-off: una firma más en `shouldLoadNextPage` y un límite residual (hace falta un cambio de elementos visibles tras una página de repetidos).
+  - Descartada: seguir contando elementos (se atasca con una página de repetidos) y un efecto que reevalúe tras cada página (más estado para un caso que el mock no produce).
+- **Pull con `refetchCachedPages: false`, revalidación con todas.**
+  - Elegida: la variante del plan, confirmada con el store real.
+  - Trade-off: la revalidación de N páginas son N peticiones secuenciales; el pull descarta lo que había cargado más allá de la página 1.
+  - Descartada: rehacer todas las páginas en el pull (N peticiones para volver a la página 1) y paginación por cursor o copiar las páginas a un `slice` (duplica la caché y obliga a descartar a mano las respuestas tardías).
+- **Reinicio por identidad con un efecto, y `key` en la cuadrícula.**
+  - Elegida: `useEffect` sobre la identidad serializada para olvidar el guard y la petición, y `key={identity}` en `ProductGrid` para volver arriba y reciclar desde cero.
+  - Trade-off: una serialización por render (objeto pequeño).
+  - Descartada: remontar toda la vista por identidad (perdería el foco de accesibilidad de los controles de filtros cuando lleguen en T10/T11).
+
+**Errores típicos al venir de nativo.** (1) Hacer `refetch` justo después de `abort()` sin esperar: se descarta en silencio. (2) Guardar el guard en `useState` (un render por callback de visibilidad). (3) Dejar `minimumViewTime` en 250 y creer que "tarda" por la red. (4) Mostrar un `AbortError` propio como fallo. (5) Pedir la página siguiente desde `onEndReached` sin guard. (6) Esperar que el pull siga con 3 páginas: `refetchCachedPages: false` las descarta.
+
+### Registro de T9
+
+- Lógica nueva con test primero: `getLastVisibleIndex` (+4), `shouldLoadNextPage` por páginas con el caso de una página de ids repetidos (+3, y los existentes adaptados), `toApiError` reconoce el `AbortError` de RTK (+1). 426 → 434.
+- Archivos: `product/list/{use-product-list.ts, ProductGrid.tsx, ProductListView.tsx}`, `product/logic/product-pages.ts` (+test), `core/api/api-error.ts` (+test). Sin textos nuevos (el pie de carga y el de error ya existían); sin dependencias nuevas.
+- React Compiler: el hook y los componentes compilan sin omisiones; no hay `memo`/`useMemo`/`useCallback`. `use-pull-to-refresh.ts` (T3) no lo compila el Compiler (`try/finally` sin `catch`, error de `BuildHIR`); es anterior a T9 y inofensivo.
+- Estado: **VALIDADA y aprobada por el usuario (2026-10-11): "Aprobar T9 y medir en T15".** (a)–(f) y la regresión pasan en Android (Samsung SM-A037M, por `adb`) e iOS (simulador, con `axe`). (g) pasa en iOS y en Android queda a medir en T15.
+
+### Validación de T9 (2026-10-11): Android por adb, iOS con `axe`
+
+- **Resultado.** (a) una petición por página y ninguna extra en la última; (b) sin duplicados (por id); (c) productos conservados con el pie de carga y pie de error con reintento; (d) pull con caché fresca; (e) pull durante "cargar más" cancela y parte de la página 1; (f) Producto → Atrás restaura la posición y revalida tras 60 s sin saltar; regresión de T8 sin cambios. Todo pasa en las dos plataformas.
+- **(g), parcial.** En iOS no hay ningún stall del hilo JS. En Android (dev build, gama baja) el umbral estricto de 150 ms no se cumple.
+
+| Medida (Samsung SM-A037M, dev build) | Resultado |
+| --- | --- |
+| Stall del hilo JS por llegada de página (sondeo `setInterval`) | 212, 370 y 392 ms (rango 210–390) |
+| Stall solo con scroll, sin paginar | 250–440 ms |
+| Tap con el pie de carga visible | ≈0,7 s |
+| Tap sin carga | ≈0,8 s |
+| `gfxinfo` con y sin cargas | medido en la validación; las cifras exactas no se copiaron a este registro: repetirlo en T15 |
+| iOS (simulador), mismo sondeo | 0 stalls |
+
+- **Interpretación honesta.** El scroll solo ya bloquea entre 250 y 440 ms, del mismo orden que lo que cuesta una página (210–390 ms), y el tap con el pie de carga no fue más lento que sin carga. Con un dev build de gama baja (Hermes sin las optimizaciones de release, Metro, React DevTools) **no se puede atribuir el bloqueo a la paginación sin medir en release o con el Profiler**. Por eso se aprueba T9 y la medición se hace en T15, antes y después (RF-21), sin optimizar por intuición. El sondeo `setInterval` fue solo un instrumento temporal: el usuario descartó dejarlo como utilidad permanente.
+- **Lecciones de procedimiento.**
+  - (H1) Los nombres del mock **no son únicos** (29 nombres distintos en 60 productos): comprobar duplicados por id o por tupla, nunca por nombre. El criterio (b) de T9 se reformuló así.
+  - (H2) Quitar `adb reverse` no corta la conexión de inmediato por el keep-alive de ~5 s: esperar más de 5 s antes de pedir la página 2 si se quiere ver el fallo de página.
+  - (H5) El detalle de producto deja `[api] GET /products/<id> -> ok`; un `grep` por el prefijo `GET /products` lo confunde con la lista. Filtrar por la forma exacta de la lista (`GET /products ->`).
+  - (H6) En iOS, el pull con `axe swipe` necesita unos 600 pt en unos 0,8 s (de y=220 a y=820); con 0,5 s no dispara el refresh.
+  - (H8) `axe describe-ui` incluye elementos fuera de pantalla (con coordenadas `y` negativas): filtrarlos antes de contar tarjetas visibles.
+  - (H7) Observado sin investigar: una línea `[net] offline -> online` durante una recarga de bundle en Android, con un stall de 3355 ms. Se anota; no se atribuye a T9.
+- **Seguimiento (H-13).** (g) en Android pasa a T15: llegada de una página y scroll con 60 y 300 productos, dev frente a release (o Profiler), antes y después.
+
+### Bloque T10 — Filtros como entrada de la identidad, chips accesibles y hoja de orden (≈10 min)
+
+**El filtro aplicado es la entrada de la consulta, no una orden.** En `ProductListView`, `ListParams` (cuatro banderas rápidas + `sort`, y huecos para marcas y subcategorías de T11) vive en un `useState` **local** de la pantalla. Cada cambio construye un objeto nuevo con una función pura de `list-params.ts` (`toggleQuickFilter`, `setSort`, `clearFilters`) y `toProductQueryArgs` lo convierte en la identidad canónica (`buildProductQueryArgs`). RTK Query serializa esa identidad como clave de caché: cambia un filtro → otra entrada → página 1 → la cuadrícula (con `key={identity}`) vuelve arriba. No hay "recargar" que programar: **cambiar el estado es cambiar la consulta**. Es el mismo modelo que `StateFlow<FilterState>` + `flatMapLatest { repository.products(it) }` en un `ViewModel` de Android, o `@State var filters` + `.task(id: filters)` en SwiftUI.
+
+**Por qué local y no Redux ni URL.** Los filtros solo importan a esa lista. Volver desde un producto los restaura porque la pantalla sigue montada bajo el producto (como en T9), sin persistir nada. Al cambiar de categoría el *stack* es singular y **reutiliza la misma pantalla con otro `id`**: sin remontar, los filtros de Vitaminas se aplicarían a Minerales. Por eso `CategoryProductsScreen` pone `key={categoryId}` a `ProductListView`: otra categoría = estado nuevo.
+
+**Chips accesibles.** Un chip es un `Pressable` con `accessibilityRole="button"` y `accessibilityState={{ selected }}`. En RN 0.86 (iOS, `RCTViewComponentView.mm`) `selected` añade el *trait* `UIAccessibilityTraitSelected` y VoiceOver dice "seleccionado"; en Android marca `isSelected` y TalkBack lo anuncia. La selección además se ve **sin color**: chip relleno + marca "✓" (oculta a los lectores, porque el estado ya lo dice). Alto mínimo 48 dp; la fila es un `ScrollView` horizontal, así que nunca crece en vertical con la fuente; un chip no supera el ancho de la pantalla (`maxWidth`) y su texto se parte en dos líneas antes que recortarse. Equivalentes: `FilterChip(selected = …)` en Compose, `Toggle(...).toggleStyle(.button)` en SwiftUI.
+
+**La barra de filtros no puede vivir dentro de la rama que cambia.** `ProductListView` alterna entre la cuadrícula (FlashList), el esqueleto, el vacío y el error. Si los chips estuvieran en el encabezado de la cuadrícula, al tocar uno la lista pasaría a "cargando" (otra identidad → `currentData` indefinido), la rama se **desmontaría** y con ella el chip pulsado: TalkBack/VoiceOver perderían el foco justo después de actuar. Por eso la barra (botón de orden + chips) está **fija sobre** la rama y nunca se desmonta; además cumple RF-19 sola: los chips siguen visibles con cero resultados, con error o sin conexión.
+
+**La hoja de orden: `BottomSheetModal` de Gorhom.** Se monta en un portal que pinta `BottomSheetModalProvider` (en `_layout.tsx`, dentro del tema y de i18n porque la hoja se dibuja allí) y se abre con `present()` / se cierra con `dismiss()`. Con `enableDynamicSizing` la altura sale del contenido; `enablePanDownToClose` permite arrastrar hacia abajo. Equivalentes: `ModalBottomSheet(sheetState)` de Material 3 en Compose (ventana propia: Atrás y accesibilidad los resuelve la plataforma) y `.sheet(isPresented:)` + `.presentationDetents([.medium])` en SwiftUI. La librería **no** resuelve por ti tres cosas, y `AppBottomSheet` (design system) las añade:
+1. **Atrás de Android.** Gorhom 5.2.14 no usa `BackHandler`: sin más, Atrás cerraría la *pantalla* que hay debajo. Mientras la hoja está abierta se registra un `hardwareBackPress` que llama a `dismiss()` y devuelve `true` (los oyentes se ejecutan del último al primero, así gana al del navegador).
+2. **Accesibilidad.** Los valores por defecto marcan el contenido entero como **un** elemento accesible (`role=adjustable`, "Bottom Sheet"; en iOS se tragaría los botones de dentro), y el fondo, el *handle* y el *backdrop* son nodos accesibles con texto en inglés. Se pasa `accessible={false}` y se sustituyen los tres por componentes del tema (fondo con `colors.surface`, que también arregla el modo oscuro). El contenido de detrás se oculta a TalkBack/VoiceOver con `HiddenWhileSheetOpen` en la raíz (`importantForAccessibility="no-hide-descendants"` + `accessibilityElementsHidden`), alimentado por un registro de hojas abiertas. El foco pasa al título con `AccessibilityInfo.sendAccessibilityEvent(ref, 'focus')` (la API antigua `setAccessibilityFocus` está *deprecated* en RN 0.86) y el gesto de escape de VoiceOver (`onAccessibilityEscape`) cierra la hoja. El foco **no se atrapa**: Cerrar, Atrás, arrastrar y escape salen.
+3. **Reduced motion.** Gorhom ya lee la preferencia del sistema vía Reanimated (`overrideReduceMotion` por defecto `ReduceMotion.System`). Para seguir también la **única fuente de la app** (`useReducedMotionPreference`) se pasa `ReduceMotion.Always` cuando está activa: la hoja salta a su posición sin deslizarse (el *backdrop* también).
+
+**Orden.** Cinco filas `radio` (rol y `checked`: iOS dice "radio button, checked", TalkBack "seleccionado") con la activa marcada con "✓", borde grueso y texto en negrita. Al elegir: se aplica, se cierra la hoja y se anuncia "Orden aplicado: …" (la hoja se va y la etiqueta del botón cambia, pero ninguna de las dos cosas se anuncia sola). El contador ("N productos") es una región viva `polite` y anuncia el nuevo total.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Filtros aplicados como entrada de la consulta | `useState<ListParams>` → `toProductQueryArgs` → identidad de RTK Query | `MutableStateFlow<FilterState>` + `flatMapLatest` en el `ViewModel` | `@State var filters` + `.task(id: filters)` |
+| Chip seleccionable | `Pressable` + `accessibilityState.selected` | `FilterChip(selected = …)` (semántica `Role.Checkbox`) | `Toggle(...).toggleStyle(.button)` / `.isSelected` |
+| Hoja inferior modal | `BottomSheetModal` (portal + Reanimated + Gesture Handler) | `ModalBottomSheet` (ventana propia) | `.sheet` + `.presentationDetents` |
+| Atrás | `BackHandler` a mano | `BackHandler`/predictive back de la ventana modal (automático) | no existe: gesto de arrastrar o botón |
+| Ocultar el fondo a accesibilidad | `no-hide-descendants` + `accessibilityElementsHidden` | automático (otra ventana) | automático (`.sheet` es modal) |
+| Menos movimiento | `useReducedMotionPreference` → `overrideReduceMotion` | `Settings.Global.ANIMATOR_DURATION_SCALE` / `LocalAccessibilityManager` | `@Environment(\.accessibilityReduceMotion)` |
+
+### APIs reales usadas en T10 (documentación oficial y tipos/código de `node_modules`)
+
+| API | Uso | Notas (lo que difiere del plan) |
+| --- | --- | --- |
+| `BottomSheetModalProvider` (Gorhom 5.2.14) | `_layout.tsx`: tema/i18n → provider → `HiddenWhileSheetOpen` → stack | Renderiza `{children}` y **después** un `PortalHost` hermano: la hoja queda fuera de `HiddenWhileSheetOpen`. |
+| `BottomSheetModal` | `ref.present()` / `ref.dismiss()`, `name`, `onChange`, `onDismiss`, `enableDynamicSizing`, `enablePanDownToClose`, `topInset`, `backdropComponent`, `backgroundComponent`, `handleComponent`, `overrideReduceMotion` | `animateOnMount` y `containerHeight` no son configurables en el modal según la doc, aunque el tipo los acepta (se dejan por defecto). `snapPoints` no hace falta con `enableDynamicSizing`. |
+| `BottomSheetScrollView` | contenido de la hoja | Con altura dinámica la hoja crece hasta el contenedor y después hace scroll (fuente enorme). El gesto de arrastrar y el scroll interno los arbitra la librería; se valida en el dispositivo. |
+| `accessible`, `accessibilityLabel`, `accessibilityRole` (`NullableAccessibilityProps`) | `false` / `null` / `null` | **Diferencia con el plan:** hay que anular los valores por defecto (`adjustable` + "Bottom Sheet"). `accessibilityHint` no existe en las props de la hoja. |
+| `BottomSheetBackdrop` | envuelto con `appearsOnIndex={0}`, `disappearsOnIndex={-1}`, `opacity=0.5`, `accessible={false}` | Con **un** solo punto de anclaje los valores por defecto (aparece en 1, desaparece en 0) no oscurecen nunca. Cierra al tocar (`pressBehavior="close"` por defecto). |
+| Atrás de Android | `BackHandler.addEventListener('hardwareBackPress', …)` | **Diferencia con el plan:** `enableDismissOnClose` solo decide si el modal se desmonta al cerrarse; **no existe** manejo de Atrás ni un `useBottomSheetBackHandler` exportado en esta versión (comprobado en `src/`). Se hace a mano. |
+| `overrideReduceMotion` + `ReduceMotion` (Reanimated 4.5.1) | `Always` si `useReducedMotionPreference()`; si no, `System` | `animate()` de la librería lo aplica a `withTiming`/`withSpring`. `animationConfigs` no hace falta. `animateOnMount` se deja en `true` (con `Always` el salto es inmediato). |
+| `AccessibilityInfo.sendAccessibilityEvent(ref, 'focus')` | foco al título al asentarse la hoja | Tipos RN 0.86: `'click' \| 'focus' \| 'viewHoverEnter'`; `setAccessibilityFocus(reactTag)` está *deprecated*. |
+| `onAccessibilityEscape` | cierra la hoja con el gesto de escape de VoiceOver | Solo iOS. |
+| `accessibilityRole` `radio` / `radiogroup`, `accessibilityState.checked` | opciones de orden | iOS añade "radio button" y "checked" a `accessibilityValue`; Android usa `RadioButton` y `checked`. |
+| `accessibilityState.selected`, `accessibilityRole="button"` (chips) | chips | iOS: trait *selected* ("seleccionado"); Android: `isSelected`. |
+| `Pressable`, `ScrollView horizontal` | chips | Sin dependencias nuevas. |
+
+### Decisiones de T10 (RF-3)
+
+- **Hoja de orden: Gorhom `BottomSheetModal` frente a `Modal` de RN o a una ruta `formSheet`.**
+  - Elegida: `BottomSheetModal` (stack obligatorio de `AGENTS.md`), envuelto en `AppBottomSheet` para reutilizarlo en T11.
+  - Trade-off: provider, peers nativos (Reanimated y Gesture Handler) y tres huecos que cubrir a mano (Atrás, accesibilidad por defecto en inglés, reduced motion).
+  - Descartadas: `Modal` de RN (sin detents ni arrastre; Atrás y accesibilidad los daría el sistema, pero habría que reimplementar el gesto) y una ruta `formSheet` de Expo Router (el borrador de T11 se perdería entre rutas y la lista no sabría cuándo se aplica).
+- **Filtros: estado local con reductor puro frente a Redux o parámetros de URL.**
+  - Elegida: `useState<ListParams>` en la vista + funciones puras.
+  - Trade-off: no sobreviven a desmontar la pantalla (la spec no lo pide) y hay que remontar con `key` al cambiar de categoría.
+  - Descartados: un *slice* global (estado de cliente que solo usa una pantalla y acoplaría la caché de RTK a la UI) y la URL (rutas tipadas, deep links con parámetros que nadie pidió).
+- **Barra de filtros fija sobre la lista frente a dentro del encabezado.**
+  - Elegida: fuera de la rama que cambia (cuadrícula, esqueleto, vacío, error).
+  - Trade-off: ocupa ~56 dp fijos (más con fuente grande) y no se desplaza con el contenido.
+  - Descartada: el encabezado de la cuadrícula, que se desmonta al cambiar la identidad y hace perder el foco de accesibilidad justo tras actuar.
+- **Limpiar filtros no toca el orden.**
+  - Elegida: `clearFilters` apaga las cuatro banderas (y marcas/subcategorías) y deja `sort` como está.
+  - Trade-off: tras limpiar, el orden elegido puede no ser el predeterminado.
+  - Descartada: restablecerlo todo con `clearAll` (la spec dice "limpiar búsqueda/filtros" y el orden no es un filtro; saltar a otro orden sin avisar desorienta).
+- **Valor de orden inválido: se ignora.** `setSort` devuelve el mismo objeto (el tipo ya lo prohíbe; solo llega con un *cast*). Trade-off: un error silencioso. Descartado: lanzar, que tumbaría la pantalla por un dato que el servidor igualmente rechazaría.
+- **Opciones de orden como `radio` + `checked`, chips como `button` + `selected`.** Trade-off: dos vocabularios de estado. Descartado: `selected` en las dos (en iOS un radio sin "radio button" pierde su semántica).
+- **Ocultar el fondo con un registro de hojas abiertas.** Trade-off: un wrapper en la raíz y un almacén externo. Descartado: `accessibilityViewIsModal` (solo iOS; en Android dejaría el fondo accesible) y ocultar solo el contenido de la lista (cabecera y tabs seguirían accesibles).
+- **Sin tope de fuente para los chips ni para el botón de orden.** La caja crece con el texto (alto mínimo, `maxWidth` y texto que parte entre palabras), así que nada se recorta. Medido en AX5 (iOS) y 2.0 (Android): hizo falta el `maxWidth` también en el botón de orden (ver la corrección F-1/F-2 más abajo) y un tope solo para las filas de la hoja.
+
+**Errores típicos al venir de nativo.** (1) Suponer que la hoja cierra con Atrás: en Gorhom 5 cerraría la pantalla. (2) Dejar la accesibilidad por defecto de la librería (nodos "Bottom Sheet" en inglés, contenido como un único elemento). (3) Poner los controles dentro de la rama de la lista que se desmonta y perder el foco. (4) Olvidar el `key` y arrastrar los filtros de una categoría a otra. (5) Memoizar el `renderItem` o los manejadores "por si acaso" (React Compiler activo, se mide en T15). (6) Cambiar `sort` sin esperar que la lista vuelva a la página 1: ocurre sola porque el orden es parte de la identidad.
+
+### Corrección F-1/F-2 de T10: texto largo con fuente grande (RNF-2)
+
+La validación en dispositivo (Android `font_scale` 2.0, iOS AX5) encontró dos fallos de maquetación con texto muy grande. Los dos se corrigen dentro de T10.
+
+**F-1. "Ordenar: …" no se leía entero.** Causa raíz: el botón de orden vive en la fila de chips, un `ScrollView` **horizontal**, y el contenido de un scroll horizontal **no tiene límite de ancho**. Un `Text` solo parte línea cuando su padre le impone un ancho máximo; aquí el padre dice "todo el que quieras", así que el texto se mide en **una sola línea** (610 px en Android, 573 pt en iOS) y el viewport lo recorta. Los chips ya tenían `maxWidth`, el botón no. Medido: antes, Android 628x109 con "Ordenar: Precio: de menor a mayor" recortado; iOS 573x90 recortado en "Ordenar: Dest". Después: Android 660x184 (dos líneas: "Ordenar: Precio: de / menor a mayor"), iOS 370x161 ("Ordenar: / Destacados"), y con el texto más largo 370x304 (cuatro líneas, por palabras). Escala normal: bordes idénticos a los validados (`[30,166][376,256]`, `[391,166][597,256]`; iOS `large` 195x48).
+
+**El "✓" del chip recortado (Android 2.0) NO es la misma causa.** El texto no está truncado: al seleccionar, el chip gana la marca "✓" y se ensancha (586 → 643 px), pero el `ScrollView` conserva su desplazamiento, así que el final del chip queda fuera del viewport hasta que se desplaza. Es un problema de posición de scroll, no de ancho. No se corrige aquí (haría falta medir cada chip con `onLayout` y llamar a `scrollTo`); queda como seguimiento.
+
+**F-2. "Destacad / os" en la hoja (iOS AX5).** Causa raíz: en una fila `flexDirection: 'row'` el "✓" era un `Text` que **escalaba con la fuente** (42 pt de ancho a AX5, más un `minWidth` y un `gap`) y se llevaba el ancho de la etiqueta. A AX5 "Destacados" mide unos 298 pt y a la etiqueta le quedaban unos 284: una palabra que no cabe se parte por dentro (iOS no tiene otra opción; Android no lo hizo porque su escala máxima es 2.0). Se corrigen las dos causas: (1) la etiqueta pasa a `flex: 1` + `minWidth: 0` y la marca a un hueco de **ancho fijo** (24) con `maxFontSizeMultiplier` 1.5, así la marca nunca quita ancho; (2) la etiqueta lleva `maxFontSizeMultiplier` 2 (`fontScaleLimits.optionLabel`), igual que el precedente `listTitle`: con 2.0 la palabra mide ~190 pt y cabe incluso en un móvil de 320 pt. Después: "Destacados" en una línea, 370x60 pt; filas de 48-66 pt.
+
+**Opciones evaluadas**
+- Botón de orden: *Elegida:* `maxWidth` de un viewport (`getFilterItemMaxWidth`, lógica pura con test) para el botón y los chips, y `textAlign: center` en `AppButton`. Trade-off: con el texto más largo en AX5 el botón ocupa 304 pt de 874 (la barra está fija sobre la lista). *Descartadas:* una fila propia a ancho completo (cambia el diseño validado en todas las escalas y gasta altura siempre); `fontScaleLimits` en el botón (la etiqueta dejaría de escalar con lo que pide el usuario).
+- Hoja: *Elegida:* arreglar el layout (flex, hueco fijo) **y** topar la etiqueta en 2. Trade-off: en iOS AX5 las opciones se ven a 2x en vez de a 3.1x (en Android no cambia). *Descartada:* arreglar solo el layout: con el hueco fijo la etiqueta queda con ~302 pt para una palabra de ~298, un margen de 4 pt que rompe en cuanto la pantalla sea más estrecha.
+
+| Idea | React Native | Android (Compose) | iOS (SwiftUI) |
+| --- | --- | --- | --- |
+| Texto que parte línea en una fila desplazable | `maxWidth` explícito al elemento (el scroll horizontal no limita el ancho) | `Modifier.widthIn(max = …)`; un `Text` con `softWrap = true` parte | `.frame(maxWidth:)` + `.fixedSize(horizontal: false, vertical: true)`; `lineLimit(nil)` |
+| Etiqueta que toma el espacio sobrante | `flex: 1` + `minWidth: 0` | `Modifier.weight(1f)` | `.layoutPriority(1)` / `Spacer` + texto flexible |
+| Indicador de ancho fijo | `View` con `width` y `maxFontSizeMultiplier` | `Box(Modifier.size(24.dp))` | `.frame(width: 24)` y `.dynamicTypeSize(...DynamicTypeSize.xxxLarge)` |
+| Tope de escala de texto | `maxFontSizeMultiplier` (`fontScaleLimits`) | no hay tope por `Text`; se limita `fontScale` en `LocalDensity` | `.dynamicTypeSize(...size)` |
+
+**Error típico al venir de nativo:** suponer que `Text` parte línea sin más. En RN depende de que algún ancestro dé un ancho; dentro de un scroll horizontal no lo hay.
+
+### Registro de T10
+
+- Lógica con test primero: `list-params.ts` (toggle de cada bandera, `setSort` con los cinco valores y rechazo de inválidos, `clearFilters`, conversión a `ProductQueryArgs`, `describeParamsForLog`), `describeQueryForLog` (en `product-query.ts`) y `modal-sheet-registry.ts`. 434 → 469 tests.
+- Archivos nuevos: `product/logic/list-params.ts` (+test), `product/list/{QuickFilters,SortSheet}.tsx`, `design-system/components/AppBottomSheet.tsx`, `core/accessibility/{modal-sheet-registry.ts (+test),HiddenWhileSheetOpen.tsx}`. Modificados: `_layout.tsx` (provider), `ProductListView.tsx` (estado local, barra de filtros, hoja), `ProductListStatus.tsx` (vacío filtrado), `use-product-list.ts` (recibe `ProductQueryArgs`), `products-api.ts` (log de la consulta), `CategoryProductsScreen.tsx` (`key`), `AppText.tsx` (tipo del `ref`), `design-system/index.ts`, textos es/en. Sin dependencias nuevas ni cambios nativos.
+- **Logs `__DEV__`** (sin datos de usuario ni texto de búsqueda): al cambiar algo, `[products] filters inStock,topRated sort=price_asc`; por cada página pedida, la **consulta normalizada** `[products] query category=vitamins inStock=true minRating=4 sort=featured page=1` (el log `[api]` omite la query a propósito). Para la comprobación "cada chip envía exactamente…": `inStock=true`, `minRating=4`, `ownBrand=true`, `subscribeAndSave=true`.
+- **Comprobación con un store real + el mock (fuera del repo, borrada).** `vitamins` (60): `inStock` 55, `minRating=4` 22, `ownBrand` 7, `subscribeAndSave` 40; acumulando `+inStock` 55, `+topRated` 19, `+ownBrand` 2, `+subscribeAndSave` 1. Los cinco `sort` devuelven 60 con el orden esperado (precio ascendente 8.99…, descendente 42.99…, `rating` 5, 5, 5, 4.9…). Ninguna combinación de las cuatro banderas deja una categoría real en cero (el mínimo es 1): el vacío con filtros se provoca con una categoría de forma válida que no existe (`does-not-exist`: total 0).
+- Corrección F-1/F-2 (fuente grande): `product/logic/filter-bar-layout.ts` (+test, 469 → 472), `QuickFilters.tsx`, `SortSheet.tsx`, `AppButton.tsx`, `tokens.ts`. Sin dependencias ni cambios nativos.
+- Estado: **validada y aprobada por el usuario (2026-10-11)** en Samsung SM-A037M (Android) e iPhone 17 Pro (iOS), incluida la corrección F-1/F-2. Seguimientos fuera de T10: F-3, F-4, VoiceOver real (Día 6) y el scroll del chip seleccionado en Android 2.0.
+
+### Bloque T11 — Borrador frente a aplicado, facets OR/AND y una hoja con botones fijos (≈10 min)
+
+**Dos estados, dos tiempos de vida.** El filtro *aplicado* (`ListParams`, en `ProductListView`) es la entrada de la consulta: cambiarlo cambia la identidad de RTK Query y dispara una petición. Lo que el usuario marca dentro de la hoja es un *borrador*: una copia local que **no** toca la consulta. Solo **Aplicar** lo convierte en estado aplicado (`applyAdvancedFilters`); **Cancelar, Cerrar, el gesto de arrastre, Atrás de Android y el backdrop** simplemente cierran: el borrador se tira y no hay petición. No existe una función "cancelar" porque cancelar es *no llamar a aplicar*. La clave del diseño es **dónde vive el borrador**: en `AdvancedFiltersForm`, un componente que solo está montado mientras la hoja está abierta (el modal desmonta su contenido al cerrarse). Al abrirla otra vez se monta un formulario nuevo cuyo borrador arranca como copia de lo aplicado *en ese momento*; descartar no requiere código. Es el patrón de un diálogo con copia local: en Compose, `ModalBottomSheet` + `remember { mutableStateOf(applied) }` y un botón que llama a `onApply(draft)`; en SwiftUI, `.sheet` con `@State private var draft = applied` que se devuelve desde "Aplicar" (o `@Binding` solo si quieres aplicar al instante).
+
+**Facets: OR dentro, AND entre ellos.** "Solstice Grove **o** Juniper Axis" y "Vitamina C", a la vez, significa (marca A o marca B) **y** subcategoría C. El servidor (`query-products.js`) construye un `Set` por facet con el CSV de `brand` y de `subcategory`, y un producto debe estar en todos los facets presentes. Comprobado: el servidor normaliza cada valor con la misma `normalizeText` que el cliente (NFD sin marcas, minúsculas, espacios colapsados) y rechaza con 400 un CSV con valores vacíos. Por eso el cliente envía los valores **normalizados, sin repetidos y ordenados** (`buildProductQueryArgs`): `brand=juniper%20axis,solstice%20grove`. Marcar "Solstice, Juniper" o "Juniper, Solstice" produce **la misma cadena**, la misma identidad y **una sola** entrada de caché y de petición: es la "consulta equivalente" de la spec. En el estado aplicado se guardan los valores tal como los devuelve `GET /brands` y `GET /categories` (así comparar "¿está marcada?" es una igualdad exacta); la normalización ocurre solo al construir la consulta.
+
+**Una hoja alta con botones que no se van con el scroll.** La lista de opciones puede ser larga (8 marcas + 3 subcategorías por categoría, 15 subcategorías en búsqueda, más con fuente grande) y Aplicar/Cancelar deben verse siempre. La hoja de orden (T10) usa altura dinámica: título, botón y contenido **hacen scroll juntos** dentro de un `BottomSheetScrollView`, así que unos botones al final quedarían fuera de la pantalla. `AppBottomSheet` gana `layout="fixed"`: altura constante (90 % del espacio bajo la barra de estado), el título arriba y el cuerpo es una columna `flex: 1` con un `AppBottomSheetScrollView` (el de Gorhom, reexportado) y, debajo, la barra de acciones. El gesto lo resuelve la librería: el `BottomSheetScrollView` se registra como el desplazable de la hoja, así que arrastrar con la lista arriba cierra la hoja y arrastrar con la lista desplazada hace scroll (un `ScrollView` normal pelearía por el toque). La cuadrícula de detrás no compite: la hoja es un modal con backdrop, y mientras está abierta el fondo está oculto a TalkBack/VoiceOver (`HiddenWhileSheetOpen`).
+
+**Filas de checkbox.** `Pressable` con `accessibilityRole="checkbox"` y `accessibilityState={{ checked }}`: es la forma que RN traduce al estado de casilla de cada plataforma (en T10 ya se comprobó el equivalente con `radio`); el texto exacto que dicen TalkBack y VoiceOver **se confirma en la validación en dispositivo**. Además se ve **sin color**: borde grueso, texto en negrita y "✓" (oculto a los lectores, el estado ya lo dice). Se reutiliza la maquetación que arregló F-2: etiqueta `flex: 1` + `minWidth: 0`, hueco fijo para el "✓" y `fontScaleLimits.optionLabel`/`selectionMark`. Los dos botones van en una fila (mitad cada uno) y pasan a columna cuando media fila no cabe (corrección G-1, más abajo; el `flexWrap` con `flexBasis: 120` de la primera versión no envolvía nunca y partía palabras). Aplicar es `variant="primary"` (relleno **sin** estado `selected`, que se anunciaría y no es cierto de una acción).
+
+**El contador del botón.** "Filtros (2)" cuenta **marcas + subcategorías** (lo que edita la hoja). Los cuatro filtros rápidos **no** cuentan: ya muestran su estado seleccionado como chips en la misma barra, y un número que los incluyera no coincidiría con lo que el usuario encuentra al abrir la hoja (abrir con "3 activos" y ver una sola marca marcada desorienta). El texto dibujado es "Filtros (2)" y el hablado "Filtros, 2 activos" (`accessibilityLabel`), y con cero filtros solo "Filtros". Con filtros activos el botón se rellena, pero el número ya lo dice, así que no depende del color. "Limpiar filtros" (T10) sí vacía marcas y subcategorías y no toca el orden.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Borrador frente a aplicado | Estado local del formulario de la hoja; `applyAdvancedFilters(applied, draft)` | `remember { mutableStateOf(applied) }` en el contenido del `ModalBottomSheet`; `onApply(draft)` | `@State var draft = applied` en el `.sheet`; se devuelve desde "Aplicar" |
+| Descartar | Cerrar sin llamar a aplicar; el formulario se desmonta | `onDismissRequest` sin llamar a `onApply` | `dismiss()` sin escribir en el estado del padre |
+| Facets OR/AND | `Set` por facet en el servidor; CSV ordenado en el cliente | `filter { brands.isEmpty() \|\| it.brand in brands }` encadenado por facet | `filter { brands.isEmpty \|\| brands.contains($0.brand) }` |
+| Casilla accesible | `Pressable` + `role=checkbox` + `checked` | `Modifier.toggleable(value, role = Role.Checkbox)` | `Toggle` / `Button` + `.accessibilityAddTraits(.isSelected)` |
+| Botones siempre visibles en una hoja con lista | `layout="fixed"`: scroll `flex: 1` + barra debajo | `Scaffold`/`Column` con `weight(1f)` en la lista y la barra fuera | `List` + `.safeAreaInset(edge: .bottom)` |
+| Scroll dentro de una hoja arrastrable | `BottomSheetScrollView` (comparte el toque con el arrastre) | `nestedScroll` del `ModalBottomSheet` (automático) | `ScrollView` en un `.sheet` (el sistema lo arbitra) |
+
+### APIs reales usadas en T11 (documentación oficial y tipos/código de `node_modules`)
+
+| API | Uso | Notas |
+| --- | --- | --- |
+| `BottomSheetModal` `snapPoints` + `enableDynamicSizing={false}` (Gorhom 5.2.14) | altura constante del layout `fixed` | Los porcentajes son del contenedor menos `topInset` (`normalizeSnapPoint`). El contenido recibe una altura definida, por eso `flex: 1` funciona. |
+| `BottomSheetScrollView` | área de scroll de opciones | Se registra como desplazable de la hoja (`animatedScrollableState`), con independencia de si es hijo directo. `styles.container` ya es `flex: 1`. |
+| `enableContentPanningGesture` | no se toca (por defecto `true`) | Con el scroll registrado, el arrastre de contenido y el scroll se reparten el toque; desactivarlo impediría cerrar arrastrando desde la barra de acciones. |
+| `footerComponent` + `enableFooterMarginAdjustment` | **descartado** | Existe y es la vía "oficial" para un pie, pero la hoja se pinta en un portal: el contexto de `AppBottomSheet` no llega al pie, y un componente creado en cada render se **remonta** con cada casilla. |
+| `useGetBrandsQuery` / `useGetCategoriesQuery` (T7) | opciones, pedidas al abrir | Caché de 300 s; la segunda apertura las muestra al instante. |
+| `accessibilityRole="checkbox"` + `accessibilityState.checked` | filas | iOS/Android lo anuncian de forma nativa. |
+
+### Decisiones de T11 (RF-3)
+
+- **Borrador + Aplicar frente a aplicar al instante.**
+  - Elegida: borrador local; la consulta cambia solo con Aplicar (RF-14: "Cancelar conserva los filtros anteriores").
+  - Trade-off: un toque más, y el usuario no ve el efecto de cada casilla hasta aplicar (la hoja no muestra totales).
+  - Descartada: aplicar cada casilla al instante (como los chips): cada toque sería una petición nueva, "Cancelar" no tendría sentido y la lista de detrás se reajustaría mientras el usuario aún elige.
+- **Casillas dentro de una hoja frente a una pantalla modal propia.**
+  - Elegida: hoja (`AppBottomSheet` `fixed`), reutilizando Atrás, accesibilidad y reduced motion de T10.
+  - Trade-off: altura fija del 90 % aunque haya pocas opciones.
+  - Descartada: una ruta `modal` de Expo Router (el borrador viviría entre rutas o en la URL, y la lista tendría que enterarse de cuándo se aplica) y un `Modal` de RN (reimplementar gesto y detents).
+- **Botones fuera del scroll mediante layout fijo frente a `footerComponent` de Gorhom o a una cabecera pegajosa.**
+  - Elegida: columna `flex` con scroll y barra, sin API de pie.
+  - Trade-off: la hoja es siempre alta; el layout `content` de T10 se queda para hojas cortas.
+  - Descartadas: `footerComponent` (portal y remontaje, ver tabla) y `stickyHeaderIndices` (Aplicar arriba no es el patrón de Material y obliga a quitar el padding lateral del contenido para tapar el scroll).
+- **El borrador vive en un componente que solo existe con la hoja abierta.** Trade-off: el estado "se pierde" al cerrar, que es justo lo que se quiere. Descartado: guardarlo en `ProductListView` y resetearlo a mano en cada apertura (un `useEffect` para sincronizar, que React 19 desaconseja).
+- **Opciones pedidas al abrir, no al montar la pantalla.** Trade-off: la primera apertura muestra "Cargando opciones…" un instante. Descartado: pedirlas con la lista (dos peticiones por cada categoría que nadie usa).
+- **Contador = marcas + subcategorías** (ver arriba). Descartado: contar también los cuatro chips.
+- **Etiqueta de subcategoría:** traducción propia de las 15 conocidas (`subcategoryLabelKey`); cualquier otra id muestra el `name` que envió el servidor. Descartado: construir la clave desde cualquier id (un id como `constructor` o `vitamin-e` devolvería una clave inexistente).
+- **Sin totales por opción** (`productCount` de `/brands` es global, no del filtro actual): un número que no coincide con el resultado confunde más de lo que ayuda.
+
+**Errores típicos al venir de nativo.** (1) Aplicar cada casilla a la consulta y dejar "Cancelar" sin efecto real. (2) Guardar el borrador en el padre y olvidar reiniciarlo: la segunda apertura mostraría restos de la primera. (3) Un `ScrollView` normal dentro de una hoja arrastrable: el gesto de la hoja y el scroll compiten. (4) Poner los botones al final de un contenido que hace scroll. (5) Enviar el CSV sin ordenar: "a,b" y "b,a" serían dos entradas de caché. (6) Modificar el array aplicado al marcar una casilla (`push`): el estado aplicado cambiaría sin pasar por Aplicar.
+
+### Corrección G-1 de T11: botones y encabezados con texto muy grande (RNF-2)
+
+La validación en iOS (`accessibility-extra-extra-extra-large`, AX5) mostró palabras partidas por dentro en la hoja de filtros: "Canc / elar" y "Aplic / ar" en dos botones circulares de 181x161 pt, y "Subcategorías" en dos líneas de 186 pt con el fragmento "ías". Android a `font_scale` 2.0 no lo hacía. Se corrige dentro de T11.
+
+**Causa raíz (medida con `onTextLayout` y `useWindowDimensions`, no supuesta).** A AX5 `fontScale` vale 3,571 en iOS (en Android 2.0 es el máximo). Una palabra que no cabe en su línea la parte la plataforma por dentro, porque no tiene otro sitio donde cortar. Anchos medidos (una línea, sin límite de ancho):
+
+| Texto | em | iOS AX5 (pt) | Android 2.0 (dp) | Ancho disponible |
+| --- | --- | --- | --- | --- |
+| "Cancelar" (label 16) | 4,00 / 3,97 | 228,5 | 126,9 | media fila: 181 − 2 de borde − 32 de padding = 147 pt (iOS) y 172 − 34 = 138 dp (Android) |
+| "Aplicar" | 3,14 | 179,5 | 101,0 | idem |
+| "Subcategorías" (subheading 20) | 6,43 | 459,4 | 259,0 | 370 pt (iOS) y 352 dp (Android) |
+
+En iOS la palabra no cabía ni en media fila (229 > 147) ni en el encabezado (459 > 370). En Android 2.0 cabe: por eso no se veía allí (126,9 ≤ 138, con 11 dp de margen). Además, la fila tenía `flexBasis: 120` con `flexGrow`: **nunca envolvía** (dos bases de 120 caben en 338) y cada botón se quedaba en 181 pt, así que el `flexWrap` no ayudaba. Un `Text` no hace *shrink* por debajo de su palabra más larga solo si el padre le deja ancho; aquí el padre (media fila) se lo negaba.
+
+**Opciones.**
+- **Elegida: (b) tope de escala para etiquetas de acción y encabezados de sección + (a) apilar solo si no caben.** `fontScaleLimits.actionLabel` y `sectionHeading` = 2 (el máximo de Android, como `listTitle` y `optionLabel`). Con 2,0, "Cancelar" mide 128 pt (cabe en media fila a partir de 384 pt de ventana) y "Subcategorías" 259 pt (cabe en 320 pt). `shouldStackActions` (función pura en `logic/action-bar-layout.ts`, con test primero) compara `16 × min(fontScale, tope) × 4,0 + 34` con la media fila: si no cabe, los botones van uno sobre otro a ancho completo, donde siempre caben. Trade-off: las etiquetas de **esos** botones y esos dos encabezados no siguen creciendo por encima de 2,0 (a AX5 el usuario pedía 3,57); el cuerpo, las filas ya estaban topadas a 2 por F-2, y los botones siguen ≥ 48 pt. La estimación del ancho es una constante medida (`ACTION_LABEL_WIDTH_EM`), no una medición en vivo: es lo que hace la función comprobable sin RN; el riesgo es una fuente distinta a SF/Roboto.
+- **Descartada (a) sola: apilar sin tope.** Quita la palabra partida, pero a AX5 cada botón mide ~90 pt: la barra pasa de 161 a 188 pt y la lista se queda en ~2 filas (inutilizable).
+- **Descartada (c) `flexShrink`/`flex: 1` en el encabezado sin tope:** el problema no es el hueco, es que la palabra mide más que la pantalla; sin tope solo cabría con menos fuente.
+- **Descartada (d) menos padding/hueco:** ahorra ~10 pt de 229; no cambia nada.
+- **No tocado:** la hoja de orden (sus palabras sí caben: sin evidencia) ni la cabecera "Filtros / Cerrar" (queda apilada a AX5, 191 pt, pero sin palabras partidas).
+
+**Resultado medido.**
+
+| Medida | Antes (AX5) | Después (AX5) | `large` / Android 1.0 | Android 2.0 |
+| --- | --- | --- | --- | --- |
+| Cancelar / Aplicar | 181x161 pt, partidos | 181x58 pt, una línea | 181x48 pt / 323x90 y 322x90 px (igual que lo validado) | 323x93 y 322x93 px (igual) |
+| Barra de acciones | 161 pt | 58 pt | 48 pt | sin cambios |
+| Encabezados "Marcas" / "Subcategorías" | 93 y 186 pt (partido) | 52 pt, una línea | 26 pt / 49 px | sin cambios |
+| Filas visibles con la lista arriba | ~2,5 | 4 completas + una parcial | todas las marcas | — |
+| Cabecera "Filtros" + "Cerrar" | 191 pt | 191 pt (sin cambio) | una fila | una fila |
+
+Además se forzó la rama apilada en el Samsung con `wm size 600x1600` (320 dp) a 2.0: "Cancelar" y "Aplicar" a ancho completo (540 px), sin palabras partidas. Se restauró el tamaño de pantalla.
+
+**Concepto y comparación.** Cuando un control no cabe a escala grande hay tres respuestas: encoger el texto (tope), cambiar la disposición (fila → columna) o dejar que el texto parta (aquí prohibido por RNF-2). En Compose la disposición adaptativa es `FlowRow` o un `Layout`/`SubcomposeLayout` que mide primero (`BoxWithConstraints` + `LocalDensity.current.fontScale`), y el tope es `TextStyle`/`sp` con un `coerceAtMost` sobre `fontScale`; `softWrap = false` no es opción: recorta. En SwiftUI es `ViewThatFits` (prueba la fila y, si no cabe, la columna) o `@Environment(\.dynamicTypeSize)` con `dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout()) : AnyLayout(HStackLayout())`, y el tope es `.dynamicTypeSize(...DynamicTypeSize.xxxLarge)`. Ellos miden de verdad; en RN decidimos con una función pura sobre `fontScale` y el ancho de ventana (`useWindowDimensions`), más simple y comprobable pero con una estimación del ancho. **Error típico al venir de nativo:** creer que `flexWrap` + `flexBasis` envuelve por "lo que cabe de texto": envuelve por la base declarada, no por el contenido mínimo de una palabra.
+
+### Registro de T11
+
+- Lógica con test primero: `list-params.ts` (`applyAdvancedFilters`: reemplaza, no muta, conserva orden y chips, devuelve el mismo objeto si no cambia; `toggleFacetValue`; `countAdvancedFilters`; `clearFilters` con facets; log solo con recuentos), `category-labels.ts` (`subcategoryLabelKey` con las 15 y `undefined` para el resto, incluidos nombres de prototipo), `facet-options.ts` (`selectSubcategoryOptions`: las de la categoría o todas, sin repetidas, vacío para una categoría desconocida). 472 → 497 tests (G-1: 504).
+- Archivos nuevos: `product/list/AdvancedFiltersSheet.tsx`, `product/logic/facet-options.ts` (+test). Modificados: `list-params.ts` (+test), `category-labels.ts` (+test), `ProductListView.tsx` (botón, hoja, aplicar), `QuickFilters.tsx` (`leading` como lista con `key`), `design-system/components/{AppBottomSheet,AppButton}.tsx` (`layout="fixed"` y `AppBottomSheetScrollView`; `accessibilityLabel` y `variant="primary"`), `design-system/index.ts`, textos es/en (`productList.advanced.*`, `subcategories.*`). Sin dependencias nuevas ni cambios nativos.
+- **Smoke con el mock (puerto 3001, sin latencia; script fuera del repo que usa el código real de `list-params`/`product-query`).** `vitamins` (60, 3 páginas): una marca (`brand=solstice%20grove`) 3; dos marcas (`brand=juniper%20axis,solstice%20grove`) 9, **igual con el orden invertido** (misma cadena); una subcategoría (`vitamin-c`) 20; dos subcategorías 40 (2 páginas); dos marcas + `vitamin-c` 2; ese mismo con `inStock` + `minRating=4` 0. Sin categoría: una marca 43 (3 páginas), las ocho marcas 300 (15 páginas), `zinc,omegas` 40. Cada categoría tiene **8 marcas** y **3 subcategorías** (15 en búsqueda): la lista cabe sin problema, el scroll solo hace falta con fuente grande. De 120 combinaciones marca × subcategoría en categorías reales, **7 dan 0**: **Vitaminas + Solstice Grove + Vitamina C** (Solstice solo 3, Vitamina C sola 20), Minerales + BloomArc Wellness + Magnesio o Calcio, Proteínas + MossPeak Formulas + Proteína vegetal, Botánicos + HerbStore Essentials + Mezclas herbales, Bienestar + Verdant Forge + Probióticos o Omegas. Con las cuatro banderas, AsterVale Nutrition da 0 en las cinco categorías.
+- Corrección G-1 (texto muy grande): `product/logic/action-bar-layout.ts` (+test, 497 → 504), `AdvancedFiltersSheet.tsx`, `AppButton.tsx` (`maxFontSizeMultiplier`), `tokens.ts` (`actionLabel`, `sectionHeading`). Sin dependencias ni cambios nativos.
+- Estado: **validada y aprobada por el usuario (2026-10-12), con G-1 corregido.** Validada en Samsung e iPhone 17 Pro (simulador) salvo el foco/anuncio de TalkBack y VoiceOver real (seguimientos G-2/G-3 y Día 6).
+
+## Día 3 — T12: búsqueda con debounce e historial en memoria
+
+### Bloque T12 — Debounce, cancelación por identidad e historial como estado de cliente (≈10 min)
+
+**Debounce = esperar a que el usuario deje de teclear.** Sin él, "vitamina" lanzaría 8 peticiones (una por letra) y solo la última importa. El debounce retrasa la consulta hasta que el texto lleva 400 ms quieto (RF-16). En HerbStore son dos valores: `text` (lo que hay en el campo, cambia en cada tecla) y `debounced` (`text` después de 400 ms de calma). Una función pura, `resolveSearchView({ rawText, debouncedText })`, decide qué se ve comparando sus formas normalizadas:
+
+| Campo (`rawText`) | Texto asentado (`debouncedText`) | Vista |
+| --- | --- | --- |
+| vacío o solo espacios | cualquiera (aunque aún conserve el texto borrado) | `history` (sin consulta) |
+| "vita" | "vit" | `pending` (no se consulta; esqueleto) |
+| "v" | "" (primeras teclas) | `pending` |
+| "Vitamina " | "Vitamina" | `query { q: 'vitamina' }` (misma identidad: añadir un espacio o una mayúscula no es otra búsqueda) |
+
+**El hook.** `useDebouncedValue(text)` es un `useEffect` que instala un `setTimeout` de 400 ms y devuelve en el *cleanup* el `clearTimeout`. Cada cambio de `text` vuelve a ejecutar el efecto: el cleanup cancela el temporizador anterior antes de crear el nuevo, así que **solo existe uno** y siempre lleva el último texto; al desmontar también se cancela (no hay fugas ni `setState` sobre una pantalla muerta). El número 400 vive en un solo sitio (`SEARCH_DEBOUNCE_MS`, en `search-view.ts`). El hook devuelve también `settleNow(texto)` para "enviar": al pulsar la tecla de buscar no tiene sentido esperar.
+
+**Resultados antiguos nunca sustituyen a la búsqueda más reciente.** Hay dos defensas independientes, y ninguna es el debounce:
+1. *Mientras `pending`, la lista está pausada*: `ProductListView` sigue montada (así sobreviven los filtros) pero `useProductList` pasa `skipToken` a RTK Query. No hay petición, `currentData` es `undefined` y se ve el esqueleto.
+2. *Una entrada de caché por texto normalizado*: la respuesta tardía de "vit" se guarda bajo "vit" y la pantalla de "vitam" lee **`currentData`** de su propia entrada. Con `data` (que RTK conserva del argumento anterior mientras carga el nuevo) se vería la lista de "vit" bajo el título de "vitam".
+
+**Qué cuenta como "enviar" (RF-17).** Tres gestos escriben en el historial: la tecla de buscar del teclado, ejecutar una entrada del historial y tocar un resultado. Teclear sin enviar **no** escribe: "vit" a medias no es una búsqueda. El texto guardado es la variante humana más reciente ("vitamina  c", solo con los espacios exteriores recortados); la forma normalizada ("vitamina c") es solo la clave de identidad. Guardar la normalizada como texto visible sería el error típico: el usuario vería "vitamina c" donde escribió "Vitamina C".
+
+**Historial = estado de cliente, en el store global.** Es una lista de strings que sobrevive a salir y volver a la pantalla (el store es global, no el componente) y que el Día 4 solo añade a la whitelist de redux-persist. Las reglas (identidad, mover al inicio, máximo 10, nunca vacío, no mutar) viven en `search-history.ts`, puro y probado; el *slice* únicamente delega.
+
+**Qué se ve en cada caso.**
+- Campo vacío: historial (ejecutar, quitar una entrada con una etiqueta que lleva su texto, "Borrar todo"); si no hay nada, un texto que lo explica.
+- Texto: esqueleto hasta los 400 ms, luego `ProductListView` con contador, filtros rápidos, avanzados (15 subcategorías sin categoría) y orden. Cambiar el texto devuelve a la página 1 y arriba (la `key` de identidad de la cuadrícula).
+- Sin coincidencias: vacío con **una** acción. Sin filtros, "Limpiar búsqueda" (borra el texto, enfoca el campo y vuelve al historial). Con filtros, "Limpiar búsqueda y filtros" (el plan pide que en búsqueda la acción limpie texto y filtros a la vez; al salir de la vista de resultados la lista se desmonta y con ella sus filtros). Los chips de filtros siguen visibles en ambos casos.
+- Teclado: `keyboardDismissMode="on-drag"` lo cierra al arrastrar; `keyboardShouldPersistTaps="handled"` deja que el primer toque llegue a la tarjeta; `automaticallyAdjustKeyboardInsets` (iOS) empuja el contenido en vez de taparlo y Android ya reduce la ventana (`adjustResize`). Antes de abrir una hoja (orden/filtros) se cierra el teclado.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Debounce | `useEffect` + `setTimeout` con `clearTimeout` en el cleanup | `snapshotFlow { text }.debounce(400)` o `query.debounce(400)` en el `ViewModel` | Combine `.debounce(for: .milliseconds(400), scheduler:)` |
+| Ignorar repetidos | `resolveSearchView` compara formas normalizadas | `.distinctUntilChanged()` | `.removeDuplicates()` |
+| Solo cuenta la última | `skipToken` mientras `pending` + una entrada de caché por texto + `currentData` | `flatMapLatest { repo.search(it) }` / `collectLatest` (cancela la anterior) | `switchToLatest()` o `.task(id: text)` (se cancela al cambiar el id) |
+| Campo de búsqueda | `TextInput` en el contenido con `returnKeyType="search"` | `SearchBar`/`OutlinedTextField` con `ImeAction.Search` y `KeyboardActions(onSearch)` | `TextField` + `.submitLabel(.search)` + `.onSubmit`; o `.searchable` |
+| Historial | slice de Redux (luego redux-persist + MMKV) | `StateFlow` en un repositorio (luego DataStore) | `@Observable` inyectado (luego `UserDefaults`/`@AppStorage`) |
+
+### Decisiones de T12 (RF-3)
+
+- **Debounce propio con `setTimeout` frente a una librería o a `useDeferredValue`.**
+  - Elegido: `useDebouncedValue` (10 líneas, sin dependencia; constitución, punto 1).
+  - Trade-off: hay que escribir y razonar el cleanup uno mismo; sin cancelación de peticiones por ser solo un temporizador.
+  - Descartados: `lodash.debounce` (dependencia nueva, y su función con estado sobrevive a los renders: hay que guardarla en un ref) y `useDeferredValue` (retrasa por *prioridad de render*, no por tiempo: no daría el "400 ms desde la última tecla" medible de RF-16 y seguiría pidiendo cada letra).
+- **Campo en el contenido frente a `headerSearchBarOptions`.**
+  - Elegido: `TextInput` propio. Trade-off: no es la barra nativa (ni la animación de colapso de iOS ni el botón "Cancelar" nativo).
+  - Descartada: la barra nativa del header, con foco y vaciado distintos por plataforma y menos control para mostrar el historial con el campo vacío.
+- **Guardar al enviar o tocar un resultado frente a guardar en cada pulsación.**
+  - Elegido: RF-17. Trade-off: una búsqueda a la que el usuario no llegó a dar a buscar, ni tocar un resultado, no queda en el historial.
+  - Descartado: escribir cada texto asentado: el historial se llenaría de "vit", "vita", "vitam".
+- **Slice de Redux frente a estado local.**
+  - Elegido: slice global (sobrevive a la pantalla; el Día 4 lo persiste sin tocar las reglas). Trade-off: Redux de cliente adelantado un día.
+  - Descartado: `useState` en `SearchScreen` (se pierde al salir de la pantalla, que RF-18 y el criterio de T12 piden evitar) y un store externo temporal que el Día 4 tiraría.
+- **`ProductListView` montada también en `pending`, con `paused`, frente a montar el esqueleto aparte.**
+  - Elegido: la vista sigue montada desde el primer carácter hasta vaciar el campo; así la barra de filtros no parpadea con cada tecla y los filtros y el orden sobreviven a editar el texto. Trade-off: una prop nueva (`paused`) y `skipToken` en `useProductList`.
+  - Descartado: desmontar la lista en `pending` (los filtros se reiniciarían con cada edición y la barra parpadearía).
+- **Una sola acción "Limpiar búsqueda (y filtros)" en el vacío de la búsqueda.** Trade-off: no se puede quitar solo los filtros desde el vacío (se hace con los chips, que siguen visibles). Descartada: dos acciones, que contradicen "una sola acción" de la spec y el plan.
+- **Identidad del historial con `normalizeSearchText`** (la misma definición que el servidor y la consulta; no se duplica). Descartado: una normalización propia del historial, que podría divergir.
+- **Texto visible = lo escrito con los espacios exteriores recortados.** Descartado: colapsar también los interiores, que cambiaría lo que el usuario escribió.
+- **Historial visible con el campo vacío aunque no tenga foco.** La spec dice "cuando el campo vacío obtiene foco"; el foco es condición suficiente. Mostrarlo también sin foco evita que, tras cerrar el teclado, una pantalla vacía parezca rota. Descartado: ocultarlo sin foco (exigiría seguir `onFocus`/`onBlur` y una pantalla en blanco).
+
+**Errores típicos al venir de nativo.** (1) Olvidar el *cleanup* del `setTimeout`: cada tecla dejaría un temporizador vivo y se dispararían todas las búsquedas. (2) *Stale closure*: el callback del temporizador usa el `value` del render que lo creó; es lo deseado aquí, pero en un handler que se registra una vez (suscripción, `useEffectEvent` mal usado) leería un texto viejo. (3) Leer `data` en lugar de `currentData`: aparecen resultados de otro texto bajo el título nuevo. (4) Guardar la forma normalizada como texto del historial. (5) Escribir el historial en cada pulsación. (6) Consultar con el texto vacío: el servidor responde 400. (7) Un `ScrollView` sin `keyboardShouldPersistTaps="handled"`: el primer toque sobre una tarjeta solo cierra el teclado. (8) Ejecutar una entrada del historial solo con `setText`: habría que esperar 400 ms más; hay que "asentar" ya (`settleNow`).
+
+### APIs reales usadas en T12 (tipos y código de `node_modules`)
+
+| API | Uso | Notas |
+| --- | --- | --- |
+| `skipToken` con `useGetProductsInfiniteQuery` | pausar la lista mientras `pending` | Sin petición, `currentData` es `undefined`; `fulfilledTimeStamp` también, así que la revalidación de 60 s no actúa. |
+| `FlashListProps extends Omit<ScrollViewProps, ...>` (FlashList 2.0.2) | `keyboardDismissMode`, `keyboardShouldPersistTaps`, `automaticallyAdjustKeyboardInsets` | Pasan tal cual: no hizo falta ninguna prop nueva en `ProductGrid`; el `ScrollView` de los estados y el del historial reciben las mismas. |
+| `TextInput`: `returnKeyType`, `onSubmitEditing`, `accessibilityRole="search"`, `keyboardAppearance` (solo iOS), `maxFontSizeMultiplier` | el campo | `autoFocus` abre el teclado al entrar desde Inicio. `maxLength` 100 evita consultas absurdas (el servidor acepta hasta 5000 caracteres sin error). |
+| `createSlice` + `current(state)` | reductores que **devuelven** el siguiente estado | Las funciones puras ya construyen el array nuevo; no se edita el *draft* de Immer. Comprobado con un store real fuera del repo: alta, duplicado, quitar, 12 altas = 10 entradas y borrar todo. |
+
+### Registro de T12
+
+- Lógica con test primero: `search/logic/search-history.ts` (+test) y `search/logic/search-view.ts` (+test). 504 → 537 tests (+33), `test:logic` en verde.
+- Archivos nuevos: `search/logic/{search-history,search-view}.ts` (+tests), `search/store/search-history-slice.ts`, `search/hooks/use-debounced-value.ts`, `search/components/{SearchField,SearchHistoryList}.tsx`, `search/screens/SearchScreen.tsx`. Modificados: `core/store/store.ts` (reductor `searchHistory`), `product/list/{ProductListView,ProductListStatus,ProductGrid,use-product-list}`, `(tabs)/(home)/search.tsx` (ruta delgada), textos es/en (`search.*`, sin `search.body`). Borrado: `SearchPlaceholderScreen.tsx`. Sin dependencias nuevas ni cambios nativos.
+- Cómo se llega: el campo de búsqueda de Inicio (`HomeHeader`) hace `router.push('/search')`; la ruta ya existía en el `Stack` de Inicio (singular). También por el enlace `herbstore://search`.
+- **Smoke con el mock (puerto 3001, sin latencia; script fuera del repo con el código real de `product-query`/`search-view`).** El catálogo es **solo inglés** y todas las descripciones empiezan "<nombre> in a <formato> format for a simple daily wellness routine". Con `q`: marca "solstice" **43** (3 páginas; "SOLSTICE GROVE" igual); nombre "magnesium" **20** ("MAGNÉSIUM" y "magnesium" = 20); "Magnesium  glycinate" (2 espacios) = "magnesium glycinate" = **6** (misma consulta); descripción: "routine", "wellness" y "daily" **300** (15 páginas: la forma de llegar a los 300 reales para T15); "tablets" **87** (5 páginas); "forest" **3**; **un único resultado**: "calm capsules" y "zinc powder" (Daily Zinc Powder, Solstice Grove, 3.1★); **sin coincidencias**: "zzzz", "vitamina" y "vitamin c" (el español y "vitamin" no existen: los nombres son "Citrus C Powder"...). Con filtros: "tablets" + Disponible 82; "tablets" + las 4 banderas 4; "zinc powder" + 4★ o más **0** (rating 3.1) y "zinc powder" + marca Juniper Axis **0** (vacío con filtros reproducible). Un carácter ("a", "e") ya coincide con los 300.
+- Contrato de `q` del servidor: **sin longitud mínima**; `q` vacío o de solo espacios responde **400** `INVALID_QUERY`. La interfaz nunca lo envía: `buildProductQueryArgs` omite `q` vacío y `resolveSearchView` no devuelve `query` con `q` vacío.
+### Corrección S-1/S-2/S-3/S-7 (hallazgos de la validación de T12)
+
+**S-1 — TalkBack leía el icono como un carácter ("壳", "嬉").**
+- Causa (comprobada en `node_modules/expo-symbols/build/SymbolView.js`): en Android `SymbolView` es una `View` con un `Text` que dibuja un carácter de la fuente Material Symbols y **solo reenvía `style`, `size` y `tintColor`**. `accessibilityElementsHidden` e `importantForAccessibility` se descartaban en silencio, así que el glifo (carácter de uso privado) era un nodo accesible más: parada propia en la lupa y texto añadido a los hijos del botón. En iOS la vista nativa sí recibe esas props, por eso allí no se veía. El árbol real lo confirmaba (`TextView text='\ue8b6'`).
+- Opciones:
+  - Elegida: `AppIcon` en el design system, una `View` con `accessibilityElementsHidden` + `importantForAccessibility="no-hide-descendants"` que envuelve al `SymbolView`. Se corrige en un solo sitio y los 5 usos (búsqueda, cabecera de Inicio, carrusel, tab bar) lo comparten. Trade-off: una vista más por icono (sin estilo propio, no cambia el layout).
+  - Descartada: `accessibilityLabel={entry}` en cada fila: arregla solo esa fila, duplica el texto y deja la lupa del campo y el resto de iconos con el mismo fallo.
+  - Descartadas: `accessible={false}` o cualquier otra prop sobre el `SymbolView` (por la misma causa no llega al `View` de Android) y otro componente de icono (no hay otro en el design system).
+- Resultado en Android (`A11y stops` y "Mostrar la salida de voz"): "tablets, Botón, Busca este texto.", "Quitar «magnesium» de las búsquedas recientes, Botón…", "Borrar texto, Botón…", "Borrar todo, Botón…"; la lupa y los glifos pasan a `NOT-IMPORTANT`. Los chips con ✓ ya estaban bien (el ✓ es un `AppText` oculto y el chip lleva `accessibilityLabel`).
+
+**S-2 — la tecla de buscar enviaba un texto parcial ("t" por "tablets").**
+- Causa: `onSubmit` leía `text`, el estado del **último render**. Con JS lento (dev build en un A03) la tecla puede llegar antes de que React pinte el último carácter; el historial guardaba el fragmento (viola RF-17). Reproducido: `input text daily; sleep 0.05; input keyevent 66` dio `sent "d"`.
+- Elegida: usar `event.nativeEvent.text` de `onSubmitEditing` (el texto nativo en ese instante) a través de `resolveSubmittedText(eventText, fieldText)` (puro, con test primero; solo cae al estado si el evento no trae texto; una cadena vacía es un valor real). Trade-off: un parámetro más en `onSubmit`. Descartado: un `ref` con el último `onChangeText` (más estado a mantener y el texto del evento ya es la fuente nativa). "Ejecutar entrada" usa el argumento `entry` y "tocar un resultado" el texto visible del render en el que ya hay resultados: ninguno lee un texto atrasado.
+- Resultado: 12 envíos con esperas 0,05–0,15 s ("tablets", "daily", "magnesium"): siempre el texto completo, el historial sin parciales.
+
+**S-3 — "Borrar texto" / "Limpiar búsqueda" no devolvían el teclado; ejecutar una entrada lo dejaba abierto.**
+- Causa: tras la tecla de buscar el teclado se cierra pero Android conserva el foco del campo y React Native ignora `focus()` sobre el input que cree enfocado (`TextInputState.focusTextInput`, comprobado en `node_modules`). Probado quitando el `blur()`: teclado oculto tras borrar.
+- Regla (documentada en `SearchScreen`): toda acción que **ejecuta** una búsqueda cierra el teclado (tecla de buscar y ejecutar entrada: `Keyboard.dismiss()` en `sendSearch`); toda acción que **vacía** el campo lo deja enfocado **con** teclado (`focusFieldWithKeyboard`: `blur()` + `focus()` solo si `Keyboard.isVisible()` es falso, para no parpadear si ya está abierto).
+- Descartado: `blur()` + `focus()` siempre (parpadeo con el teclado visible) y quitar el foco del campo al enviar (cambia el comportamiento validado). Resultado: teclado visible tras borrar (8 muestras seguidas sin caída) y cerrado tras ejecutar una entrada. En iOS no se puede ver el teclado de software (teclado de hardware conectado): no ejecutable, sin regresión de flujo.
+
+**S-7 — TalkBack leía el placeholder y no "Buscar productos".**
+- Causa: en Android el nodo del `EditText` vacío expone el *hint* como `text` y TalkBack lee el texto antes que la `contentDescription`; la etiqueta nunca se pronunciaba. Con valor tecleado se leía el valor.
+- Elegida: en Android el placeholder lo dibuja `AppText` (oculto al lector, `pointerEvents="none"`, una línea con puntos suspensivos, mismo tope de fuente) y el `TextInput` nativo queda sin `placeholder`; iOS conserva el nativo (VoiceOver ya dice etiqueta + valor + pista). Es una diferencia real de plataforma. Trade-off: un placeholder propio a mantener alineado con el campo. Descartado: poner el nombre accesible como `placeholder` (cambia el texto visible) o `accessibilityLabelledBy` (no vence al texto del nodo).
+- Resultado: "Buscar productos, Editar casilla, Escribe para buscar…" vacío y "Editando, zinc, Editar casilla…" con valor.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Icono decorativo | `AppIcon` (`importantForAccessibility="no-hide-descendants"` + `accessibilityElementsHidden`) | `Icon(..., contentDescription = null)`, `importantForAccessibility="no"`, `Modifier.clearAndSetSemantics {}` | `.accessibilityHidden(true)`, `isAccessibilityElement = false` |
+| Enviar la búsqueda | `onSubmitEditing` con `event.nativeEvent.text` | `KeyboardOptions(imeAction = ImeAction.Search)` + `KeyboardActions(onSearch)` (el valor del `TextFieldValue` actual) | `.submitLabel(.search)` + `.onSubmit` |
+| Teclado y foco | `Keyboard.dismiss()`, `blur()` + `focus()` | `LocalSoftwareKeyboardController.hide()/show()` + `FocusRequester` | `@FocusState` (`focused = true/false`) |
+| Nombre del campo | `accessibilityLabel` (+ placeholder propio en Android) | `contentDescription`/`semantics { hintText }`; `label` del `TextField` | `.accessibilityLabel` y `.accessibilityHint` |
+
+**Errores típicos al venir de nativo.** (1) Fiarse de que una prop de accesibilidad llega a la vista nativa: un componente de terceros puede descartarla (comprobar el árbol real, no solo el código). (2) Leer estado de React dentro de un handler de evento nativo: va un render por detrás. (3) Llamar a `focus()` sobre un input que React Native cree enfocado. (4) Un placeholder nativo que tapa la etiqueta accesible en Android.
+
+- Estado: **validada y aprobada por el usuario (2026-10-12)** en Samsung SM-A037M e iPhone 17 Pro, con S-1/S-2/S-3/S-7 corregidos (541 tests) y la migración a `AppIcon` conservada. Seguimientos: S-4…S-6 y S-8…S-12 (ver `MEMORY.md`).
+
+## Día 3 — T13: mutation `createOrder`, invalidación por tags y control `__DEV__`
+
+### Bloque T13 — Mutations, `invalidatesTags` e idempotencia (≈10 min)
+
+**Query frente a mutation.** Una *query* **lee** y se cachea: tiene una entrada por argumento, suscriptores y un `providesTags` ("esta entrada contiene Home / el producto X"). Una *mutation* **escribe**: no tiene entrada de caché que releer, se ejecuta cada vez que la llamas (`trigger(arg)`) y declara con `invalidatesTags` qué lecturas deja desactualizadas. RTK conecta las dos mitades con las **etiquetas**: la mutation no sabe quién la lee; solo dice "invalido `Home`, `ProductList/LIST` y `Product/<id>`" y RTK busca las entradas que proveen esas etiquetas.
+
+**Qué pasa con cada entrada al invalidar (RF-7).**
+- *Activa* (con suscriptor, p. ej. Home en su tab, la lista de la categoría bajo el producto, el detalle abierto): RTK la **vuelve a pedir** enseguida.
+- *Inactiva* (sin suscriptores pero aún en caché por `keepUnusedDataFor: 300`, p. ej. una búsqueda que ya cerraste): RTK la **elimina de la caché**; al abrirla otra vez no hay datos ni fresco que valga y se pide de nuevo. Es la forma de RTK de decir "revalida en su siguiente apertura".
+- `invalidatesTags` se llama con `(result, error, arg)`: `result` es `undefined` si falló, y `arg` es lo que pasaste al `trigger`. Por eso `arg` lleva los productos incluidos: de ahí salen las etiquetas `Product/<id>`.
+
+**202 no es 200.** El servidor responde `202 pending` ("recibida, aún no confirmada") o `200 confirmed`. Solo la confirmada cambia el stock, así que **solo ella invalida** (`tagsForOrderResult` devuelve `[]` con `pending` y con error). Un 202 se resuelve **repitiendo el mismo POST** (misma clave, mismo cuerpo) tras `retryAfterSeconds`: el servidor reconoce la clave y devuelve el estado de esa orden en lugar de crear otra.
+
+**Idempotency-Key estable por intento.** Un intento = una pulsación = **una clave** que se crea una vez y se reutiliza en cada reenvío de ese intento. Una pulsación nueva es un intento nuevo con clave nueva. Con la misma clave y un cuerpo distinto el servidor responde `409 IDEMPOTENCY_KEY_REUSED`.
+
+### Decisiones de T13 (RF-3)
+
+- **Mutation real + control `__DEV__` frente a simular la invalidación con `dispatch(api.util.invalidateTags(...))`.**
+  - Elegida: `createOrder` real (`POST /orders`) y un botón de desarrollo que la llama. Trade-off: hay que escribir y luego retirar el control (Día 4, H-4) y depende del mock. Gana: se prueba el camino completo (la mutation, su `invalidatesTags` con el `arg` real y el 202/200 del servidor) y el Día 4 reutiliza `orders-api.ts` tal cual.
+  - Descartada: `dispatch(invalidateTags([...]))` desde un botón. Invalidaría igual, pero no demuestra que la **mutation** invalida, ni que el 202 no lo hace, ni la idempotencia; enseñaría el mecanismo sin el caso real.
+- **0 reintentos automáticos en un `POST` frente a 2 (RF-8).**
+  - Elegida: RF-8 aplica solo a lecturas (`GET`); `shouldRetryRequest` nunca reintenta otro método (P2). Trade-off: un fallo transitorio de la orden exige pulsar otra vez (y eso crea **otra** clave: es un intento nuevo).
+  - Descartada: los 2 reintentos del `GET`. Un `POST` que falló por red o timeout **puede haberse procesado**; reenviarlo a ciegas es el error de las órdenes duplicadas. El Día 4 resolverá la duda consultando `GET /orders/status/:key` sin reenviar.
+  - El re-POST tras un 202 **no es un reintento por fallo**: el servidor respondió y dijo "pendiente"; se repite la misma petición idempotente.
+- **Invalidar por etiquetas frente a `refetch()` manual o `updateQueryData`.**
+  - Elegida: `invalidatesTags` con `Home`, `ProductList/LIST` (una sola etiqueta para todas las listas: categoría, búsqueda, filtros) y `Product/<id>` por producto. Trade-off: invalida de más (todas las listas, no solo las que contienen el producto) a cambio de una regla simple de una línea y sin riesgo de olvidar una pantalla.
+  - Descartado `refetch()` manual: cada pantalla tendría que saber que existe una orden y las inactivas quedarían con datos viejos. Descartado `updateQueryData` (parchear la caché a mano): el stock y el orden dependen del servidor; replicar su lógica en el cliente es frágil.
+- **Control cargado con `require` bajo `__DEV__` frente a `import` + `__DEV__ && <X />`.**
+  - Medido: con `import` estático, el export de release (`expo export`, `__DEV__ = false`) **seguía llevando** el módulo ("Test Customer", `Idempotency-Key`, `POST /orders` en el `.hbc`); el JSX desaparecía pero el módulo se empaquetaba. Con `__DEV__ ? require(...) : null` Metro sustituye `__DEV__` por `false`, elimina la rama y el módulo no entra al bundle (0 coincidencias de esas cadenas; solo quedan los textos i18n). Trade-off: un `require` con `eslint-disable` justificado en un único sitio. Se retira en el Día 4 con el placeholder.
+- **Clave en los logs: truncada.** Se registra `key=…2c3d` (4 últimos caracteres) porque validar "misma clave en el 202 y en el 200" la necesita. Nunca el cuerpo, la dirección, la moneda, las cantidades ni el id de la orden. Los ids de producto sí (son datos de catálogo).
+
+### APIs reales comprobadas (RTK 2.13 y el mock)
+
+| Pieza | Comprobación | Resultado |
+| --- | --- | --- |
+| `invalidatesTags: (result, error, arg)` con store real | `selectInvalidatedBy` y recuento de peticiones | Con 202: **0** peticiones nuevas. Con 200: `GET /home`, `GET /products?category=…` y `GET /products/<id>` una vez cada una; la búsqueda sin suscriptores se **eliminó** de la caché y se volvió a pedir al abrirse. Con 409: 0 peticiones. |
+| Estado `api.mutations` | impresión del estado | RTK 2.13 **no guarda los argumentos** de la mutation (ni la dirección) en el store; guarda `status` y `data` (la proyección) hasta `reset()`. Los argumentos solo viajan en `meta.arg` de las acciones. `reset()` limpia ese resultado. |
+| Reintentos | script con el mock caído (`localhost:3999`) | `POST /orders`: **1** intento, error `network` en ~20 ms y ningún reintento tardío (3 s después sigue 1). Control: `GET /home` con la misma red caída = 3 intentos (1 + 2) en ~1,5 s. |
+
+### Contrato real de `POST /orders` (lectura de `mock-server/src/orders` + smoke contra el servidor)
+
+- **Request:** exactamente `items[] { productId, quantity 1–99 entero }`, `currency` (`MXN`|`USD`) y `shippingAddress { fullName ≥3, phone 10 dígitos, postalCode 5 dígitos, state ≥2, city ≥2, street ≥3, exteriorNumber, interiorNumber? }`. Cualquier campo extra → 400. Cabecera `Idempotency-Key` obligatoria (cualquier texto no vacío; se recorta).
+- **Respuestas:** `202 {status:'pending', retryAfterSeconds, key}` (≥1 s; la orden tarda `ORDER_PROCESSING_MS`, 1000 ms por defecto, en confirmarse); `200 {status:'confirmed', order:{id, items, currency, subtotal, shipping, total, status, createdAt}}` (la app solo guarda `order.id`); repetir la clave con el mismo cuerpo devuelve lo mismo (202 mientras dure, 200 después, también tras confirmar).
+- **Errores (4xx con cuerpo, que `fetchJson` descarta hasta el Día 4):** 400 `VALIDATION_ERROR` (+`fields`), 409 `OUT_OF_STOCK`, 409 `IDEMPOTENCY_KEY_REUSED` (clave reutilizada con otro cuerpo), 404/410 en `GET /orders/status/:key` (no existe / caducada).
+- **Stock:** los productos con `inStock: true` tienen 99 unidades por arranque del mock y cada orden confirmada o pendiente las reserva; `product-261009-001` está agotado (`inStock: false`) y produce **409 OUT_OF_STOCK**; en la app se ve como "El servidor rechazó la orden (HTTP 409)". Producto de ejemplo con stock: `product-261009-002` (USD 45,11).
+- **Dirección ficticia:** `Test Customer`, teléfono `0000000000`, CP `00000`, `Test State`/`Test City`/`Test Street`, número `0`: cumple el contrato, no es un dato personal y nunca se registra.
+
+### Comparación Android / iOS
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Escribir y refrescar lo leído | `createOrder` (mutation) + `invalidatesTags` | Repository que llama a Retrofit y luego invalida su caché / emite en un `SharedFlow` que los `ViewModel` recogen; con Room, el *invalidation tracker* re-emite las consultas afectadas | `URLSession` + un `@Observable`/Combine `PassthroughSubject` que avisa a los modelos; `NSCache.removeObject(forKey:)` para las entradas afectadas |
+| Clave idempotente | cabecera `Idempotency-Key` creada por el llamador | `Interceptor` de OkHttp/Retrofit que añade la cabecera (la clave se crea en el caso de uso, no en el interceptor, para que sea estable por intento) | `URLRequest.setValue(key, forHTTPHeaderField: "Idempotency-Key")` |
+| Etiquetas = qué lecturas quedan viejas | `Home`, `ProductList/LIST`, `Product/<id>` | claves de caché / `Flow` por consulta | claves del `NSCache` / `@Query` observadas |
+| Entradas sin suscriptor | RTK las elimina; se piden al abrirse | `stateIn(WhileSubscribed)` deja de colectar; se recarga al volver a colectar | un `@Observable` sin vista viva se recarga en `.task` al reaparecer |
+| Control solo de desarrollo | `__DEV__ ? require(...) : null` | `BuildConfig.DEBUG` + *source set* `debug` | `#if DEBUG` |
+
+**Errores típicos al venir de nativo.**
+1. Reenviar un `POST` sin saber si se procesó (por eso 0 reintentos y clave idempotente).
+2. Invalidar con un 202: el stock aún no cambió.
+3. Etiquetas sin `id` (`{ type: 'Product' }` invalida todos los productos; aquí cada producto lleva el suyo).
+4. Una clave nueva por cada re-POST: crearía otra orden. La clave nace al pulsar y se reutiliza.
+5. Mutar el `arg` entre reenvíos: el cuerpo debe ser idéntico (el servidor compara una huella canónica).
+6. Registrar el cuerpo o la dirección; y creer que `__DEV__ && <X />` quita el módulo del bundle (quita el JSX, no el `import`).
+
+### Registro de T13
+
+- Lógica con test primero: `checkout/contracts/parse-order-result`, `checkout/logic/{order-invalidation,dev-order,order-log}` (+ tests). 541 → 566 tests (+25).
+- Archivos nuevos: `checkout/contracts/{order,parse-order-result}.ts`, `checkout/logic/{order-invalidation,dev-order,order-log}.ts`, `checkout/data/orders-api.ts`, `checkout/components/OrderDevControls.tsx`. Modificados: `product/screens/ProductPlaceholderScreen.tsx` (carga condicional del control), textos `orderDev.*` es/en.
+- Desviaciones mínimas del plan: (1) `contracts/` para los tipos y `parseOrderResult`, y `order-log.ts` aparte (la lógica del log sin RN se prueba sola); (2) `nextDevOrderStep`/`devRetryDelayMs`/`MAX_DEV_REPOSTS` puros en `dev-order.ts` (el bucle de 202 queda testeado; el componente solo lo ejecuta); (3) el control se carga con `require` bajo `__DEV__` en lugar de `__DEV__ &&` (medido, ver arriba); (4) `orderId` sale de `order.id`: el 200 real no trae `orderId`; (5) `retryAfterSeconds` se acota a 5 s en el control.
+- El control (`OrderDevControls`): botón primario de 48 pt, deshabilitado mientras envía o espera; una región viva (`accessibilityLiveRegion="polite"`) con el estado en texto (y `announceForAccessibility` en iOS, que no tiene regiones vivas); indicador animado solo si no hay movimiento reducido (con movimiento reducido solo el texto); texto de estado con `flex: 1` + `minWidth: 0` y botón con `fontScaleLimits.actionLabel` (lecciones F-1/G-1). Estados: inactivo, enviando, pendiente (reenvío N de 3), confirmada, sigue pendiente, error (red / HTTP n / otro). Al terminar (cualquier salida) llama a `reset()`.
+- Se retira en el Día 4 (H-4) cuando el detalle real sustituya al placeholder; `orders-api.ts` se conserva.
+- Estado: **implementada y validada** en Samsung SM-A037M e iPhone 17 Pro ((c)–(e) y (h) comprobados; ver `tasks.md` T13).
+
+## Día 3 — T14: fallback global de render
+
+### Bloque T14 — Error boundaries frente a errores de API (≈8 min)
+
+**Dos clases de fallo, dos lugares para recuperarse.** Un error esperado de red, un HTTP 5xx o un payload inválido forma parte del estado de una consulta: RTK Query lo entrega como dato y Home, producto o listado conserva su interfaz local con «Reintentar». Un error boundary no sustituye ese modelado. Solo contiene excepciones inesperadas que React encuentra al renderizar el árbol; por ejemplo, un componente que lanza al calcular su JSX. Los errores de callbacks asíncronos o handlers tampoco se convierten por arte de magia en errores de render.
+
+**Contrato real de Expo Router 57.** Una ruta puede exportar `ErrorBoundary({ error, retry }: ErrorBoundaryProps)`. El tipo instalado declara `error: Error` y `retry: () => Promise<void>`; `retry` limpia el error del boundary y vuelve a renderizar la ruta. Al exportarlo desde el layout raíz, el fallback sustituye también sus providers, por eso monta sus propios `I18nextProvider` y `AppThemeProvider`. No reintenta automáticamente: si el mismo render vuelve a lanzar, Expo Router vuelve a presentar el fallback y evita un ciclo automático.
+
+**Comparación nativa.** En Android, un `Thread.UncaughtExceptionHandler` observa una excepción no contenida cuando el proceso ya va a terminar; no puede recomponer de forma segura una pantalla como este boundary. Lo más cercano en Compose es contener un estado de error antes de componer, pero una excepción durante composición normalmente asciende al host. En iOS, un crash handler (`NSSetUncaughtExceptionHandler` o señales) sirve para diagnóstico, no para continuar el proceso; SwiftUI tampoco ofrece un equivalente directo que recupere cualquier excepción de `body`. El boundary de React es contención declarativa de un subárbol, no recuperación de un crash nativo, OOM o fallo de Kotlin/Swift.
+
+### Decisión de T14 (RF-3)
+
+- **Elegida:** el `ErrorBoundary` de Expo Router en `_layout.tsx`, con una pantalla completa que ofrece `retry()` y «Ir al inicio» (`retry()` y `router.replace('/')` en la tarea siguiente, después de que el fallback vuelva a quedar estable; orden comprobado con la versión instalada). Trade-off: como el layout raíz queda sustituido, el fallback duplica solo los providers imprescindibles; a cambio cubre todas las rutas y volver a Inicio remonta el árbol con estado efímero nuevo.
+- **Descartada:** una clase `ErrorBoundary` propia o `react-error-boundary`. La primera duplica el mecanismo que Router ya instala por ruta; la segunda añade una dependencia sin aportar un requisito. También se descarta tratar errores API lanzándolos al boundary: perdería caché, contexto y recuperación local.
+
+### Registro de T14
+
+- Expo Router `~57.0.25`: los tipos instalados y la documentación confirman `ErrorBoundaryProps { error: Error; retry: () => Promise<void> }`; `Try.retry` limpia su estado de error y resuelve después del `setState`.
+- La demo cambia estado desde el botón y lanza en el render siguiente (los boundaries no capturan el propio handler). Está cargada con `__DEV__ ? require(...) : null`, por lo que el módulo no entra en la rama de release.
+- Orden comprobado en iOS con un error que persiste: `router.replace('/')` y `retry()` en el mismo turno, o reemplazar inmediatamente tras el `await`, deja la ruta que falla. Funciona `retry().then(() => setTimeout(() => router.replace('/'), 0))`: el fallback nuevo queda estable y la tarea siguiente reemplaza la ruta, desmontando su estado. El timer no es un reintento automático; nace exclusivamente al pulsar «Ir al inicio».
+- Validación Android (Samsung SM-A037M): fallback español tras descartar LogBox; botones nativos enfocables de 90 px a densidad 300 (= 48 dp), TalkBack activo y árbol accesible; Reintentar recuperó la ruta sin bucle y «Ir al inicio» abrió Home. Sin mock, el producto mostró «Sin conexión» local, no el fallback.
+- Validación iOS (simulador iPhone 17 Pro): fallback español e inglés en el idioma activo; auditoría AX con heading y dos botones de 48 pt; un error persistente reapareció solo al pulsar Reintentar (sin bucle) y «Go to Home» abrió Home. Sin mock, el producto mostró «No connection to the server» local. VoiceOver real queda para la auditoría del Día 6 por decisión previa del usuario.
+- Comprobaciones: lint y TypeScript sin salida/errores; `test:logic` 566/566; paridad i18n 3/3.
+
+## Día 3 — T15: medir antes de optimizar
+
+### Bloque T15 — Profiler, renders, commits y tiempo de primera pintura (≈9 min)
+
+**Tres medidas que no significan lo mismo.** React Native DevTools Profiler cuenta cada vez que React ejecuta un componente (*render*) y agrupa el trabajo que llega a la interfaz en *commits*. Un render puede acabar sin cambios nativos; un commit sí aplica el árbol reconciliado y su duración indica cuánto trabajo de React participó, pero no equivale por sí sola a FPS ni a un bloqueo completo del hilo JS. `FlashList.onLoad` mide otra fase: milisegundos desde montar la lista hasta que dibuja elementos por primera vez; solo se dispara una vez por montaje, así que al cambiar un chip (otra identidad y otro `key`) mide la primera pintura de la lista nueva.
+
+**React Compiler está activo.** El compilador puede estabilizar valores y saltar renders sin `memo`, `useMemo` o `useCallback` escritos a mano. Para saber si está ocultando una diferencia se usa temporalmente la directiva `"use no memo"` en el componente observado, se repite exactamente el mismo recorrido y después se retira. La directiva es un control experimental, no una solución de producción. Primero se registra el comportamiento real compilado; solo si el perfil señala un coste concreto se prueba **un** candidato y se repite la misma interacción.
+
+**Cómo leerlo desde nativo.** Un render se parece a una recomposición de Compose o a reevaluar `body` en SwiftUI; un commit se parece a la fase en la que Compose aplica cambios al árbol o SwiftUI actualiza su grafo/vistas. React Native DevTools Profiler corresponde a Android Studio Profiler más Layout Inspector para ver coste y árbol; en iOS, a Instruments (Time Profiler/Core Animation) más la jerarquía de vistas. Ninguna herramienta autoriza a inferir la causa: un sondeo temporal de `setInterval` detecta retrasos del event loop JS, mientras Profiler muestra qué trabajo React coincidió con ellos.
+
+### Decisión de T15 antes de instrumentar (RF-3)
+
+- **Elegida:** perfil reproducible con React Profiler/contadores temporales, `FlashList.onLoad` y sondeo temporal de stalls; mismo Samsung, datos y gestos antes/después. El único candidato se elige después del baseline. Trade-off: el código de medición altera ligeramente el build de desarrollo y obliga a repetir varias veces y usar mediana/rango.
+- **Descartada:** añadir `memo`, cambiar `drawDistance`, ventana, imágenes o arquitectura por intuición. También se descarta dejar el sondeo o logs como telemetría: no representan rendimiento de producción y añadirían trabajo permanente al hilo JS.
+
+### Método reproducible y resultado (Samsung SM-A037M)
+
+1. Mock sin latencia, `adb reverse` para 8081/3001, escala de fuente normal y caché de la app vacía al iniciar cada serie. En categoría se usó Vitaminas (60); para 300 se usaron `daily` y `wellness`, búsquedas sin categoría equivalentes en tamaño (15 páginas de 20).
+2. Se envolvió temporalmente la `FlashList` en `React.Profiler`, se contaron entradas a `ProductGrid`/`ProductCard`, se conservó el `onLoad.elapsedTimeInMs` ya previsto y se ejecutó un `setInterval` de 50 ms que registraba retrasos ≥50 ms. Todo ese código se retiró al terminar.
+3. Interacción A: desde arriba, swipes adb de 900 px/400 ms hasta recibir tres páginas. Interacción B: desde la primera página de Vitaminas, tocar «Disponible» y esperar a que la nueva cuadrícula quedara estable. Para el recorrido completo de 300: 75 swipes idénticos de 900 px/400 ms hasta página 15; después, 18 swipes inversos sobre las 300 ya cargadas para separar scroll de llegada de página.
+4. Se intentó además un APK `release` real (`assembleRelease`, instalado correctamente), pero el origen didáctico `http://localhost:3001` quedó bloqueado en release y la lista mostró offline. Habilitar cleartext o introducir un origen de producción habría cambiado app config fuera de T15. Por tanto, se aplicó la alternativa aprobada: Profiler sobre el Development Build, sin presentar ese intento como dato release.
+
+Las duraciones son suma/mediana/máximo de commits de la misma serie. «Renders tarjetas» cuenta ejecuciones de `ProductCard`, no vistas nativas recicladas; «grid» cuenta ejecuciones de `ProductGrid`. El rango de stalls excluye el arranque y Fast Refresh.
+
+| Dispositivo / build | Escenario y pasos | Variante | Renders `ProductGrid` / `ProductCard` | Commits React (n; suma; mediana; máx.) | `onLoad` | Stalls JS | Conducta |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Samsung SM-A037M / dev instrumentado | 3 páginas, universo 300, swipes 900 px/400 ms | Antes: Compiler activo | 6 / 58 | 72; 3.688,7 ms; 20,5 ms; 237,9 ms | 355 ms | 51–414 ms | páginas 1–3, ids y posición correctos |
+| Samsung SM-A037M / dev instrumentado | mismos pasos | Candidato: `memo(ProductCard)` + `"use no memo"` | 7 / 58 | 76; 3.669,9 ms; 17,4 ms; 236,0 ms | 486 ms | 53–470 ms | igual |
+| Samsung SM-A037M / dev instrumentado | tocar «Disponible», 60 productos | Antes: Compiler activo | 2 / 10 | 7; 557,8 ms; 30,4 ms; 245,3 ms | 450 ms | 83–420 ms | 55 productos, página 1 y scroll arriba |
+| Samsung SM-A037M / dev instrumentado | mismos pasos | Candidato | 2 / 10 | 7; 554,3 ms; 29,6 ms; 239,2 ms | 454 ms | 60–423 ms | igual |
+| Samsung SM-A037M / dev instrumentado | 75 swipes 900 px/400 ms; cargar 15 páginas | Antes: Compiler activo | 30 / 300 | 419; 18.329,3 ms; 18,4 ms; 261,0 ms | 355 ms | 51–432 ms | 300 ids únicos; sin petición 16 |
+| Samsung SM-A037M / dev instrumentado | mismos pasos | Candidato | 30 / 300 | 401; 17.958,4 ms; 17,7 ms; 236,0 ms | 486 ms | 53–472 ms | igual |
+| Samsung SM-A037M / dev instrumentado | 18 swipes inversos sobre 300 ya cargados, sin red | Antes | — / solo celdas recicladas visibles | incluido en la traza anterior | no aplica | 50–104 ms | toque/scroll inmediato |
+| Samsung SM-A037M / dev de T9 | categoría 60, recorrido frío | Antes de T15 | no registrado | no registrado | no registrado | página 212/370/392 ms; scroll 250–440 ms | funcional |
+| Samsung SM-A037M / release | abrir categoría con mock local | no medible | no aplica | no aplica | no aplica | no aplica | offline por HTTP cleartext; dato descartado |
+
+### Candidato, veredicto y cierre de H-13 / T9(g)
+
+**Candidato único.** El perfil mostró que cada tarjeta visible se ejecutaba una vez; aun así se probó la única duda razonable: `memo(ProductCard)`, desactivando temporalmente el Compiler dentro de esa tarjeta con `"use no memo"` para no atribuirle al wrapper lo que ya hacía el compilador. La comparación mantuvo productos, callbacks e identidad. Se descartaron `drawDistance`, imágenes y la paginación porque habrían cambiado cuánto contenido se prepara o muestra, no un render redundante demostrado.
+
+**Resultado: candidato revertido.** En el chip los siete commits y diez renders fueron idénticos; la diferencia de 3,5 ms acumulados es ruido (<1 %), `onLoad` empeoró 4 ms y el peor stall 3 ms. En 300 el wrapper redujo 18 commits internos y ≈2 % de duración acumulada, pero empeoró `onLoad` 131 ms y el peor stall 40 ms; además no evitó un solo render de tarjeta (300/300). No hay una mejora consistente y atribuible. React Compiler ya cubre este caso, así que no queda `memo`, `"use no memo"`, `Profiler`, contadores ni intervalo en producción.
+
+**H-13 cerrado.** Con las 300 tarjetas ya cargadas, el mismo Development Build queda en 50–104 ms, por debajo de 150 ms; no existe una transformación síncrona de los 300 productos al tocar o desplazar. Los >150 ms aparecen al descubrir y montar celdas nuevas y alrededor de la llegada de páginas dentro del build instrumentado; el Profiler registra commits de hasta 238–261 ms, mientras añadir `memo` no reduce renders de tarjetas. Por tanto, los 250–440 ms «solo scroll» de T9 no prueban un coste de paginación: eran reproducibles en el recorrido frío de desarrollo, pero desaparecen con las 300 celdas ya recorridas. La llegada de página **sí contribuye** al recorrido frío en dev, pero no por aplanar 300 elementos ni por renders redundantes; predominan montaje/medición de celdas e instrumentación de desarrollo. El intento release no puede usarse cuantitativamente por el bloqueo HTTP explicado arriba. RNF-1 queda satisfecho y no se conserva una optimización especulativa.
+
+### Validación final de T15 (sin instrumentación)
+
+- **Android, Samsung SM-A037M:** Development Build debug reinstalado después del intento release. Vitaminas cargó páginas 2 y 3 una vez, «Disponible» cambió el total 60 → 55, volvió arriba y mantuvo tarjetas/ids correctos. No aparecieron logs `[profile]`; solo permanece el `grid onLoad` `__DEV__` que ya era parte del plan desde T9.
+- **iOS, simulador iPhone 17 Pro:** mismo recorrido con `axe`: páginas 2 y 3 una vez; activación por coordenada del nodo AX «Disponible» cambió 60 → 55 y generó una cuadrícula nueva (`onLoad` 31 ms). Sin cambio productivo compartido que comparar: se validó que revertir el candidato conservó paginación, scroll, chip y tarjetas.
+- **Automático:** `npx expo lint` y `npx tsc --noEmit`, sin salida/errores; `npm run test:logic`, 566/566; paridad i18n, 3/3. El primer intento del comando de paridad apuntó por error al directorio padre; se repitió con `src/core/i18n/resources/parity.test.ts` y pasó.
+
+## Día 3 — T16: cierre y validación del día
+
+### Bloque T16 — Qué significa «validado» en una app con caché (≈8 min)
+
+**Validar es contar peticiones, no mirar pantallas.** Una pantalla puede verse bien con una caché que miente: por eso la matriz de cierre se lee en los logs `__DEV__` (`[api]`, `[products]`, `[home]`, `[net]`, `[orders]`, `[search]`) y no solo en lo que se ve. Cada regla de datos del día es un número comprobable: 1 petición al abrir tras más de 60 s, 0 antes, 3 peticiones ante red o 5xx en una lectura, 1 ante 404, timeout o `POST` fallido, 1 petición por página y ninguna tras la última, 1 consulta 400 ms después de la última tecla.
+
+**Qué no puede decir un log.** Un log no dice si una etiqueta suena bien, si un botón se corta con texto grande ni si un gesto compite con el scroll. Eso se comprueba con el árbol de accesibilidad (`uiautomator`, `axe`, la herramienta `UiAutomation` con TalkBack activo) y con capturas a 2×/AX5, oscuro y movimiento reducido. Lo que ninguna herramienta de línea de comandos puede dar —VoiceOver real, una red física cortada en iOS— se declara como pendiente en vez de darse por hecho.
+
+**Comparación nativa.** En Android esta matriz sería una mezcla de pruebas instrumentadas con `MockWebServer` (contar peticiones por ruta, simular 503 y latencia) y Compose test sobre el árbol semántico; en iOS, XCUITest con `URLProtocol` de prueba y el Accessibility Inspector. En React Native los dos caminos se unifican en Jest (con `fetch` controlado para RTK Query) y Maestro (árbol de accesibilidad común) el Día 6; hoy se hace a mano con los mismos criterios para saber qué automatizar.
+
+**Errores típicos de quien viene de nativo.** (1) Dar por «roto» un comportamiento que es la regla: datos de menos de 60 s tras reconectar no piden nada (R-1 abajo). (2) Medir con el build de desarrollo y atribuir el resultado a la paginación: la instrumentación y la validación de dev inflan los tiempos (T15). (3) Probar solo la ruta feliz: sin latencia (`MOCK_LATENCY_MS`) no existe carrera entre refresh y «cargar más». (4) Fiarse del estado de la UI en vez del número de peticiones. (5) Contar `fetch` fallidos sin distinguir si el dispositivo o el servidor están caídos: `expo-network` mide el dispositivo, `adb reverse` y el mock miden otra cosa.
+
+### Decisión de T16 (RF-3)
+
+- **Elegida:** matriz guiada por logs reales con el mismo mock y Samsung/simulador de siempre, más árbol de accesibilidad como evidencia, y declarar sin disimulo lo no comprobado. Trade-off: es manual y lenta (≈1,5 h por plataforma) y hay casos de carrera que dependen de la latencia del adb/axe.
+- **Descartada:** automatizar la matriz con una herramienta nueva hoy (Maestro/Jest entran el Día 6 con su plan: constitución, punto 4) y cortar el Wi-Fi del Mac para probar la reconexión en iOS (corta también el hilo de trabajo del implementador y afecta a todo el equipo; se deja al usuario).
+
+### Registro de verificación del Día 3 (T16, 2026-10-12)
+
+**Automático.**
+
+| Comprobación | Resultado |
+| --- | --- |
+| `npx expo lint` | sin salida, código 0 |
+| `npx tsc --noEmit` (con `.expo/types/router.d.ts` ya generado) | sin errores, código 0 |
+| `npm run test:logic` | 566 tests, 123 suites, 566 pass, 0 fail (incluye la paridad i18n) |
+| `npm --prefix mock-server test` | 73 tests, 12 suites, 73 pass |
+| `npx expo install --check` | «Dependencies are up to date» |
+| `npx expo-doctor@latest` | 21/21 comprobaciones sin incidencias |
+| Instrumentación temporal de T15 en `src/` | ninguna: sin `Profiler`, `setInterval` de sondeo, `memo`/`"use no memo"` de prueba; solo queda el log `grid onLoad` bajo `__DEV__` previsto desde T9 |
+
+**Matriz manual.** Android = Samsung SM-A037M (dev build, `adb`, Metro y mock por USB); iOS = simulador iPhone 17 Pro (`axe`, logs en Metro). Cifras tomadas de los logs.
+
+| Caso | Android | iOS |
+| --- | --- | --- |
+| Home abre: 1 petición; tras >60 s al volver al foco: 1 revalidación sin spinner | OK (`[home] background revalidation` + 1 `GET /home`) | OK |
+| Categoría: primera página, contador, 2 columnas | OK («60 productos») | OK |
+| Paginación: páginas 2 y 3 una vez cada una, ninguna tras la última | OK | OK |
+| Categoría <60 s: reabrir no pide; >60 s: una revalidación de las 3 páginas | OK (0 / 3 peticiones) | OK (0 / 3) |
+| Chip «Disponible» → `inStock=true`, 55 productos; orden `price_asc`; marcas (`brands=2`, 13 productos) | OK | OK |
+| Cancelar y cerrar la hoja de filtros: sin petición | OK (Cancelar y Atrás) | OK (Cancelar y Cerrar) |
+| Vacío con filtros (`category/does-not-exist` + chip): chips visibles y «Limpiar filtros» en una acción | OK (limpiar reutiliza la caché fresca: 0 peticiones) | OK |
+| Pull-to-refresh fuerza 1 petición con la caché fresca | OK | no repetido en T16 (validado en T9) |
+| Carrera pull ↔ «cargar más» (latencia 6 s): aborta la página en vuelo y parte de la 1 | OK (`pull refresh: next page aborted`, `GET … -> aborted`) | no reproducido: los gestos `axe` tardan más que la ventana; validado en T9 |
+| Skeleton con forma de cuadrícula con latencia 2 s | OK | validado en T8 |
+| Timeout (latencia 9 s): 1 petición, error a los 8 s con «Reintentar» que recupera | OK | OK (1 petición `timeout`) |
+| Offline (3 peticiones: 0, +0,6 s, +1,7 s) y reintento manual | OK (categoría y Home) | OK (Home en segundo plano: 3 peticiones y aviso; «Reintentar» lo retira) |
+| 5xx (fixture `server-fail`): 3 peticiones y error con «Reintentar» | OK (3×`http 500`) | misma ruta de JS; no repetido |
+| 404 de producto: 1 petición; id inválido: 0 | OK | OK |
+| Reconexión con `expo-network` y datos >60 s: 1 revalidación y aviso retirado solo tras éxito | OK (106 s de antigüedad: `[net]`, `[home] background revalidation`, `GET -> ok`, aviso fuera) | PENDIENTE: no se corta el Wi-Fi del Mac |
+| Reconexión con datos <60 s: ninguna petición; el aviso offline sigue | OK (54 s: solo `[net] offline -> online`; ver R-1) | PENDIENTE |
+| Reconexión sin datos previos: ninguna petición, queda «Reintentar» | OK | PENDIENTE |
+| Invalidación por orden: POST 202 (sin invalidar), POST 200 con la misma key y revalidación de Home, lista montada y detalle | OK (3 revalidaciones) | OK (Home y detalle; sin lista montada en esta ruta) |
+| `POST /orders` sin red: 1 intento y aviso «pulsa de nuevo» | OK | OK |
+| Búsqueda: 1 consulta 400 ms tras la última tecla, historial, sin duplicados | OK (`[search] debounced after 400ms`) | OK |
+| 300 elementos reales (búsqueda `daily`): 14 cargas (páginas 2–15), 14 `ok`, ninguna 16.ª | OK | OK |
+| Fallback global: fallback es, Reintentar recupera, «Ir al inicio» lleva a Home; un error de API sigue local | OK | OK |
+| Fuente 2×/AX5 | OK: una columna, nombre/precio/estado visibles; iconos del tab bar recortados (H-1 conocido) | OK: título y tarjeta visibles; botón de orden en 2 líneas (aceptado) |
+| Tema oscuro | OK (categoría y hoja) | OK |
+| Movimiento reducido | ajuste del sistema aplicado y hoja abre; la ausencia de animación no se distingue en capturas: queda como en T10 | no evidenciado en iOS (el código lo respeta: skeleton estático, `overrideReduceMotion` en `AppBottomSheet`, spinner del pie omitido); pendiente de comprobación manual o auditoría del Día 6 |
+| TalkBack / VoiceOver | TalkBack real: tarjetas con nombre, precio, oferta, calificación y disponibilidad; encabezados; contador en región viva; pestañas con rol. VoiceOver real: NO probado (decisión del usuario, Día 6); árbol AX de iOS revisado con `axe` | — |
+
+**Medición en Android con los 300 reales (revisión de T9 (g), sin instrumentación).** Dev build, 90 swipes de 900 px sobre `daily`: `dumpsys gfxinfo` (hilo de UI, no el de JS) dio 3 904 fotogramas, p50 25 ms, p90 53 ms, p95 85 ms y p99 150 ms; con las 300 ya cargadas, 18 swipes inversos dieron p50 32 ms y p99 129 ms. Es el mismo orden que T15 (50–104 ms de estancamiento de JS con las 300 cargadas) y confirma la conclusión de T15: no hay una transformación síncrona de 300 elementos; los picos son montaje de celdas y trabajo del build de desarrollo. Dato complementario, no sustituye a un perfil en release (bloqueado por el HTTP cleartext, ver T15).
+
+### Hallazgos de T16
+
+- **R-1 (diseño, decidir en el Día 4):** tras reconectar con datos de menos de 60 s no se pide nada y el aviso offline sigue visible hasta el siguiente éxito (pull, «Reintentar» o foco >60 s). Cumple RF-5/RF-19 y el caso límite «el aviso se retira solo tras una respuesta satisfactoria», pero el usuario puede ver «Sin conexión» con red restaurada. Si se quiere, una reconexión con aviso activo podría ignorar los 60 s; es un cambio de requisito (spec 004/005), no un defecto.
+- **R-2 (menor, no investigado):** en Android, «Reintentar» del fallback global tras provocar el error desde Foundations (abierto por enlace) deja al usuario en la raíz de la pestaña Cuenta, no en Foundations. Es el comportamiento de `retry()` de Expo Router sobre una ruta con estado efímero; no afecta a «Ir al inicio».
+- **R-3 (herramienta de desarrollo):** en iOS el botón flotante «Tools» del dev client cubre el botón Atrás nativo («Inicio»/«Búsqueda»); para volver con `axe` hay que tocar su borde derecho. No ocurre en un build de producción.
+- **R-4 (limitación de herramienta):** `adb shell input text` y `axe type` pierden o repiten caracteres (`magnesiu`, `daidaily`); es el mismo S-9 de T12. Los gestos de `adb`/`axe` empiezan a ser el factor limitante para reproducir las carreras con latencia.
+- **Seguimientos que se mantienen:** F-3, F-4, G-2…G-7, H-1/H-11, H-10, H-12, S-4…S-6, S-8…S-12, M-5/M-6, `engines` de Node, VoiceOver real y el ruido de desarrollo `injectEndpoints … overrideExisting` tras Fast Refresh (ver `MEMORY.md`).
+- **Descripción de seguimientos que solo tenían identificador:**
+  - **G-6:** arrastre desde la barra de acciones de la hoja de filtros en iOS: resultado no concluyente.
+  - **G-7:** la hoja de filtros tardó ≈2 s en abrir una vez; no reproducido.
+  - **S-10:** iOS, el doble espacio se convierte en punto (comportamiento del teclado del sistema, no de la app).
+  - **S-11:** una búsqueda de solo espacios desmonta la vista de resultados y reinicia los filtros; decisión consciente.
+- **Pendientes de decisión del usuario:**
+  - **H-10 (iOS, cambio del tamaño de texto en caliente):** textos cortados si se cambia con la app abierta (también en Home). Es una excepción conocida a RNF-2 que el usuario debe aceptar explícitamente (o priorizar en el Día 6).
+  - **Cambio de requisito opcional (vía @planner, con aprobación del usuario; `spec.md` no se edita aquí):** anotar que RF-8 aplica a lecturas (`createOrder` hace 0 reintentos, decisión P2) y que RF-9 pasa a una columna con fuente > 1.5x.
+
+### Comparación Android / iOS del día (para repasar)
+
+| Concepto | React Native / HerbStore | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Estado de servidor | RTK Query: caché por argumentos, tags, reintentos | Repository + `Flow`/`StateFlow` con caché y `stateIn` | `async/await` + `@Observable`/Combine sobre `URLCache`/un cliente |
+| Caché con frescura | `refetchOnMountOrArgChange: 60` + hook de revalidación | TTL en el repositorio; `Flow` que reemite | `URLCache`/`NSCache` con fecha de validez |
+| Reintentos | `retry` con condición pura y espera 500/1000 ms | Interceptor de OkHttp/Retrofit | `URLSession` con reintento propio |
+| Invalidación | `invalidatesTags` tras la orden | Invalidar el repositorio y volver a emitir | Invalidar la caché y notificar al `Observable` |
+| Paginación | `infiniteQuery`, `getNextPageParam`, «cargar más» por viewability | Paging 3 (`PagingSource`) | `onAppear` del último elemento |
+| Lista grande | FlashList v2 (reciclaje de celdas) | `LazyVerticalGrid` (composición perezosa) | `LazyVGrid` |
+| Debounce | `setTimeout` reinstalado (400 ms) | `Flow.debounce` | `Combine.debounce` |
+| Conectividad | `expo-network` (un listener) | `ConnectivityManager.NetworkCallback` | `NWPathMonitor` |
+| Error inesperado de render | `ErrorBoundary` de Expo Router | contención de estado; `UncaughtExceptionHandler` solo diagnostica | `NSSetUncaughtExceptionHandler` solo diagnostica |
+| Medir | React DevTools Profiler + `onLoad` | Android Studio Profiler / Layout Inspector | Instruments |
+
+---
+
+### Ejercicio del Día 3 (sin solución)
+
+**Añade a la búsqueda un filtro de «Rango de precio» (mínimo y máximo) que se combine con la paginación sin duplicados, y demuestra que la caché lo distingue.**
+
+Hazlo en una rama o carpeta de práctica sin romper lo existente y sin dependencias nuevas.
+
+1. **Contrato.** El mock debe aceptar `minPrice` y `maxPrice` en `GET /products` (filtrar antes de ordenar y paginar). Escribe primero los tests de `node:test` del mock: rango válido, solo uno de los dos extremos, `min > max` (decide: 400 o vacío y justifica), no numérico y negativo. Confirma que cada test falla por la razón esperada antes de implementar.
+2. **Identidad.** Amplía `buildProductQueryArgs` y `toProductQueryString` con tests puros: dos rangos equivalentes (`"10"` y `10`, o extremos intercambiados) deben ser la misma consulta; sin rango no deben aparecer las claves. Decide cómo normalizas el importe y anota el trade-off de la alternativa descartada.
+3. **Estado local.** Añade el rango a `list-params` con las reglas de borrador/aplicado de la hoja de filtros (Cancelar no cambia nada, Aplicar sí) y al contador «Filtros (N)». Demuestra con un test que `clearFilters` lo borra y que `setSort` no.
+4. **Paginación.** Con el rango activo, comprueba por id que no hay duplicados entre las páginas 1 y 2 y que `total`/`totalPages` provienen de la respuesta filtrada. Define con qué rango obtienes exactamente una página y con cuál `page=2` vacía, y explica qué hace `getNextPageParam` en cada caso.
+5. **Carrera.** Con `MOCK_LATENCY_MS=4000`, cambia el rango dos veces seguidas mientras carga la página 2. Explica qué respuesta puede actualizar la lista y por qué, sin escribir código para ello.
+6. **Caché.** Aplica el rango A, el rango B y vuelve al A antes de 60 s: anota cuántas peticiones salen y por qué. Repite pasados 60 s y explica qué se muestra mientras revalida.
+7. **Interfaz.** Dos campos numéricos con teclado adecuado, error visible si `min > max`, objetivos de 48 dp/44 pt, texto al máximo del sistema sin recortes y movimiento reducido. Textos en español e inglés con `parity.test.ts` en verde.
+8. **Validación.** Android físico e iOS simulador, claro y oscuro. Registra el contador de peticiones desde los logs `__DEV__` sin escribir el rango del usuario en ellos.
+9. **Diagnóstico (sin respuestas aquí).** Explica cuántos problemas tiene este fragmento y qué cambiarías:
+
+```tsx
+function PriceFilterResults({ min, max }: { min: string; max: string }) {
+  const [items, setItems] = useState<Product[]>([]);
+  const [page, setPage] = useState(1);
+
+  useEffect(() => {
+    fetch(`${origin}/products?minPrice=${min}&maxPrice=${max}&page=${page}`)
+      .then((r) => r.json())
+      .then((data) => setItems([...items, ...data.items]));
+  }, [page]);
+
+  return <FlatList data={items} onEndReached={() => setPage(page + 1)} renderItem={...} />;
+}
+```
+
+Entrega esperada: el código, una tabla de tus casos (entrada → consulta → peticiones → resultado), una explicación en tus palabras (≤ 8 líneas) y la comparación con Paging 3 (`PagingSource`/`RemoteMediator`) y con la paginación manual de SwiftUI.
+
+---
+
+### Preguntas de repaso (respuestas cortas)
+
+1. **¿Qué diferencia hay entre estado de servidor y estado de cliente y dónde vive cada uno en HerbStore?**
+   El de servidor es una copia remota con caché, frescura y reintentos; vive solo en RTK Query. El de cliente (historial de búsqueda, filtros de pantalla) es local o Redux. No se copian respuestas a slices.
+2. **¿Cuándo se revalida una consulta y cuántas peticiones salen?**
+   Con datos de 60 s o más: al volver el foco, la app a primer plano o la reconexión se muestra la caché y sale una sola petición en segundo plano. Con menos de 60 s no sale ninguna. El pull siempre fuerza una.
+3. **¿Cuántos reintentos hace una lectura y cuándo no reintenta?**
+   Dos (3 peticiones, esperas de 500 y 1000 ms) ante red o 5xx. Cero ante 4xx, timeout, respuesta inválida, aborto y cualquier `POST`: reenviar una orden de resultado desconocido es peligroso.
+4. **¿Por qué la página no forma parte de la identidad de la consulta?**
+   Porque es el `pageParam` de la infinite query: todas las páginas de los mismos parámetros viven en una entrada de caché, y cambiar un filtro u orden sí cambia la identidad.
+5. **¿Cómo se evita que una respuesta tardía pise la lista vigente?**
+   Cada combinación de parámetros tiene su entrada de caché y la pantalla lee `currentData`, nunca `data`: la respuesta tardía escribe en su propia entrada. Un refresh aborta además la página siguiente en vuelo.
+6. **¿Cómo decide «cargar más» y por qué una sola vez por página?**
+   Cuando uno de los 4 últimos elementos es visible, hay página siguiente y no hay petición en curso. Un guard por número de páginas pedidas evita duplicar la petición mientras llegan los datos.
+7. **¿Qué aporta FlashList v2 frente a `FlatList` y cuál es su análogo nativo?**
+   Recicla celdas en vez de crear y destruir, y v2 mide solo sin `estimatedItemSize`. Se parece al reciclaje de `RecyclerView`; `LazyVerticalGrid` y `LazyVGrid` componen perezosamente sin reciclar.
+8. **¿Cómo funciona el debounce de la búsqueda y qué hace Enter?**
+   Un `setTimeout` de 400 ms que se reinstala con cada cambio; tras él se consulta la forma normalizada. Enviar consulta al momento y añade al historial; teclear sin enviar no escribe.
+9. **¿Qué invalida una orden confirmada y por qué un 202 no?**
+   Confirmada (200) invalida Home, la lista y el detalle de cada producto: las consultas activas revalidan y las inactivas se piden al abrirse. El 202 es «pendiente»: aún no hay estado confirmado que invalidar.
+10. **¿Por qué no se dejó `memo(ProductCard)` y cómo se decidió?**
+    Se midió el mismo recorrido antes y después (renders, commits, `onLoad`, stalls): no evitó ni un render de tarjeta y empeoró dos métricas. React Compiler ya cubría el caso; sin mejora medible se revierte.
+
+---
+
+### Checklist oral
+
+Debería poder explicar, sin mirar apuntes y en unos 60 segundos cada punto:
+
+**Caché**
+- [ ] Qué hacen `keepUnusedDataFor: 300` y `refetchOnMountOrArgChange: 60`, y por qué `refetchOnFocus`/`refetchOnReconnect` de RTK están desactivados.
+- [ ] Recorrido de la regla de 60 s con foco, primer plano y reconexión, y por qué comparten una función pura.
+- [ ] Tags: `providesTags`/`invalidatesTags`, consultas activas frente a inactivas, y por qué un 202 no invalida.
+- [ ] Por qué se lee `currentData` y no `data`.
+
+**Reintentos y errores**
+- [ ] La taxonomía `network | http | timeout | invalid | aborted` y cuál reintenta; por qué `POST` y timeout no.
+- [ ] Offline frente a error: de dónde sale «offline» (fallo de `fetch` sin respuesta) y por qué `expo-network` solo dispara la revalidación.
+- [ ] Error de API (estado local con «Reintentar») frente a error de render (`ErrorBoundary` global).
+
+**Listas**
+- [ ] Reciclaje de celdas, `keyExtractor` por id y `key` de identidad para volver arriba al cambiar parámetros.
+- [ ] «Cargar más» por viewability, guard por páginas, última página sin petición y pie de carga/error.
+- [ ] Deduplicación (se conserva el primer ejemplar) y carrera entre refresh y página siguiente.
+- [ ] Filtros: OR dentro de un facet, AND entre facets; borrador frente a aplicado; orden remoto.
+
+**Debounce y búsqueda**
+- [ ] `setTimeout` reinstalado de 400 ms, forma normalizada (NFD, minúsculas, espacios) y por qué añadir un espacio no es una consulta nueva.
+- [ ] Historial: identidad normalizada, texto visible más reciente, máximo 10 y por qué es estado de cliente.
+
+**Medición**
+- [ ] Render frente a commit frente a `onLoad`, y por qué se mide con el mismo recorrido antes y después.
+- [ ] Cuándo se conserva una optimización (una medida mejora y ninguna conducta cambia) y por qué se revirtió `memo`.
+- [ ] Dev frente a release y qué no puede concluirse del build de desarrollo.
+
+**Proceso**
+- [ ] Cómo se validó el día: lógica con `node:test`, logs reales con contadores, árbol de accesibilidad y qué queda para el Día 6 (VoiceOver real, Jest, RNTL, Maestro).

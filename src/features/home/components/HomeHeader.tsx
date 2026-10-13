@@ -1,9 +1,16 @@
-import { SymbolView } from 'expo-symbols';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
-import { AppText, fontScaleLimits, radii, sizes, spacing, useAppTheme } from '@/design-system';
+import {
+  AppIcon,
+  AppText,
+  fontScaleLimits,
+  radii,
+  sizes,
+  spacing,
+  useAppTheme,
+} from '@/design-system';
 
 type HomeHeaderProps = {
   onSearchPress: () => void;
@@ -33,12 +40,10 @@ export function HomeHeader({ onSearchPress, onScanPress }: Readonly<HomeHeaderPr
           { backgroundColor: colors.surface, borderColor: colors.border },
           pressed && !reduceMotion ? styles.pressed : null,
         ]}>
-        <SymbolView
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
+        <AppIcon
           name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }}
           size={22}
-          tintColor={colors.textMuted}
+          color={colors.textMuted}
         />
         <AppText
           maxFontSizeMultiplier={fontScaleLimits.searchField}
@@ -57,12 +62,10 @@ export function HomeHeader({ onSearchPress, onScanPress }: Readonly<HomeHeaderPr
           { backgroundColor: colors.primary },
           pressed && !reduceMotion ? styles.pressed : null,
         ]}>
-        <SymbolView
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
+        <AppIcon
           name={{ ios: 'barcode.viewfinder', android: 'qr_code_scanner', web: 'qr_code_scanner' }}
           size={24}
-          tintColor={colors.onPrimary}
+          color={colors.onPrimary}
         />
       </Pressable>
     </View>

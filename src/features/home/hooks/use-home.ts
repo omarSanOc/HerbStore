@@ -1,108 +1,67 @@
-import { useNavigation } from 'expo-router';
-import { useEffect, useReducer } from 'react';
-import { AppState } from 'react-native';
+import { toApiError } from '@/core/api/api-error';
+import { usePullToRefresh } from '@/core/api/use-pull-to-refresh';
+import { useRevalidateWhenStale } from '@/core/api/use-revalidate-when-stale';
 
-import { apiOrigin } from '@/core/network/api-origin';
-
-import { fetchHome } from '../data/home-client';
-import { homeFixture } from '../data/home-fixture-env';
-import type { HomeScreenState } from '../logic/classify-home-result';
-import {
-  homeRequestReducer,
-  initialHomeRequestState,
-  selectHomeScreenState,
-  selectIsRefreshing,
-} from '../logic/home-request-state';
-import { shouldRefetchOnFocus, shouldRefetchOnForeground } from '../logic/refetch-policy';
+import { useGetHomeQuery } from '../data/home-api';
+import { classifyHomeResult, type HomeScreenState } from '../logic/classify-home-result';
 
 export type HomeViewModel = {
-  /** What to draw: a discriminated union derived from the requests, never stored. */
+  /** What to draw: a discriminated union derived from the query, never stored. */
   state: HomeScreenState;
-  /** True while a pull-to-refresh (or any refetch) runs over visible data. */
+  /** True while a pull-to-refresh (or a manual retry) runs over visible data. */
   isRefreshing: boolean;
-  /** Pull-to-refresh and the retry buttons. Ignored while a request is already in flight. */
+  /** Pull-to-refresh and the retry buttons. Ignored while a pull is already running. */
   refetch: () => void;
 };
 
 /**
- * Orchestrates Home's request. The rules live in pure modules (`homeRequestReducer`,
- * `selectHomeScreenState`, `shouldRefetchOnForeground`, `shouldRefetchOnFocus`); this hook only
- * connects them to React:
+ * Home's ViewModel, now on top of RTK Query: the public shape is the one of Day 2 (`state`,
+ * `isRefreshing`, `refetch`), so `HomeScreen` did not change. Only the data source did.
  *
- * - The request starts with the screen (initial state is "pending") and restarts whenever
- *   `requestId` changes. The effect owns an `AbortController`: leaving the screen or starting
- *   another request cancels the previous one, and an answer is delivered together with the id of
- *   the request that produced it, so a late answer of an older request is dropped by the reducer.
- * - Nothing calls `setState` synchronously inside an effect; triggers dispatch from event
- *   callbacks (pull, button, AppState, navigation focus).
- * - Returning to the app (with Home focused) refetches ALWAYS; regaining navigation focus refetches
- *   only to recover from a failure. If both fire on the same tick the reducer keeps a single
- *   request, because a `refetch` while one is pending changes nothing.
+ * - `useGetHomeQuery` owns the request: caching, the single in-flight request per query, retries
+ *   and cancellation. Opening Home refetches only if its data is 60 s old or more
+ *   (`refetchOnMountOrArgChange: 60` in `baseApi`).
+ * - `useRevalidateWhenStale` revalidates once, in the background and without a spinner, when Home
+ *   regains focus, the app returns to the foreground or the network comes back, but only if the
+ *   data is 60 s old or more (RF-5). It replaces the Day 2 refetch policy.
+ * - `usePullToRefresh` forces the request even if the data is fresh (RF-6) and owns the spinner.
+ * - `classifyHomeResult` (pure) turns `{ data, error, isFetching }` into the screen state.
+ *
+ * Compose: a `ViewModel` that used to collect a hand-written use case and now collects a
+ * `Repository` `Flow` (`stateIn`); the composable does not notice. SwiftUI: an `@Observable` whose
+ * `load()` swaps `URLSession` code for a shared client; the `View` keeps reading the same
+ * properties.
  */
 export function useHome(): HomeViewModel {
-  const [request, dispatch] = useReducer(homeRequestReducer, initialHomeRequestState);
-  const navigation = useNavigation();
-  const { requestId } = request;
+  const { data, error, isFetching, fulfilledTimeStamp, refetch } = useGetHomeQuery();
 
-  useEffect(() => {
-    const controller = new AbortController();
-
-    void fetchHome({ origin: apiOrigin, signal: controller.signal, fixture: homeFixture }).then(
-      (outcome) => {
-        if (controller.signal.aborted) {
-          return;
-        }
-        if (__DEV__) {
-          console.log(`[home] request ${requestId} settled: ${outcome.kind}`);
-        }
-        dispatch({ type: 'settled', requestId, outcome });
-      },
-    );
-
-    return () => controller.abort();
-  }, [requestId]);
-
-  // Derived in render: each listener only exists while its pure rule says a refetch is allowed,
-  // so none is armed while a request is in flight and there is no stale state to read at event
-  // time.
-  const refetchOnForeground = shouldRefetchOnForeground(request);
-  const refetchOnFocus = shouldRefetchOnFocus(request);
-
-  useEffect(() => {
-    if (!refetchOnForeground) {
-      return;
+  const { isRefreshing, onRefresh } = usePullToRefresh(() => {
+    if (__DEV__) {
+      console.log('[home] manual refetch (pull or retry button)');
     }
+    return refetch();
+  });
 
-    const appStateSubscription = AppState.addEventListener('change', (status) => {
-      // A Home that is not on screen (another tab, a pushed product, the scanner) refetches
-      // through the focus rule when it comes back instead.
-      if (status === 'active' && navigation.isFocused()) {
-        if (__DEV__) {
-          console.log('[home] refetch on foreground');
-        }
-        dispatch({ type: 'refetch' });
-      }
-    });
-
-    return () => appStateSubscription.remove();
-  }, [refetchOnForeground, navigation]);
-
-  useEffect(() => {
-    if (!refetchOnFocus) {
-      return;
-    }
-
-    return navigation.addListener('focus', () => {
+  useRevalidateWhenStale({
+    fulfilledTimeStamp,
+    isFetching,
+    refetch: () => {
       if (__DEV__) {
-        console.log('[home] refetch on focus after a failure');
+        console.log('[home] background revalidation: data is 60 s old or more');
       }
-      dispatch({ type: 'refetch' });
-    });
-  }, [refetchOnFocus, navigation]);
+      return refetch();
+    },
+  });
+
+  const state = classifyHomeResult({ data, error: toApiError(error), isFetching });
 
   return {
-    state: selectHomeScreenState(request),
-    isRefreshing: selectIsRefreshing(request),
-    refetch: () => dispatch({ type: 'refetch' }),
+    state,
+    // The spinner only spins over visible data; the first load and a retry from the error screen
+    // show the skeleton instead (same rule as Day 2).
+    isRefreshing: isRefreshing && state.status === 'ready',
+    refetch: () => {
+      void onRefresh();
+    },
   };
 }

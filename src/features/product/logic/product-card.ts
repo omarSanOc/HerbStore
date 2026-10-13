@@ -1,10 +1,10 @@
 import { formatCurrency, formatInteger, formatRating } from '../../../core/format/format-number.ts';
-import type { HomeProduct } from '../../home/contracts/home.ts';
+import type { CatalogProduct } from '../contracts/catalog-product.ts';
 
 /** The single badge a card shows. Decided by priority, so a product never shows two. */
 export type ProductCardBadge = 'offer' | 'new' | 'best_seller';
 
-type BadgeInput = Pick<HomeProduct, 'price' | 'listPrice' | 'badges'>;
+type BadgeInput = Pick<CatalogProduct, 'price' | 'listPrice' | 'badges'>;
 
 /**
  * Priority: offer (a list price higher than the price), then new, then best seller.
@@ -33,13 +33,15 @@ export type ProductCardModel = Readonly<{
   /** Previous price, only for a real offer; the card draws it struck through. */
   listPrice?: string;
   badge?: ProductCardBadge;
+  /** False draws "Out of stock" as text and adds it to the spoken label (never only a color). */
+  inStock: boolean;
   /** Absent when the product has no reviews yet (a 0.0 rating would be misleading). */
   rating?: Readonly<{ value: string; count: number; countText: string }>;
 }>;
 
 type CardInput = Pick<
-  HomeProduct,
-  'name' | 'price' | 'listPrice' | 'currency' | 'rating' | 'reviewCount' | 'badges'
+  CatalogProduct,
+  'name' | 'price' | 'listPrice' | 'currency' | 'rating' | 'reviewCount' | 'badges' | 'inStock'
 >;
 
 /** Everything a product card shows, already formatted for the interface language. */
@@ -53,6 +55,7 @@ export function buildProductCardModel(product: CardInput, language: string): Pro
       ? { listPrice: formatCurrency(product.listPrice, product.currency, language) }
       : {}),
     ...(badge === undefined ? {} : { badge }),
+    inStock: product.inStock,
     ...(product.reviewCount > 0
       ? {
           rating: {

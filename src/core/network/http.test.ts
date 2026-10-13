@@ -210,4 +210,115 @@ describe('fetchJson', () => {
 
     assert.equal(outcome.kind, 'ok');
   });
+
+  describe('requests with a method, body and headers', () => {
+    type Captured = { url: string; init: RequestInit | undefined };
+
+    function capturingFetch(captured: Captured[], response: () => Response): FetchImpl {
+      return async (url, init) => {
+        captured.push({ url, init });
+        return response();
+      };
+    }
+
+    it('defaults to GET with no body and no Content-Type', async () => {
+      const captured: Captured[] = [];
+
+      await fetchJson('http://x.test/a', {
+        parse: parseName,
+        fetchImpl: capturingFetch(captured, () => jsonResponse({ name: 'x' })),
+      });
+
+      const init = captured[0]?.init;
+      assert.equal(init?.method, 'GET');
+      assert.equal(init?.body, undefined);
+      assert.deepEqual(init?.headers, { Accept: 'application/json' });
+    });
+
+    it('POST serializes the body as JSON and adds Content-Type only because there is a body', async () => {
+      const captured: Captured[] = [];
+
+      const outcome = await fetchJson('http://x.test/orders', {
+        method: 'POST',
+        body: { items: [{ productId: 'p1', quantity: 2 }], currency: 'MXN' },
+        headers: { 'Idempotency-Key': 'key-1' },
+        parse: parseName,
+        fetchImpl: capturingFetch(captured, () => jsonResponse({ name: 'order' }, 200)),
+      });
+
+      const init = captured[0]?.init;
+      assert.deepEqual(outcome, { kind: 'ok', data: 'order', status: 200 });
+      assert.equal(captured[0]?.url, 'http://x.test/orders');
+      assert.equal(init?.method, 'POST');
+      assert.equal(init?.body, '{"items":[{"productId":"p1","quantity":2}],"currency":"MXN"}');
+      assert.deepEqual(init?.headers, {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'Idempotency-Key': 'key-1',
+      });
+    });
+
+    it('a body that is falsy but defined is still sent', async () => {
+      const captured: Captured[] = [];
+
+      await fetchJson('http://x.test/a', {
+        method: 'POST',
+        body: 0,
+        parse: parseName,
+        fetchImpl: capturingFetch(captured, () => jsonResponse({ name: 'x' })),
+      });
+
+      assert.equal(captured[0]?.init?.body, '0');
+    });
+
+    it('treats a 202 as ok, keeping the status (the order protocol relies on it)', async () => {
+      const outcome = await fetchJson('http://x.test/orders', {
+        method: 'POST',
+        body: {},
+        parse: parseName,
+        fetchImpl: async () => jsonResponse({ name: 'pending' }, 202),
+      });
+
+      assert.deepEqual(outcome, { kind: 'ok', data: 'pending', status: 202 });
+    });
+
+    it('keeps the same classification for POST: network, http, timeout and aborted', async () => {
+      class FetchError extends Error {}
+      const network = await fetchJson('http://x.test/orders', {
+        method: 'POST',
+        body: {},
+        parse: parseName,
+        fetchImpl: async () => {
+          throw new FetchError('fetch failed: Failed to connect');
+        },
+      });
+      const conflict = await fetchJson('http://x.test/orders', {
+        method: 'POST',
+        body: {},
+        parse: parseName,
+        fetchImpl: async () => jsonResponse({ error: { code: 'IDEMPOTENCY_CONFLICT' } }, 409),
+      });
+      const timeout = await fetchJson('http://x.test/orders', {
+        method: 'POST',
+        body: {},
+        parse: parseName,
+        fetchImpl: hangingFetch,
+        timeoutMs: 20,
+      });
+      const controller = new AbortController();
+      controller.abort();
+      const aborted = await fetchJson('http://x.test/orders', {
+        method: 'POST',
+        body: {},
+        parse: parseName,
+        signal: controller.signal,
+        fetchImpl: hangingFetch,
+      });
+
+      assert.deepEqual(network, { kind: 'network' });
+      assert.deepEqual(conflict, { kind: 'http', status: 409 });
+      assert.deepEqual(timeout, { kind: 'timeout' });
+      assert.deepEqual(aborted, { kind: 'aborted' });
+    });
+  });
 });

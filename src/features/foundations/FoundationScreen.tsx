@@ -12,6 +12,13 @@ import {
 } from '@/features/foundations/components/FlexLayoutDemo';
 import { HookLifecycleDemo } from '@/features/foundations/components/HookLifecycleDemo';
 
+type RenderErrorDemoModule = typeof import('@/features/foundations/components/RenderErrorDemo');
+const RenderErrorDemo = __DEV__
+  ? // eslint-disable-next-line @typescript-eslint/no-require-imports -- excludes the dev demo from release bundles
+    (require('@/features/foundations/components/RenderErrorDemo') as RenderErrorDemoModule)
+      .RenderErrorDemo
+  : null;
+
 export function FoundationScreen() {
   const reduceMotionEnabled = useReducedMotionPreference();
   const { i18n, t } = useTranslation();
@@ -101,6 +108,8 @@ export function FoundationScreen() {
               />
             </View>
           </ConceptCard>
+
+          {RenderErrorDemo === null ? null : <RenderErrorDemo />}
         </ScrollView>
       </SafeAreaView>
     </AppSurface>

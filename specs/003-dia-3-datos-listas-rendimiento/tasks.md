@@ -1,18 +1,364 @@
 # Tareas 003 — Día 3: datos, listas y rendimiento
 
-- [ ] **T1. Incorporar store y base de RTK Query con política de red.** RF-1, RF-2, RF-3, RF-5, RF-6, RF-8
-- Hecho cuando: providers y hooks tipados funcionan, fresh dura 60 s, refresh fuerza red y red/5xx ejecuta exactamente dos retries mientras 4xx ejecuta cero.
-- [ ] **T2. Migrar Home a RTK Query sin cambiar su UI.** RF-4, RF-5, RF-7
-- Hecho cuando: Home conserva secciones/estados del Día 2, dos consumidores comparten request y la invalidación definida vuelve a consultar; parar y confirmar Android/iOS.
-- [ ] **T3. Crear identidad de consulta, endpoints y merge paginado.** RF-9, RF-10, RF-11, RF-15
-- Hecho cuando: páginas se agregan una vez, ids se deduplican, respuestas obsoletas no sustituyen datos y sort/filtros reinician en página 1.
-- [ ] **T4. Construir cuadrícula, tarjeta y estados de lista.** RF-9, RF-10, RF-12, RF-19, RNF-1, RNF-2, RNF-3
-- Hecho cuando: FlashList de dos columnas muestra contador, skeleton/footer/refresh/error/offline/empty y carga al entrar en los últimos cuatro; parar y validar scroll/texto/reduced motion en ambas plataformas.
-- [ ] **T5. Añadir filtros rápidos, avanzados y orden remoto.** RF-13, RF-14, RF-15
-- Hecho cuando: chips y sheet producen parámetros aprobados, Cancelar conserva selección y total/páginas provienen del servidor; confirmar gestos Android/iOS.
-- [ ] **T6. Completar búsqueda e historial en memoria.** RF-16, RF-17, RF-18
-- Hecho cuando: debounce es 400 ms, identidad ignora case/diacríticos/espacios, historial deduplica/mueve/limita a 10 y permite borrar individual/todo.
-- [ ] **T7. Instalar el fallback global y medir antes de optimizar.** RF-20, RF-21, RF-22
-- Hecho cuando: un error de render muestra fallback es/en y recuperación sin bucle, y `LEARNING.md` registra baseline/comparación de renders y duración.
-- [ ] **T8. Cerrar y validar el Día 3.** RF-23, RF-24, RF-25, RNF-4
-- Hecho cuando: lint/typecheck y matriz cache/retry/paginación/filtros/offline pasan; listado y búsqueda se validan Android/iOS; ejercicio, 8–10 respuestas, checklist, `LEARNING.md` y commit quedan completos; detenerse.
+## Reglas comunes
+Aplican a cada tarea:
+- **Teoría primero.** Como máximo 10 min, en `LEARNING.md`, antes de construir (RF-1), con su comparación Android/iOS (RF-2) y las decisiones de la tarea en formato elegida/trade-off/descartada (RF-3).
+- **Lógica pura con test primero** (`npm run test:logic`): archivos `.ts` con imports relativos con extensión, sin RN, `@/`, `expo-network` ni valores de RTK, y `/// <reference types="node" />`.
+- **Comprobaciones:** `npx expo lint` y `npx tsc --noEmit`. Para `tsc`, Metro arrancado o, si no, `CI=1 npx expo start --dev-client --port <libre>` antes, para regenerar `.expo/types/router.d.ts`.
+- **Validación en dispositivo.** En tareas con UI o comportamiento observable, parar y confirmar en Android y en iOS antes de seguir (RF-23).
+- **Textos.** Todo texto nuevo en es/en (RF-22), con `parity.test.ts` en verde.
+- **Dependencias.** Solo las 5 del plan (incluida `expo-network`, aprobada por el usuario), instaladas en T1. `app.json` solo cambia si la doc de `expo-network` para SDK 57 lo exige (ver plan).
+- **Progreso.** Al cerrar cada tarea, `MEMORY.md` anota la última tarea validada y la siguiente. Sin commit intermedio: el commit del día llega en T16.
+- **Total previsto:** 6–7 h, una sola spec en dos sesiones (P5). **Sesión 1: T1–T7. Sesión 2: T8–T16.** El corte natural es tras T7: la app se comporta como en el Día 2 pero sobre RTK Query, validada en las dos plataformas.
+
+- [x] **T1. Dependencias del día, recompilación nativa, raíz de gestos y teoría de datos remotos.** RF-1, RF-2, RF-3, RF-5
+- **Estado (2026-10-11): validada por el usuario en Android (físico) e iOS (simulador).** Nota: iOS se recompiló en el simulador (iPhone 17 Pro), no con `--device` físico, como en el Día 2.
+- Teoría: estado de servidor frente a estado de cliente; RTK Query frente a Repository + `Flow` y `async/await` + `@Observable`/Combine; qué es un módulo nativo de Expo y por qué Fast Refresh no basta (`expo-network` ↔ `ConnectivityManager` ↔ `NWPathMonitor`). ≤10 min.
+- Alcance:
+  - Leer la documentación de RTK Query (infinite queries, `retry`), FlashList v2, Gorhom v5 y `expo-network` para las versiones que resuelva el SDK 57.
+  - `npx expo install @reduxjs/toolkit react-redux @shopify/flash-list @gorhom/bottom-sheet expo-network`.
+  - Revisar los `peerDependencies` de Gorhom frente a Reanimated 4.5.1 y Gesture Handler ~2.32.0.
+  - Buscar `android/`, `ios/`, `*.podspec` o `expo-module.config.json` en los 5 paquetes (en `expo-network` se espera código nativo).
+  - Comprobar en la doc de SDK 57 si `expo-network` pide permisos o plugin en `app.json`; si los pide, aplicarlos por app config (nunca en `android/`/`ios/`).
+  - Envolver la raíz de `src/app/_layout.tsx` en `GestureHandlerRootView`.
+  - **Recompilar el Development Build en las dos plataformas** porque `expo-network` trae código nativo: `npx expo run:android --device` y `npx expo run:ios --device`.
+- Hecho cuando:
+  - (a) `package.json` contiene las 5 dependencias, con `@shopify/flash-list` en `2.0.2` y `expo-network` en `~57.0.2`.
+  - (b) `npx expo install --check` y `npx expo-doctor@latest` pasan.
+  - (c) Los peers de Gorhom quedan satisfechos sin `--force` ni `--legacy-peer-deps`; si no, parar y preguntar.
+  - (d) Las versiones instaladas, el resultado de la comprobación de código nativo, la API real de `expo-network` (nombres del listener, de la lectura inicial y forma del estado) y la aprobación de la 5.ª dependencia están anotados en `LEARNING.md` y `MEMORY.md`.
+  - (e) El Development Build se ha recompilado e instalado con `npx expo run:android --device` y `npx expo run:ios --device` sin errores de Gradle ni de Xcode/CocoaPods, y no se ha editado `android/` ni `ios/`.
+  - (f) Lint, tsc y `test:logic` en verde.
+  - (g) **Parada de validación del Development Build:** la app recién compilada arranca con `npx expo start --dev-client` y se comporta igual que en el Día 2 en Android y en iOS (Home, tabs, enlaces). Parar y confirmar.
+
+- [x] **T2. Base query sobre `fetchJson` y política de reintentos (lógica pura).** RF-8, RF-3
+- Teoría: base query, reintentos con backoff, idempotencia y 4xx frente a 5xx. Equivalentes: interceptor de OkHttp/Retrofit y `URLSession` con reintentos. ≤10 min.
+- Alcance (test primero):
+  - `core/network/http.ts`: añadir `method`, `body` JSON y `headers` a `fetchJson`, con casos POST en `http.test.ts`.
+  - `core/api/api-error.ts`.
+  - `core/api/retry-policy.ts`.
+  - `core/api/fetch-json-base-query.ts` con `onSettled` inyectado.
+- Hecho cuando:
+  - (a) `retry-policy.test.ts`:
+    - en `GET` (y sin método), `network` y `http` 500/503 reintentan en los intentos 1 y 2 y no en el 3;
+    - `http` 400/404/409 no reintentan nunca, ni `aborted`;
+    - `timeout` e `invalid` no reintentan en ningún intento (P3);
+    - en `POST`, ni `network` ni `http` 503 reintentan en el intento 1 (P2: `createOrder` hace 0);
+    - con `maxRetries: 0` nunca se reintenta;
+    - `retryDelayMs(1) = 500`, `retryDelayMs(2) = 1000`, y la espera crece estrictamente.
+  - (b) `fetch-json-base-query.test.ts`, con un doble que rechaza con una clase `FetchError extends Error`: sin respuesta → `{ error: { kind: 'network' } }`; 503 → `http` 503; JSON inválido → `invalid`; `parse` válido → `{ data }`; un abort del `signal` → `aborted`; y un POST envía `Idempotency-Key`, `Content-Type` y el body serializado.
+  - (c) Los tests existentes de `http.ts` siguen en verde.
+  - (d) Lint, tsc y `test:logic` en verde. Sin cambios visibles, así que no requiere validación en dispositivo.
+
+- [x] **T3. Store, API base, reconexión y revalidación tras 60 s.** RF-5, RF-6, RF-8
+- **Estado (2026-10-11): validada por el usuario en Android e iOS (f).** (a)–(e) en verde (335 tests, lint y tsc). Notas: `tagTypes` = `Home`, `ProductList`, `Product`; el límite de reintentos vive en `shouldRetryRequest` porque `retry` de RTK no admite `maxRetries` junto a `retryCondition`.
+- Teoría: caché, suscripciones, frescura, `keepUnusedDataFor` frente a `refetchOnMountOrArgChange`, y tags; eventos de conectividad (`NetworkCallback` y `NWPathMonitor`) y por qué un solo listener nativo. Equivalentes: caché del repositorio con TTL y `NSCache`/`URLCache`. ≤10 min.
+- Alcance (test primero):
+  - `core/api/freshness.ts`.
+  - `core/network/connectivity.ts` (`isOnline`, `isReconnection`, puro).
+  - `core/network/reconnection.ts`: punto único de suscripción a `expo-network` con la API que documenta SDK 57 y anotada en T1 (`onReconnect`).
+  - `core/api/base-api.ts`, con `retry` (la `retryCondition` pasa el `method` de los args a `shouldRetryRequest`) y logs `__DEV__` por intento.
+  - `core/api/use-revalidate-when-stale.ts`: foco de navegación, `AppState` `active` y `onReconnect`, con la misma regla de 60 s.
+  - `core/api/use-pull-to-refresh.ts`.
+  - `core/store/store.ts` y `hooks.ts`.
+  - Redux `Provider` en `_layout.tsx`.
+- Hecho cuando:
+  - (a) `freshness.test.ts`: con 59 999 ms no revalida, con 60 000 ms sí; tampoco revalida con `isFetching` ni sin `fulfilledTimeStamp`.
+  - (b) `connectivity.test.ts`:
+    - `isOnline`: conectado con `isInternetReachable` `true`, `null` o ausente → online; `isConnected` `false` o `isInternetReachable` `false` → offline;
+    - `isReconnection`: offline → online es reconexión; online → online, online → offline y offline → offline no lo son; sin estado previo nunca lo es.
+  - (c) `reconnection.ts` es el único archivo que importa `expo-network` (`grep`) y retira la suscripción nativa cuando no quedan oyentes (revisión de código).
+  - (d) `base-api.ts` declara `tagTypes`, `keepUnusedDataFor: 300`, `refetchOnMountOrArgChange: 60` y desactiva `refetchOnFocus`/`refetchOnReconnect`.
+  - (e) Lint, tsc y `test:logic` en verde.
+  - (f) La app arranca con el `Provider` en Android e iOS, Home funciona aún con el código del Día 2 y cortar y devolver la red del dispositivo no produce errores ni avisos en consola. Parar y confirmar.
+
+- [x] **T4. Home sobre RTK Query sin cambiar su experiencia.** RF-4, RF-5, RF-6, RF-8
+- **Estado (2026-10-11): validada por el usuario en Android e iOS (c)/(e), y por una comprobación independiente en el Samsung (8/8 puntos).** (a), (b) y (d) hechos: 304 tests, lint, tsc y `grep` en verde. Notas: se añade `toApiError` a `core/api/api-error.ts` (con test) para estrechar el `error` del hook; `HomeScreen.tsx` y la firma de `useHome` no cambian; (d) RTK conserva `error` durante `pending` y solo lo limpia un éxito, así que no hace falta recordar el último error en el adaptador (ver `LEARNING.md`).
+- Teoría: migrar la capa de datos sin tocar la UI (un ViewModel que cambia de fuente) y deduplicación de peticiones en vuelo. ≤10 min.
+- Alcance (test primero):
+  - `home/data/home-request.ts` (+test, con los casos de fixture y `?fail=true` migrados de `home-client.test.ts`).
+  - `home/data/home-api.ts` (`getHome`, `providesTags: ['Home']`).
+  - Adaptar `classify-home-result.ts` y su test a `{ data, error, isFetching }`.
+  - Reescribir `use-home.ts` con la misma firma.
+  - Borrar `home-client.ts`, `home-request-state.ts` y `refetch-policy.ts` con sus tests. `HomeScreen.tsx` no cambia.
+- Hecho cuando:
+  - (a) Tests adaptados en verde, conservando las reglas del Día 2: colecciones vacías, `empty`, aviso `offline` solo con `network` y `update-failed` con 5xx/timeout/inválido; sin datos, `offline` frente a `error`; durante el reintento con datos se mantiene el aviso.
+  - (b) `grep` no encuentra imports de los archivos borrados.
+  - (c) En los dispositivos:
+    - las fixtures `zero-banners`, `one-banner`, `empty-section`, `all-empty`, `broken-image` y `server-fail` se ven como en el Día 2;
+    - `server-fail` registra 3 intentos (1 + 2) y luego muestra error con reintento manual;
+    - el mock detenido o `adb reverse --remove tcp:3001` muestra offline tras 3 intentos;
+    - con `MOCK_LATENCY_MS=9000` se registra una sola petición y el error aparece a los ~8 s con reintento manual (timeout sin reintentos, P3);
+    - volver a Home antes de 60 s no hace ninguna petición; después de 60 s (foco o primer plano) hace una, con los datos visibles y sin spinner;
+    - reconexión (procedimiento del plan, "Simular fallos"): con datos de más de 60 s y aviso offline, devolver la red produce una sola revalidación y el aviso desaparece solo al llegar la respuesta; si la revalidación falla, el aviso sigue; con datos de menos de 60 s no hay petición; sin datos previos no hay petición y queda el reintento manual;
+    - el pull fuerza una petición aunque los datos estén frescos;
+    - con `MOCK_LATENCY_MS=2000`, pull + primer plano durante la carga registran una sola petición en vuelo.
+  - (d) Se confirma si `error` persiste durante `pending` y se documenta la solución elegida.
+  - (e) Parar y confirmar en Android e iOS.
+
+- [x] **T5. Contrato de producto compartido, normalización e identidad de consulta (lógica pura).** RF-13, RF-14, RF-15, RF-16, RF-17
+- **Estado (2026-10-11): hecha (a)–(d); sin validación en dispositivo.** 363 tests (+59), lint y tsc en verde. Notas: los guards JSON comunes (`isRecord`, `isText`, `isCount`, `isAmount`, `hasUniqueIds`, `mapAll`) viven en `core/validation/json-guards.ts` para que `parse-home` y `parse-catalog-product` los compartan; `buildProductQueryArgs` (el plan lo llamaba `buildProductListArg`) recibe `{ category, search, brands, subcategories, inStock, topRated, ownBrand, subscribeAndSave, sort }` y devuelve `ProductQueryArgs`; la búsqueda viaja en `q` y la categoría en `category`.
+- Teoría: identidad de caché, normalización Unicode (NFD) y por qué la página no forma parte de la identidad. ≤10 min.
+- Alcance (test primero):
+  - `product/contracts/catalog-product.ts`, con `HomeProduct` como alias.
+  - `product/contracts/parse-catalog-product.ts`: `parseCatalogProduct` extraído de `parse-home.ts`, más `parseProductPage`, `parseBrandOptions` y `parseCategoryTree`.
+  - `product/logic/product-query.ts`.
+  - `product-card.ts` importa el tipo compartido.
+- Hecho cuando:
+  - (a) `parse-home.test.ts` sigue en verde sin cambios de reglas.
+  - (b) `parse-catalog-product.test.ts`: una página válida; un elemento malformado o un id repetido la invalidan; `page`, `totalPages` y `total` fuera de rango la invalidan; los facets válidos e inválidos se distinguen.
+  - (c) `product-query.test.ts`:
+    - `normalizeSearchText` convierte `"  Vitamina   Ç "` en `"vitamina c"`, y una cadena de solo espacios en `""`;
+    - dos args equivalentes (mayúsculas, diacríticos, espacios y orden de marcas o subcategorías distintos) son profundamente iguales;
+    - un arg sin flags activos omite esas claves;
+    - `toProductQueryString` produce `brand=a,b` y `subcategory=…` como CSV con cada valor codificado, además de `inStock=true`, `minRating=4`, `ownBrand=true`, `subscribeAndSave=true`, el `sort` exacto, `page` y `limit=20`.
+  - (d) Lint, tsc y `test:logic` en verde.
+
+- [x] **T6. Paginación, deduplicación, "cargar más" y estado de lista (lógica pura).** RF-10, RF-11, RF-12, RF-19
+- **Estado (2026-10-11): hecha (a)–(e); sin validación en dispositivo.** 411 tests (+48), lint y tsc en verde. Notas: `classifyProductListState` recibe `isFetchNextPageError` (flag de RTK) en lugar de `isPullRefreshing`, porque el refresh conserva `ready` y su spinner es estado local; `ready` lleva `products` y `total`; el guard de `shouldLoadNextPage` lo guarda y reinicia quien llama (ver su comentario).
+- Teoría: paginación por offset frente a cursor, infinite queries de RTK frente a Paging 3 y `onAppear`, y descarte de respuestas obsoletas por identidad. ≤10 min.
+- Alcance (test primero): `product/logic/product-pages.ts` y `product/logic/product-list-state.ts`.
+- Hecho cuando:
+  - (a) `getNextPageParam`: `{ page: 1, totalPages: 3 }` → 2; `{ page: 3, totalPages: 3 }` → `undefined`; `totalPages: 0` → `undefined`.
+  - (b) `flattenUniqueProducts`: con ids repetidos entre páginas se conserva el primer ejemplar y su posición; el total y las páginas salen de la respuesta más reciente.
+  - (c) `shouldLoadNextPage`:
+    - con 20 elementos, el índice visible 15 no carga y el 16 sí;
+    - una segunda llamada con la misma longitud de lista no carga otra vez;
+    - no carga sin `hasNextPage` ni con `isFetching`.
+  - (d) `classifyProductListState` cubre:
+    - primera carga → `loading`;
+    - parámetros nuevos sin `currentData` → `loading`;
+    - "cargar más" → `ready` con pie de carga;
+    - fallo de "cargar más" → `ready` con pie de error;
+    - refresh → `ready` conservando la lista;
+    - `network` sin datos → `offline`, y 5xx sin datos → `error`;
+    - fallo con datos → aviso;
+    - total 0 → `empty`.
+  - (e) Lint, tsc y `test:logic` en verde.
+
+- [x] **T7. Endpoints de catálogo y detalle con tags; placeholder de producto sobre RTK Query.** RF-7, RF-8, RF-9
+- **Estado (2026-10-11): VALIDADA por el usuario** en Android (7/7 por adb) e iOS (6/6 en el simulador). (a), (b) hechos: 422 tests, lint, tsc y `grep` en verde. Notas: se añade `product/logic/product-tags.ts` (+test) para los tags de `getProducts` (el usuario aceptó que quede como archivo aparte); el detalle usa `parseCatalogProduct`; un id inválido usa `skipToken` y no hace petición; sin textos nuevos.
+- Teoría: `injectEndpoints`, `providesTags` por lista y por id, e infinite query (`initialPageParam`, `getNextPageParam`). ≤10 min.
+- Alcance (test primero):
+  - `product/logic/product-lookup.ts`.
+  - `product/data/products-api.ts` (`getProducts` infinito, `getProduct`, `getBrands`, `getCategories`).
+  - `ProductPlaceholderScreen` pasa a usar `getProduct`.
+  - Borrar `product-client.ts`, su test y `use-product-exists.ts`.
+- Hecho cuando:
+  - (a) `product-lookup.test.ts`: `ok` → `found`; `http` 404 → `not-found`; `network` → `offline`; 5xx, timeout o inválido → `error`.
+  - (b) Lint, tsc y `test:logic` en verde, y `grep` no encuentra los archivos borrados.
+  - (c) En los dispositivos:
+    - un producto existente muestra nombre e id como en el Día 2;
+    - un id con forma válida pero inexistente muestra no encontrado tras una sola petición (0 reintentos);
+    - un id inválido no hace ninguna petición;
+    - con el mock detenido, se ve offline tras 3 intentos y el reintento manual recupera.
+  - (d) Parar y confirmar en Android e iOS.
+  - (e) **Fin de la sesión 1 (punto de corte, P5):** `MEMORY.md` apunta T1–T7 validadas y "retomar en T8", sin commit intermedio.
+
+- [x] **T8. Tarjeta compartida y cuadrícula de categoría: primera página, contador y estados.** RF-9, RF-12, RF-19, RF-22, RNF-1, RNF-2, RNF-3
+- **Estado (2026-10-11): VALIDADA:** Android (adb 8/8 y TalkBack) e iOS (simulador, `axe`); VoiceOver real no probado por decisión del usuario; título corregido con `fontScaleLimits.listTitle = 2`. (i) hecho: 426 tests, lint, tsc y `grep` en verde. Notas: `getGridColumnCount` (1 columna con fuente > 1.5x, confirmado al validar); el nombre de la categoría usa `categoryLabelKey` y solo un id sin traducción consulta `GET /categories`; la acción del vacío es "Ir a Inicio".
+- Teoría: virtualización y reciclaje (FlashList v2 frente a FlatList, `LazyVerticalGrid` y `LazyVGrid`); por qué v2 ya no usa `estimatedItemSize`; keys estables. ≤10 min.
+- Alcance:
+  - Mover `ProductCard` a `product/components/`, con ancho opcional y disponibilidad en texto y en la etiqueta hablada; las claves `home.product.*` pasan a `productCard.*`.
+  - `ProductSection` lo importa desde la nueva ruta.
+  - `product/list/{ProductGrid, ProductGridSkeleton, ProductListStatus, ProductListView, use-product-list}`: solo la primera página.
+  - `CategoryProductsScreen` sustituye a `CategoryPlaceholderScreen` (borrado) en `category/[id].tsx`; las claves `category.*` que queden sin uso se borran en es/en.
+  - Tab Categorías (P4): el placeholder se queda y su texto visible no se toca (no promete ningún día). Solo se corrige el comentario de `CategoriesPlaceholderScreen.tsx` ("Replaced by the real category list on Day 3.") para que no anuncie el Día 3.
+- Hecho cuando:
+  - (a) Home se ve igual que en el Día 2 salvo la línea "Agotado" cuando corresponde.
+  - (b) Abrir una categoría muestra el nombre, "N productos" y una cuadrícula de 2 columnas.
+  - (c) Con `MOCK_LATENCY_MS=2000` aparece primero el skeleton estático con forma de cuadrícula.
+  - (d) Una categoría inválida muestra no encontrado sin petición; una categoría válida inexistente muestra vacío.
+  - (e) Mock detenido → offline con reintento; `fail` → error.
+  - (f) A 2× y en AX5 nombre, precio y estado siguen visibles sin recortes; TalkBack y VoiceOver leen la tarjeta completa.
+  - (g) Tema oscuro y reduced motion sin animaciones no esenciales.
+  - (h) El tab Categorías muestra el mismo placeholder que en el Día 2 en es/en, y `grep` no encuentra "Day 3" en `CategoriesPlaceholderScreen.tsx`.
+  - (i) Lint, tsc, `test:logic` y paridad en verde.
+  - (j) Parar y confirmar en Android e iOS.
+
+- [x] **T9. Scroll infinito, refresh y restauración de la cuadrícula.** RF-6, RF-9, RF-10, RF-11, RF-12, RF-19, RNF-1
+- **Estado (2026-10-11): VALIDADA por adb (Samsung) y simulador iOS con `axe`: (a)–(f) y regresión PASAN en las dos plataformas; (g) PASA en iOS (0 stalls) y en Android queda a medir en T15 (dev build de gama baja: 210–390 ms por llegada de página, pero el scroll solo ya bloquea 250–440 ms; tap con pie de carga ≈0,7 s frente a ≈0,8 s sin carga); aprobado por el usuario ("Aprobar T9 y medir en T15").** (h) hecho: 434 tests, lint y tsc en verde. Notas: el guard de `shouldLoadNextPage` cuenta páginas (`pageCount`) y no elementos; `toApiError` traduce el `AbortError` de RTK a `aborted`; el pull usa `refetch({ refetchCachedPages: false })` y la revalidación `refetch()` (todas las páginas); la cuadrícula lleva `key` por identidad. (g) con categorías solo hay 60 productos; los 300 llegan con la búsqueda (T12).
+- Teoría: "cargar más" por viewability frente a `onEndReached`, `maintainVisibleContentPosition` y carreras entre refresh y página siguiente. ≤10 min.
+- Alcance:
+  - En `use-product-list`: `fetchNextPage` con `shouldLoadNextPage`, abort de la página en vuelo antes del refresh, pull con `usePullToRefresh` y revalidación con `useRevalidateWhenStale`.
+  - Pie de carga y pie de error con reintento.
+  - Comprobar `refetchCachedPages` en los tipos instalados y aplicar la variante del plan.
+- Hecho cuando, con los logs `__DEV__` y `MOCK_LATENCY_MS`:
+  - (a) Cada página se pide una sola vez al entrar en los 4 últimos elementos, y en la última página no hay petición extra.
+  - (b) No aparecen tarjetas duplicadas: se comprueba por id (o tupla id + posición), no por nombre; el mock repite nombres (29 nombres distintos en 60 productos).
+  - (c) Durante "cargar más" se conservan los productos con progreso al final; un fallo muestra el pie con reintento.
+  - (d) El pull con la caché fresca hace petición, conserva la lista mientras dura y termina desde la página 1 nueva.
+  - (e) Pull durante "cargar más": la carga anterior se cancela y el resultado parte de la página 1.
+  - (f) Producto → Atrás restaura la posición, y tras más de 60 s revalida sin saltar.
+  - (g) El scroll de 300 elementos responde al toque durante la carga (Perf Monitor sin bloqueos del hilo JS). Resultado parcial: iOS cumple; Android incumple el umbral estricto de 150 ms en un dev build de gama baja y la medición se completa en T15 (no se optimiza sin evidencia).
+  - (h) Lint, tsc y `test:logic` en verde.
+  - (i) Parar y confirmar en Android e iOS.
+
+- [x] **T10. Filtros rápidos y orden remoto.** RF-13, RF-15, RF-19, RF-22, RNF-3
+- **Estado (2026-10-11): validada y aprobada (2026-10-11)** por el usuario en Samsung SM-A037M (Android) e iPhone 17 Pro (iOS), incluida la corrección F-1/F-2. (a) y (f) hechos: 469 tests, lint, tsc, paridad, bundles de Android e iOS y comprobación con store real + mock en verde. Notas: la barra de filtros va fija sobre la lista (no se desmonta al cambiar de rama); `AppBottomSheet` (design system) añade Atrás de Android, accesibilidad y reduced motion que Gorhom no da; "Limpiar filtros" no cambia el orden; ninguna combinación de las 4 banderas vacía una categoría real del mock (mínimo 1), el vacío con filtros se prueba con una categoría inexistente de forma válida.
+- **Corrección F-1/F-2 (fuente grande, RNF-2), dentro de T10:** el botón "Ordenar: …" y los chips tienen `maxWidth` de un viewport (el scroll horizontal no limita el ancho y el texto no partía línea) y las filas de la hoja usan etiqueta `flex: 1` + hueco fijo para el "✓" + tope `fontScaleLimits.optionLabel` (iOS AX5 partía "Destacad/os"). 472 tests. Revalidado por el implementador en Android 2.0 e iOS AX5 y **aprobado por el usuario**. Seguimientos fuera de T10: F-3, F-4 y el scroll del chip seleccionado (ver `MEMORY.md`).
+- Teoría: estado aplicado como entrada de la identidad, chips accesibles y hoja de orden (Gorhom `BottomSheetModal` frente a `ModalBottomSheet` y `.sheet`). ≤10 min.
+- Alcance (test primero):
+  - `product/logic/list-params.ts` (quick filters, `setSort`, `clearFilters`).
+  - `BottomSheetModalProvider` en `_layout.tsx`.
+  - `QuickFilters` y `SortSheet` con Cerrar visible y Atrás de Android.
+  - Vacío con "Limpiar filtros".
+- Hecho cuando:
+  - (a) `list-params.test.ts`: activar y desactivar cada flag; `setSort` con los 5 valores exactos; `clearFilters` deja los valores por defecto; el estado nunca se muta.
+  - (b) Cada chip envía exactamente `inStock=true`, `minRating=4`, `ownBrand=true` o `subscribeAndSave=true` (log de la URL sin datos de usuario) y anuncia "seleccionado".
+  - (c) El orden muestra la opción activa y reinicia la lista arriba en la página 1.
+  - (d) Una combinación sin resultados mantiene los chips visibles y "Limpiar filtros" lo resuelve en una acción.
+  - (e) Con reduced motion la hoja no se desplaza animada.
+  - (f) Lint, tsc, `test:logic` y paridad en verde.
+  - (g) Parar y confirmar gestos y Atrás en Android e iOS.
+
+- [x] **T11. Filtros avanzados: borrador, Aplicar y Cancelar.** RF-14, RF-19, RF-22, RNF-3
+- **Estado (2026-10-12): VALIDADA y APROBADA por el usuario** (implementada el 2026-10-11; validada en Samsung SM-A037M e iPhone 17 Pro, incluida la corrección G-1; seguimientos G-2…G-7 y VoiceOver real quedan para el Día 4/Día 6, ver `MEMORY.md`). (a) y (f) hechos: 497 tests (+25), lint, tsc, paridad y bundles de Android e iOS en verde; smoke con el mock hecho. Notas:
+  - Cancelar se modela como "el borrador se descarta": no hay función de cancelar; `applyAdvancedFilters` solo se llama con Aplicar (devuelve el mismo objeto si no hay cambios, así que aplicar sin cambiar no es una consulta nueva). El borrador vive en `AdvancedFiltersForm`, montado solo mientras la hoja está abierta, y arranca como copia de lo aplicado.
+  - `AppBottomSheet` gana `layout="fixed"` (altura 90 %, scroll `flex: 1` + barra Aplicar/Cancelar fuera del scroll) y reexporta `AppBottomSheetScrollView`; la hoja de orden sigue con `layout="content"`. `AppButton` gana `accessibilityLabel` y `variant="primary"`. Descartado el `footerComponent` de Gorhom (portal: el contexto no llega y se remonta con cada casilla).
+  - Contador del botón = marcas + subcategorías (los 4 chips no cuentan: ya muestran su estado y no coincidirían con lo que se ve al abrir la hoja). Texto "Filtros (2)", hablado "Filtros, 2 activos".
+  - El servidor normaliza cada valor del CSV como el cliente y el cliente envía los valores normalizados, sin repetidos y ordenados: `brand=a,b` y `brand=b,a` son la misma consulta (una entrada de caché).
+  - Opciones: 8 marcas y 3 subcategorías por categoría (15 en búsqueda, parámetro `category` ya preparado; sin `SearchScreen`, es T12). Las pide la hoja al abrir.
+  - Vacío real reproducible: Vitaminas + Solstice Grove (3) + Vitamina C (20) = 0 → el vacío mantiene el botón "Filtros (2)" y "Limpiar filtros" lo resuelve.
+  - Sin verificar en dispositivo: maquetación de `layout="fixed"`, arbitraje arrastre/scroll, foco y anuncio de TalkBack/VoiceOver en las casillas, fuente grande en filas y botones.
+  - Corrección G-1 (validación en iOS AX5, RNF-2): "Cancelar" y "Aplicar" se partían por dentro ("Canc / elar") y el encabezado "Subcategorías" se veía como "ías". Causa medida: a AX5 (fontScale 3,571) "Cancelar" mide 229 pt y media fila ofrece 147 pt de contenido; "Subcategorías" mide 459 pt en una línea de 370. Elegida: `fontScaleLimits.actionLabel`/`sectionHeading` = 2 (precedentes `listTitle`/`optionLabel`) + `shouldStackActions` (`logic/action-bar-layout.ts`, test primero, 497 → 504) que apila los botones solo si media fila no cabe. Resultado: sin palabras partidas, barra 161 → 58 pt y 4 filas visibles (antes 2); Android 2.0 y escalas normales sin cambios. Descartadas: apilar sin tope (barra de 188 pt, peor para la lista) y reducir paddings. Detalle en LEARNING.md.
+- Teoría: estado borrador frente a estado aplicado (como el estado de un diálogo en Compose y una copia en `@State` en SwiftUI), y facets con OR dentro y AND entre ellos. ≤10 min.
+- Alcance (test primero):
+  - `applyAdvancedFilters` en `list-params.ts`.
+  - `subcategoryLabelKey` en `category-labels.ts`, con `subcategories.*` en es/en.
+  - `AdvancedFiltersSheet` con marcas (`getBrands`) y subcategorías (`getCategories`: las de la categoría actual, o todas en búsqueda).
+  - El contador de filtros activos se muestra en el botón.
+- Hecho cuando:
+  - (a) Tests:
+    - aplicar reemplaza marcas y subcategorías;
+    - cancelar no cambia el estado aplicado;
+    - `subcategoryLabelKey` reconoce las 15 conocidas y devuelve `undefined` para el resto.
+  - (b) Dos marcas generan `brand=a,b` y una subcategoría `subcategory=x`; el contador y las páginas cambian según la respuesta del servidor.
+  - (c) Cancelar, cerrar con gesto o Atrás de Android conservan los filtros anteriores sin petición.
+  - (d) El gesto de la hoja no compite con el scroll de su lista ni con el de la cuadrícula.
+  - (e) La hoja tiene título, Cerrar visible y foco legible con TalkBack y VoiceOver.
+  - (f) Lint, tsc, `test:logic` y paridad en verde.
+  - (g) Parar y confirmar en Android e iOS.
+
+- [x] **T12. Búsqueda con debounce e historial en memoria.** RF-16, RF-17, RF-18, RF-19, RF-22
+- **Estado (2026-10-12): validada y aprobada por el usuario en Samsung SM-A037M e iPhone 17 Pro ((c) y (e)).** (a), (b) y (d) hechos: 537 tests (+33), lint, tsc, paridad y bundles de Android e iOS en verde; smoke con el mock hecho. Notas:
+  - Ruta: la existente `(tabs)/(home)/search.tsx` (delgada) → `SearchScreen`; se llega desde el campo de búsqueda de Inicio (`router.push('/search')`) o con `herbstore://search`. `SearchPlaceholderScreen` borrado; `search.body` retirado de los textos.
+  - Historial = lista de textos visibles (la variante humana más reciente, solo recortada por fuera); la identidad se calcula con `normalizeSearchText` (la misma del servidor y de la consulta, sin duplicarla). `removeSearch` también busca por identidad. Slice en memoria con `searchSent/searchRemoved/historyCleared` (sin persistir; Día 4).
+  - `resolveSearchView` compara formas normalizadas: añadir un espacio o una mayúscula no es una búsqueda nueva. Campo vacío (aunque el debounced conserve el texto borrado) = `history`; campo no vacío con debounced vacío = `pending`.
+  - Desviaciones mínimas del plan (justificadas en `LEARNING.md`): (1) `ProductListView` gana `paused` (y `useProductList` usa `skipToken`) para seguir montada durante `pending` (los filtros sobreviven a editar el texto y la barra no parpadea) y se ve el esqueleto sin pedir nada; (2) `emptyFilteredAction`, `emptyCopy` y `emptyFilteredCopy` para el vacío propio de la búsqueda; (3) `SearchField` como componente aparte (el plan solo nombraba `SearchScreen` y `SearchHistoryList`); (4) `Keyboard.dismiss()` antes de abrir las hojas y `keyboardDismissMode`/`keyboardShouldPersistTaps`/`automaticallyAdjustKeyboardInsets` siempre activos en la cuadrícula y en los `ScrollView` (no hace falta ninguna prop nueva: FlashList los reenvía y no afectan a la categoría).
+  - Acción del vacío (RF-19): una sola. Sin filtros, "Limpiar búsqueda"; con filtros, "Limpiar búsqueda y filtros" (limpia texto y filtros, plan línea ~164). Los chips siguen visibles.
+  - Enviar = tecla de buscar, ejecutar una entrada del historial o tocar un resultado (`addSearch` con el texto visible); teclear sin enviar no escribe. `maxLength` 100 en el campo.
+  - Servidor: sin longitud mínima de `q`; `q` vacío = 400 (la interfaz nunca lo envía).
+  - Corrección S-1/S-2/S-3/S-7 (validación en Samsung e iPhone 17 Pro; aprobada por el usuario, que conserva la migración a `AppIcon` de Inicio, carrusel y tab bar): S-1 `design-system/components/AppIcon` (el `SymbolView` de Android descarta las props de accesibilidad y TalkBack leía el glifo; envoltorio `View` oculto, usado en búsqueda, Inicio, carrusel y tab bar); S-2 `resolveSubmittedText` (texto del evento de envío, no el del render; 537 → 541 tests); S-3 `blur()` + `focus()` si el teclado está oculto y `Keyboard.dismiss()` al ejecutar una búsqueda; S-7 placeholder dibujado en Android para que el nombre accesible sea "Buscar productos". Detalle en `LEARNING.md`. Seguimientos fuera de T12: S-4…S-6, S-8…S-12 (ver `MEMORY.md`).
+  - Validación aprobada por el usuario ((c) y (e)). Solo queda para la auditoría del Día 6 el VoiceOver real (decisión del usuario) y los seguimientos S-4…S-6, S-8…S-12 (anuncios de TalkBack al borrar/vacío, iconos recortados en Android 2.0, etc.).
+- Teoría: debounce (`Flow.debounce`, `Combine.debounce`), cancelación por identidad e historial como estado de cliente. ≤10 min.
+- Nota de medición: los 300 elementos reales se alcanzan con la búsqueda sin categoría (cada categoría tiene solo 60); T15 mide la parte pendiente de T9 (g) sobre esa pantalla.
+- Alcance (test primero):
+  - `search/logic/search-history.ts` y `search/logic/search-view.ts`.
+  - `search/store/search-history-slice.ts`, registrado en el store.
+  - `use-debounced-value.ts`.
+  - `SearchScreen` y `SearchHistoryList`, con `ProductListView` (`q`).
+  - `SearchPlaceholderScreen` se borra.
+- Hecho cuando:
+  - (a) `search-history.test.ts`:
+    - "Vitamina C" y luego "vitamina  c" dejan una sola entrada, con la variante más reciente al inicio;
+    - la 11.ª entrada elimina la más antigua;
+    - se puede borrar una entrada o todas;
+    - ninguna entrada guarda una forma normalizada vacía;
+    - el estado nunca se muta.
+  - (b) `search-view.test.ts`: con solo espacios → `history` sin consulta; texto distinto del debounced → `pending`; igual → `query` con la forma normalizada.
+  - (c) En los dispositivos:
+    - la búsqueda se lanza 400 ms después de la última tecla (log);
+    - escribir rápido no muestra resultados de textos anteriores;
+    - enviar o tocar un resultado añade al historial;
+    - el campo vacío y enfocado muestra el historial, que permite ejecutar, borrar una entrada o borrar todo de inmediato;
+    - sin coincidencias se ve vacío con "Limpiar";
+    - filtros y orden funcionan sobre la búsqueda;
+    - el teclado no tapa resultados y se cierra al arrastrar;
+    - el historial sobrevive a salir y volver durante la sesión (se pierde al reiniciar: Día 4).
+  - (d) Lint, tsc, `test:logic` y paridad en verde.
+  - (e) Parar y confirmar en Android e iOS.
+
+- [x] **T13. Mutation `createOrder`, invalidación por tags y control `__DEV__`.** RF-7, RF-8, RF-22
+- **Estado (2026-10-12): VALIDADA en Samsung SM-A037M y simulador iPhone 17 Pro; (a)–(h) hechos.** 566 tests (+25), lint, tsc, paridad y bundles de Android e iOS en verde. En ambas plataformas: el 202 aislado no invalidó; el 200 con la misma key truncada revalidó una vez Home, categoría montada y detalle; la búsqueda cacheada inactiva volvió a solicitarse al abrirla; 409 y red caída produjeron cero invalidaciones; red caída hizo exactamente un POST, sin reintentos tardíos. Los logs no expusieron dirección, body, cabecera ni key completa. Notas:
+  - Integración con store REAL fuera del repo contra el mock: 202 → 0 peticiones y nada invalidado; 200 con la MISMA key y body → una revalidación de `getHome`, `getProducts` (lista montada) y `getProduct(id)`; la búsqueda sin suscriptores se elimina de la caché y se vuelve a pedir al abrirse; 409 (agotado) → 0 invalidaciones; con el mock caído, `POST /orders` = 1 intento y 0 tardíos (el `GET` de control hace 3). Ningún log contiene la dirección, el body ni la key completa.
+  - Contrato real del mock: la dirección es OBLIGATORIA (`fullName`, `phone` 10 dígitos, `postalCode` 5 dígitos, `state`, `city`, `street`, `exteriorNumber`); el 200 trae `order.id` (no `orderId`); 202 `retryAfterSeconds` ≥ 1 (la orden tarda `ORDER_PROCESSING_MS`, 1 s); `product-261009-001` agotado → 409 `OUT_OF_STOCK`; 99 unidades por producto en stock. Detalle en `LEARNING.md`.
+  - Desviaciones mínimas del plan: tipos y `parseOrderResult` en `checkout/contracts/`; `checkout/logic/order-log.ts` (log seguro, key truncada) y `nextDevOrderStep`/`MAX_DEV_REPOSTS` puros en `dev-order.ts`; el control se carga con `require` bajo `__DEV__` (con `import` + `__DEV__ &&` el módulo seguía en el bundle de release: medido); `retryAfterSeconds` acotado a 5 s en el control.
+  - Hallazgo: RTK 2.13 no guarda los argumentos de la mutation en `api.mutations` (solo `status` y `data`); `reset()` limpia ese resultado. Sin cambios en `fetchJson`/base query: ya soportaban `method`, `body`, `headers` y su `onSettled` no registra body ni headers.
+  - Ruta para validar: Inicio → categoría → tarjeta (p. ej. `product-261009-002`) → «Crear orden de prueba»; o `herbstore://product/product-261009-002`. Agotado: `product-261009-001`.
+- Teoría: mutations, `invalidatesTags`, suscripciones activas e inactivas, e Idempotency-Key estable por intento. ≤10 min.
+- Alcance (test primero):
+  - `checkout/logic/order-invalidation.ts` y `checkout/logic/dev-order.ts`.
+  - `checkout/data/orders-api.ts` (`createOrder` con 0 reintentos automáticos por ser `POST` (P2), `parse` sin datos personales).
+  - `checkout/components/OrderDevControls.tsx` dentro de `ProductPlaceholderScreen`, solo bajo `__DEV__`, con textos `orderDev.*` en es/en.
+- Hecho cuando:
+  - (a) `order-invalidation.test.ts`: `confirmed` → `Home`, `{ ProductList, LIST }` y `{ Product, id }` por cada producto, sin repetidos; `pending` o error → `[]`.
+  - (b) `dev-order.test.ts`: la key es estable para la misma entrada y distinta para entradas distintas; el request solo tiene `items`, `currency` y la dirección ficticia.
+  - (c) Recorrido Home → categoría → producto → "Crear orden de prueba":
+    - los logs muestran POST 202 y POST 200 con la misma key;
+    - después revalidan una vez `getHome`, `getProducts` (la categoría montada) y `getProduct(id)`;
+    - una búsqueda cacheada sin montar vuelve a pedirse al abrirse;
+    - un 202 por sí solo no invalida.
+  - (d) Con el mock detenido, "Crear orden de prueba" registra un solo `POST` (0 reintentos automáticos, P2) y muestra error; no se invalida nada.
+  - (e) Ningún log contiene la dirección ni el body.
+  - (f) El control no existe en un build sin `__DEV__` (revisión de código).
+  - (g) Lint, tsc, `test:logic` y paridad en verde.
+  - (h) Parar y confirmar en Android e iOS.
+
+- [x] **T14. Fallback global de render.** RF-20, RF-22
+- **Estado (2026-10-12): VALIDADA y APROBADA por el usuario** en Samsung SM-A037M y simulador iPhone 17 Pro. (a)–(e) hechos: fallback es/en, targets de 48 dp/pt, árbol accesible con TalkBack activo y auditoría AX de iOS, reintento persistente sin bucle, vuelta a Home con estado efímero desmontado y errores API locales. 566 tests, lint, tsc y paridad en verde. El orden real de «Ir al inicio» es `retry()` y, en la tarea siguiente, `router.replace('/')`: así el fallback queda estable antes de reemplazar la ruta que volvió a fallar.
+- Teoría: error boundaries frente a errores de API; `ErrorBoundary` de Expo Router (`{ error, retry }`) frente a `UncaughtExceptionHandler` y crash handlers en iOS. ≤10 min.
+- Alcance:
+  - `navigation/screens/GlobalErrorScreen.tsx`, con sus propios providers.
+  - `export function ErrorBoundary` en `src/app/_layout.tsx`.
+  - `foundations/components/RenderErrorDemo.tsx` (`__DEV__`).
+  - Textos `errorBoundary.*` y `errorDev.*` en es/en.
+- Hecho cuando:
+  - (a) Provocar el error desde Foundations muestra el fallback en el idioma activo, con título y dos botones de al menos 48 dp, legible con TalkBack y VoiceOver (descartar antes el aviso de LogBox).
+  - (b) "Reintentar" vuelve a renderizar. Si el error persiste, el fallback reaparece sin bucle automático y "Ir al inicio" lleva a Home con el estado efímero reiniciado.
+  - (c) Un error de API (mock detenido) sigue mostrando su estado local y no el fallback.
+  - (d) Lint, tsc, `test:logic` y paridad en verde.
+  - (e) Parar y confirmar en Android e iOS.
+
+- [x] **T15. Medir antes de optimizar.** RF-21, RNF-1
+- **Estado (2026-10-12): COMPLETADA, VALIDADA y APROBADA explícitamente por el usuario.** Baseline reproducible en Samsung SM-A037M para tres páginas, chip, categoría de 60 y búsqueda real de 300; Profiler + `onLoad` + sondeo temporal. El intento release compiló/instaló pero el mock HTTP quedó offline, así que se usó la alternativa Profiler aprobada. Único candidato (`memo(ProductCard)` con `"use no memo"`) revertido: no evitó renders y empeoró `onLoad`/peor stall. H-13/T9(g) cerrado; instrumentación retirada. 566 tests, lint, tsc y paridad en verde; conducta compartida revalidada en Samsung e iPhone 17 Pro.
+- Teoría: Profiler de React Native DevTools, renders frente a commits, React Compiler activo (`"use no memo"` para comparar) y `onLoad` de FlashList. Equivalentes: Android Studio Profiler/Layout Inspector e Instruments. ≤10 min.
+- Alcance:
+  - Baseline de dos interacciones:
+    - scroll hasta cargar 3 páginas;
+    - aplicar un chip.
+  - En ambas se registra el número de renders de `ProductCard`/`ProductGrid`, la duración de los commits y `onLoad.elapsedTimeInMs`.
+  - Elegir un único candidato concreto y medir lo mismo después.
+  - Medición pendiente de T9 (g), en Android (Samsung SM-A037M, gama baja):
+    - llegada de una página y scroll con 60 y con 300 productos (los 300 reales con la búsqueda sin categoría, T12);
+    - dev frente a release, o React Profiler si no hay build release;
+    - con el sondeo de stalls `setInterval` como instrumento temporal (descartado como utilidad permanente por decisión del usuario; no se deja en el código);
+    - registrar antes y después según RF-21, sin optimizar sin evidencia (AGENTS.md: no optimizar por intuición).
+  - Punto de partida (dev build, T9): 212/370/392 ms de stall por llegada de página y 250–440 ms solo con scroll; iOS 0.
+- Hecho cuando:
+  - (a) `LEARNING.md` tiene una tabla antes/después con dispositivo, build y pasos.
+  - (b) La optimización se conserva solo si al menos una medida mejora y ninguna conducta cambia; si no, se revierte y se documenta.
+  - (c) Lint, tsc y `test:logic` en verde.
+  - (d) Cerrada la medición de T9 (g) en Android: tabla antes/después con 60 y 300 productos, dev frente a release o Profiler, y conclusión sobre si el bloqueo se debe a la paginación o al build de desarrollo (sin atribuirlo antes de medir).
+
+- [x] **T16. Cierre y validación del Día 3.** RF-23, RF-24, RF-25, RNF-4
+- **Estado (2026-10-12): (a)–(c) HECHOS; aprobada explícitamente por el usuario; (d) HECHO: @reviewer dio APROBADO en la re-validación, la spec 003 pasa a `implementada` y el commit del Día 3 (`feat: add day 3 remote data, paginated lists and search`) se crea tras la aprobación explícita del usuario.** (a) lint, tsc, `test:logic` 566/566, mock 73/73, `expo install --check` y doctor 21/21 en verde. (b) Matriz ejecutada por el implementador en Samsung SM-A037M e iPhone 17 Pro con logs reales; sin comprobar por limitación y a cargo del usuario: la reconexión con `expo-network` en iOS, la carrera pull↔«cargar más» en iOS (validada en T9), movimiento reducido en iOS y VoiceOver real (Día 6, decisión del usuario). (c) Ejercicio, 10 preguntas, checklist, registro y hallazgos R-1…R-4 en `LEARNING.md`. Sin cambios de código productivo en T16.
+- Alcance:
+  - Regresión completa en Android e iOS:
+    - Home;
+    - categoría y búsqueda;
+    - matriz de caché, reintentos (3 peticiones ante 5xx/red en lecturas; 1 ante 404, timeout y `POST /orders` fallido), paginación, filtros, debounce, offline → online con `expo-network` (una revalidación tras 60 s y aviso retirado solo tras éxito), invalidación y fallback;
+    - fuente 2×/AX5, reduced motion, tema oscuro, TalkBack y VoiceOver;
+    - los 300 elementos reales se miden con la búsqueda sin categoría (cada categoría tiene 60); incluye la revisión de T9 (g) en Android medida en T15.
+  - Material en `LEARNING.md`:
+    - ejercicio sin solución de filtro + paginación;
+    - entre 8 y 10 preguntas con respuestas cortas;
+    - checklist oral de caché, reintentos, listas, debounce y medición;
+    - registro de verificación y hallazgos.
+  - Actualizar `MEMORY.md`, incluidos los seguimientos para el plan 004.
+  - Marcar la spec 003 como `implementada` solo con la aprobación del usuario.
+- Hecho cuando:
+  - (a) Lint, tsc, `test:logic` (con su recuento), los tests del mock, `npx expo install --check` y `npx expo-doctor@latest` pasan.
+  - (b) La matriz está completa en las dos plataformas.
+  - (c) El ejercicio, las preguntas, el checklist y el registro están en `LEARNING.md`.
+  - (d) [x] Existe un commit claro en inglés solo tras la validación y la aprobación del usuario. Detenerse. (Commit del Día 3 creado; referencia sin hash: `git log --grep "day 3"`.)

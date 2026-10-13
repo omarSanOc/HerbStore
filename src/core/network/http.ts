@@ -18,7 +18,15 @@ export type FetchJsonOutcome<T> =
   | { kind: 'timeout' }
   | { kind: 'aborted' };
 
+export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+
 export type FetchJsonOptions<T> = {
+  /** Defaults to `GET`. */
+  method?: HttpMethod;
+  /** Any JSON-serializable value; when present it is sent as the JSON body with `Content-Type`. */
+  body?: unknown;
+  /** Extra request headers (e.g. `Idempotency-Key`); they are added on top of `Accept`. */
+  headers?: Readonly<Record<string, string>>;
   /** Validates the decoded JSON; return `undefined` when it does not have the expected shape. */
   parse: (payload: unknown) => T | undefined;
   /** Caller cancellation. */
@@ -30,7 +38,15 @@ export type FetchJsonOptions<T> = {
 
 export async function fetchJson<T>(
   url: string,
-  { parse, signal, timeoutMs = DEFAULT_TIMEOUT_MS, fetchImpl = fetch }: FetchJsonOptions<T>,
+  {
+    method = 'GET',
+    body,
+    headers,
+    parse,
+    signal,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    fetchImpl = fetch,
+  }: FetchJsonOptions<T>,
 ): Promise<FetchJsonOutcome<T>> {
   const callerAborted = () => signal?.aborted === true;
 
@@ -57,7 +73,14 @@ export async function fetchJson<T>(
     let response: Response;
     try {
       response = await fetchImpl(url, {
-        headers: { Accept: 'application/json' },
+        method,
+        headers: {
+          Accept: 'application/json',
+          // Only a request that carries a body declares its content type.
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          ...headers,
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal,
       });
     } catch {

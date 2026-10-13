@@ -6,9 +6,9 @@
  * contract arrives with the detail screen (Day 4).
  */
 
-export type CurrencyCode = 'MXN' | 'USD';
+import type { CatalogProduct } from '../../product/contracts/catalog-product.ts';
 
-export type ProductBadge = 'BEST_SELLER' | 'QUALITY_PICK' | 'NEW' | 'OWN_BRAND';
+export type { CurrencyCode, ProductBadge } from '../../product/contracts/catalog-product.ts';
 
 export type HomeSectionId = 'best_sellers' | 'new' | 'offers';
 
@@ -29,25 +29,8 @@ export type HomeCategory = Readonly<{
   imageUrl: string;
 }>;
 
-export type HomeProduct = Readonly<{
-  id: string;
-  brand: string;
-  name: string;
-  categoryId: string;
-  subcategoryId: string;
-  price: number;
-  /** Present only when the product is discounted. */
-  listPrice?: number;
-  currency: CurrencyCode;
-  rating: number;
-  reviewCount: number;
-  soldLast30Days: number;
-  badges: readonly ProductBadge[];
-  couponText?: string;
-  inStock: boolean;
-  /** Server paths such as `/images/products/product-001-front.png`. */
-  images: readonly string[];
-}>;
+/** Home shows the same product the catalog list does: one shared contract (Day 3). */
+export type HomeProduct = CatalogProduct;
 
 export type HomeSection = Readonly<{
   id: HomeSectionId;

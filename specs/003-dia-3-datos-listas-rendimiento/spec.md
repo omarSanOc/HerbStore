@@ -1,5 +1,5 @@
 # Spec 003 — Día 3: datos, listas y rendimiento
-Estado: aprobada
+Estado: implementada
 
 ## Contexto y objetivo
 Con Home y el servidor disponibles, este día establece el comportamiento definitivo de datos remotos con RTK Query para Home, listado y búsqueda, reutilizando la experiencia de Home sin duplicarla. El objetivo es dominar caché, invalidación, reintentos, paginación y listas grandes mediante resultados observables y mediciones previas a cualquier optimización.

@@ -1,5 +1,5 @@
-import { SearchPlaceholderScreen } from '@/features/search/screens/SearchPlaceholderScreen';
+import { SearchScreen } from '@/features/search/screens/SearchScreen';
 
 export default function SearchRoute() {
-  return <SearchPlaceholderScreen />;
+  return <SearchScreen />;
 }

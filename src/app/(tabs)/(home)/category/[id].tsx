@@ -1,10 +1,10 @@
 import { useLocalSearchParams } from 'expo-router';
 
-import { CategoryPlaceholderScreen } from '@/features/categories/screens/CategoryPlaceholderScreen';
+import { CategoryProductsScreen } from '@/features/categories/screens/CategoryProductsScreen';
 
 export default function CategoryRoute() {
   // `id` is typed as string | string[] | undefined: validation happens in the feature.
   const { id } = useLocalSearchParams<{ id?: string | string[] }>();
 
-  return <CategoryPlaceholderScreen rawId={id} />;
+  return <CategoryProductsScreen rawId={id} />;
 }

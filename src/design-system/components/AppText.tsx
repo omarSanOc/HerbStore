@@ -1,3 +1,4 @@
+import type { Ref } from 'react';
 import { Text, type TextProps, type TextStyle } from 'react-native';
 
 import { typography } from '@/design-system/tokens';
@@ -6,6 +7,8 @@ import { useAppTheme } from '@/design-system/theme';
 type AppTextVariant = keyof typeof typography;
 
 type AppTextProps = TextProps & {
+  /** React 19: `ref` is a plain prop. Used to move the screen-reader focus to a title. */
+  ref?: Ref<Text>;
   tone?: 'default' | 'muted' | 'onPrimary';
   variant?: AppTextVariant;
 };

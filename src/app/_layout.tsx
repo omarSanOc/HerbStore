@@ -1,9 +1,16 @@
-import { Stack } from 'expo-router';
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
+import { Stack, type ErrorBoundaryProps } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { StyleSheet } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { I18nextProvider, useTranslation } from 'react-i18next';
+import { Provider as ReduxProvider } from 'react-redux';
 
+import { HiddenWhileSheetOpen } from '@/core/accessibility/HiddenWhileSheetOpen';
 import { i18n } from '@/core/i18n';
+import { store } from '@/core/store/store';
 import { AppThemeProvider } from '@/design-system';
+import { GlobalErrorScreen } from '@/features/navigation/screens/GlobalErrorScreen';
 import { useStackScreenOptions } from '@/features/navigation/use-stack-screen-options';
 
 // A link straight to a screen of a child navigator (or to the scanner) still gets the tabs, and
@@ -11,6 +18,11 @@ import { useStackScreenOptions } from '@/features/navigation/use-stack-screen-op
 export const unstable_settings = {
   anchor: '(tabs)',
 };
+
+/** Expo Router wraps this root route with its installed `{ error, retry }` boundary contract. */
+export function ErrorBoundary({ retry }: ErrorBoundaryProps) {
+  return <GlobalErrorScreen retry={retry} />;
+}
 
 // Inside its own component because the theme and i18n hooks need the providers above it.
 function RootStack() {
@@ -45,11 +57,28 @@ function RootStack() {
 
 export default function RootLayout() {
   return (
-    <I18nextProvider i18n={i18n}>
-      <AppThemeProvider>
-        <StatusBar style="auto" />
-        <RootStack />
-      </AppThemeProvider>
-    </I18nextProvider>
+    // Gesture Handler needs one root view for its gestures to work (the bottom sheets of T10 depend
+    // on it). It must fill the screen, hence `flex: 1`.
+    <GestureHandlerRootView style={styles.root}>
+      <ReduxProvider store={store}>
+        <I18nextProvider i18n={i18n}>
+          <AppThemeProvider>
+            <StatusBar style="auto" />
+            {/* Host of every `BottomSheetModal`: inside the theme and i18n because the sheets are
+                drawn in a portal of this provider, and above the stack so they cover the tabs. The
+                app is hidden from screen readers while a sheet is open; the sheets are outside. */}
+            <BottomSheetModalProvider>
+              <HiddenWhileSheetOpen>
+                <RootStack />
+              </HiddenWhileSheetOpen>
+            </BottomSheetModalProvider>
+          </AppThemeProvider>
+        </I18nextProvider>
+      </ReduxProvider>
+    </GestureHandlerRootView>
   );
 }
+
+const styles = StyleSheet.create({
+  root: { flex: 1 },
+});

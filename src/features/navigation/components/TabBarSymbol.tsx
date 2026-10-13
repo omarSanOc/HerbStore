@@ -1,5 +1,6 @@
-import { SymbolView } from 'expo-symbols';
 import type { ColorValue } from 'react-native';
+
+import { AppIcon } from '@/design-system';
 
 export type TabKind = 'home' | 'categories' | 'cart' | 'account';
 
@@ -23,12 +24,10 @@ type TabBarSymbolProps = {
 
 export function TabBarSymbol({ kind, color, size = 26 }: Readonly<TabBarSymbolProps>) {
   return (
-    <SymbolView
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants"
+    <AppIcon
       name={symbols[kind]}
       size={size}
-      tintColor={color}
+      color={color}
     />
   );
 }

@@ -1,4 +1,3 @@
-import { SymbolView } from 'expo-symbols';
 import type { TFunction } from 'i18next';
 import { useReducer, useState } from 'react';
 import {
@@ -12,7 +11,7 @@ import {
 import { useTranslation } from 'react-i18next';
 
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
-import { AppText, RemoteImage, radii, sizes, spacing, useAppTheme } from '@/design-system';
+import { AppIcon, AppText, RemoteImage, radii, sizes, spacing, useAppTheme } from '@/design-system';
 import { parseCategoryId } from '@/features/categories/parse-category-id';
 
 import {
@@ -288,16 +287,14 @@ function StepButton({ direction, disabled, onPress }: Readonly<StepButtonProps>)
         disabled ? styles.disabled : null,
         pressed && !reduceMotion ? styles.pressed : null,
       ]}>
-      <SymbolView
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
+      <AppIcon
         name={
           isNext
             ? { ios: 'chevron.right', android: 'chevron_right', web: 'chevron_right' }
             : { ios: 'chevron.left', android: 'chevron_left', web: 'chevron_left' }
         }
         size={22}
-        tintColor={colors.text}
+        color={colors.text}
       />
     </Pressable>
   );

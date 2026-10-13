@@ -2,12 +2,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import type { HomeProduct, ProductBadge } from '../../home/contracts/home.ts';
+import type { CatalogProduct, ProductBadge } from '../contracts/catalog-product.ts';
 import { buildProductCardModel, getProductBadge } from './product-card.ts';
 
 const plain = (text: string | undefined) => text?.replace(/ | /g, ' ');
 
-function product(overrides: Partial<HomeProduct> = {}): HomeProduct {
+function product(overrides: Partial<CatalogProduct> = {}): CatalogProduct {
   return {
     id: 'product-261009-001',
     brand: 'AsterVale Nutrition',
@@ -86,6 +86,11 @@ describe('buildProductCardModel', () => {
 
   it('has no rating without reviews', () => {
     assert.equal(buildProductCardModel(product({ rating: 0, reviewCount: 0 }), 'en').rating, undefined);
+  });
+
+  it('reports availability so the card can say it in text, not only in color', () => {
+    assert.equal(buildProductCardModel(product({ inStock: true }), 'es').inStock, true);
+    assert.equal(buildProductCardModel(product({ inStock: false }), 'es').inStock, false);
   });
 
   it('keeps the name as catalog data', () => {
