@@ -11,7 +11,8 @@ export type FetchJsonArgs = {
   body?: unknown;
   headers?: Readonly<Record<string, string>>;
   /** Validates the decoded JSON against the contract; `undefined` means invalid. */
-  parse: (payload: unknown) => unknown;
+  parse: (payload: unknown, status: number) => unknown;
+  parseErrorBody?: (status: number, payload: unknown) => unknown;
 };
 
 /**
@@ -55,7 +56,8 @@ export function createFetchJsonBaseQuery({
       method,
       body: args.body,
       headers: args.headers,
-      parse: args.parse,
+       parse: args.parse,
+       parseErrorBody: args.parseErrorBody,
       signal: api.signal,
       timeoutMs,
       fetchImpl,
@@ -63,7 +65,7 @@ export function createFetchJsonBaseQuery({
 
     onSettled?.({
       method,
-      path: args.path.split('?')[0] ?? args.path,
+      path: redactSettledPath(args.path.split('?')[0] ?? args.path),
       result: outcome.kind,
       ...(outcome.kind === 'http' ? { status: outcome.status } : {}),
     });
@@ -71,4 +73,11 @@ export function createFetchJsonBaseQuery({
     const result: ApiResult<unknown> = toBaseQueryResult(outcome);
     return result;
   };
+}
+
+function redactSettledPath(path: string): string {
+  const match = /^\/orders\/status\/(.+)$/.exec(path);
+  if (!match) return path;
+  const key = decodeURIComponent(match[1] ?? '');
+  return `/orders/status/${key.length > 4 ? `…${key.slice(-4)}` : '…'}`;
 }

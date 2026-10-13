@@ -8,6 +8,7 @@ import {
   EMPTY_SEARCH_HISTORY,
   MAX_SEARCH_HISTORY,
   removeSearch,
+  restoreSearchHistory,
   type SearchHistory,
 } from './search-history.ts';
 
@@ -165,5 +166,77 @@ describe('clearHistory', () => {
     const history = frozen(['a', 'b']);
     clearHistory(history);
     assert.deepEqual(history, ['a', 'b']);
+  });
+});
+
+describe('restoreSearchHistory (Day 4: reading the persisted history back)', () => {
+  it('keeps a valid history intact, in the same order', () => {
+    const stored = ['vitamina  c', 'Magnesio', 'Zinc Ç'];
+    assert.deepEqual(restoreSearchHistory(stored), ['vitamina  c', 'Magnesio', 'Zinc Ç']);
+  });
+
+  it('keeps a full history of exactly MAX_SEARCH_HISTORY entries', () => {
+    const stored = searches(MAX_SEARCH_HISTORY);
+    assert.deepEqual(restoreSearchHistory(stored), stored);
+  });
+
+  it('accepts a history that the rules produced (round trip with addSearch)', () => {
+    let history: SearchHistory = EMPTY_SEARCH_HISTORY;
+    for (const text of [...searches(12), '  Vitamina C ', 'vitamína c']) {
+      history = addSearch(history, text);
+    }
+    const stored: unknown = JSON.parse(JSON.stringify(history));
+
+    assert.deepEqual(restoreSearchHistory(stored), history);
+  });
+
+  it('an empty stored array gives the empty history', () => {
+    assert.equal(restoreSearchHistory([]), EMPTY_SEARCH_HISTORY);
+  });
+
+  for (const [label, stored] of [
+    ['undefined (nothing stored)', undefined],
+    ['null', null],
+    ['a string', 'vitamina c'],
+    ['a number', 42],
+    ['an object', { entries: ['a'] }],
+  ] as const) {
+    it(`something that is not an array (${label}) gives the empty history`, () => {
+      assert.equal(restoreSearchHistory(stored), EMPTY_SEARCH_HISTORY);
+    });
+  }
+
+  for (const [label, stored] of [
+    ['a non-string entry', ['zinc', 7]],
+    ['a null entry', ['zinc', null]],
+    ['an empty entry', ['zinc', '']],
+    ['an entry of only spaces', ['zinc', '   ']],
+    ['an entry with outer spaces (the rules always trim)', ['zinc', ' magnesio ']],
+  ] as const) {
+    it(`a corrupt history with ${label} is discarded as a whole`, () => {
+      assert.equal(restoreSearchHistory(stored), EMPTY_SEARCH_HISTORY);
+    });
+  }
+
+  it('duplicated identities ("Vitamina C" and "vitamína  c") make the history invalid', () => {
+    assert.equal(restoreSearchHistory(['Vitamina C', 'zinc', 'vitamína  c']), EMPTY_SEARCH_HISTORY);
+  });
+
+  it('more than MAX_SEARCH_HISTORY entries make the history invalid', () => {
+    assert.equal(restoreSearchHistory(searches(MAX_SEARCH_HISTORY + 1)), EMPTY_SEARCH_HISTORY);
+  });
+
+  it('never mutates the stored value', () => {
+    const stored = Object.freeze(['b', 'a']);
+    restoreSearchHistory(stored);
+    assert.deepEqual(stored, ['b', 'a']);
+  });
+
+  it('the restored history still follows addSearch/removeSearch/clearHistory', () => {
+    const restored = restoreSearchHistory(['zinc', 'Vitamina C']);
+
+    assert.deepEqual(addSearch(restored, 'vitamina c'), ['vitamina c', 'zinc']);
+    assert.deepEqual(removeSearch(restored, 'ZINC'), ['Vitamina C']);
+    assert.deepEqual(clearHistory(restored), []);
   });
 });

@@ -2179,3 +2179,576 @@ Debería poder explicar, sin mirar apuntes y en unos 60 segundos cada punto:
 
 **Proceso**
 - [ ] Cómo se validó el día: lógica con `node:test`, logs reales con contadores, árbol de accesibilidad y qué queda para el Día 6 (VoiceOver real, Jest, RNTL, Maestro).
+
+### Bloque T5 — UI derivada, gestos y restauración (≈10 min)
+
+La pantalla no guarda subtotal, progreso ni unidades: lee selectors puros del estado mínimo del carrito. Cada acción comprueba `selectIsCartLocked` antes de despachar; así una escritura durante `REHYDRATE` no pisa la instantánea persistida. `ReanimatedSwipeable` reserva el gesto horizontal y el `ScrollView` conserva el vertical; el botón visible «Eliminar» es la alternativa accesible. Con movimiento reducido se eliminan cambios visuales no esenciales, pero se mantienen las acciones y los mensajes.
+
+| Concepto | React Native | Kotlin/Compose | Swift/SwiftUI |
+| --- | --- | --- | --- |
+| Estado derivado | `useAppSelector` + selectors | `StateFlow.map` / `derivedStateOf` | propiedad computada de `@Observable` |
+| Swipe | `ReanimatedSwipeable` en UI thread | `SwipeToDismissBox` / `swipeActions` | `.swipeActions` |
+| Restauración | `_persist.rehydrated` y estado local de la feature | `DataStore.data.first()` antes de habilitar mutaciones | lectura de `UserDefaults`/modelo antes de editar |
+
+**Decisiones:** se eligió una sola acción de swipe y botón equivalente visible, frente a múltiples acciones ocultas; se eligió el umbral canónico de 80 000 centavos MXN y conversión solo al borde de presentación, frente a comparar el valor USD redondeado. No se añadió `memo`: el compilador de React está activo y el incremento no tenía una medición que lo justificara.
+
+### Registro T5 (2026-10-13)
+
+- Añadidos `CartScreen` y `components/{CartLine,SwipeToDelete,ShippingProgress,EmptyCart,CartRestoring}.tsx`; la ruta del carrito delega en `CartScreen`. Cada línea usa la instantánea persistida, `RemoteImage`, controles de 48 dp y `adjustable` con acciones de accesibilidad. El swipe usa `ReanimatedSwipeable`, revela únicamente «Eliminar» y oculta esa acción duplicada del árbol accesible porque la línea ya expone el botón.
+- Eliminados `CartPlaceholderScreen.tsx` y `placeholders.cart.body`. La resta desde cantidad 1 elimina la línea mediante el reducer existente; el lock se consulta antes de cualquier dispatch.
+- Verificaciones: `npx expo lint` ✅, `npx tsc --noEmit` ✅, `npm run test:logic` ✅ (853/853). No hay Jest/RNTL/Maestro hasta Día 6 según el plan.
+- Matriz manual: iOS Simulator ✅ (carrito con instantánea, subtotal, umbral, árbol AX para decrement/increment/delete/progreso, eliminación accesible y estado vacío con «Ir a Inicio» y checkout deshabilitado; texto grande y tema claro). Android ⏸️ no ejecutado: no había dispositivo/emulador conectado. No se cambiaron dependencias ni configuración nativa.
+
+---
+
+## Día 4 — Estado, carrito y checkout (spec `specs/004-dia-4-estado-carrito-checkout`)
+
+Estado: **en curso**. Diez checkpoints (T1–T10); cada uno empieza con su bloque teórico (RF-1) y termina con validación en Android e iOS (RF-29).
+
+## Día 4 — T1: persistencia del historial con redux-persist + MMKV
+
+### Bloque T1 — Persistir estado de cliente: whitelist, rehidratación y saneado (≈10 min)
+
+**Qué se persiste y qué no.** En HerbStore conviven tres tipos de estado (RF-2):
+- *Remoto* (RTK Query, slice `api`): el catálogo, Home, el detalle. Su fuente de verdad es el servidor y RTK Query decide cuándo revalidar (60 s). **Nunca se persiste**: tras reiniciar se pide de nuevo; guardarlo en disco duplicaría una caché que caduca, podría guardar datos de respuestas y haría que un esquema viejo de servidor sobreviviera a una actualización.
+- *Global de cliente* (slices de Redux): el historial de búsqueda hoy; el carrito, el intento de checkout y los pedidos locales más tarde. Es lo único candidato a disco, y solo si el usuario espera recuperarlo tras reiniciar (RF-12).
+- *Local* (estado de componente): el texto del campo, la cantidad del detalle, el formulario. Muere con la pantalla.
+
+**redux-persist en tres piezas.**
+1. `persistReducer(config, rootReducer)`: envuelve el reducer raíz y añade `_persist: { version, rehydrated }`. Tras cada cambio de una clave de la **whitelist** la serializa (JSON) y la escribe en `persist:root`.
+2. `persistStore(store)`: despacha `PERSIST`; el reducer lee el disco una vez (`getItem`), pasa el resultado por `migrate` y despacha `REHYDRATE`, que mezcla el estado leído con el inicial (`autoMergeLevel1`: sustituye cada slice de primer nivel). Desde ese momento `_persist.rehydrated` es `true`.
+3. El *storage engine*: un objeto `getItem/setItem/removeItem` con promesas. Aquí es MMKV.
+
+**Whitelist frente a blacklist.** Con whitelist, un slice nuevo **no** se persiste hasta que alguien lo añade a mano (`PERSISTED_KEYS` en `core/storage/persist-policy.ts`). Con blacklist, cualquier slice nuevo (por ejemplo, uno con datos de un formulario) acabaría en disco por omisión. Para datos personales (constitución, punto 5; RNF-1) el fallo seguro es "no persistir": whitelist.
+
+**Rehidratar no es leer el disco al vuelo.** El store arranca con el estado inicial y, unos milisegundos después, llega `REHYDRATE`. Lo que dependa de lo persistido (el carrito de T2/T5) debe saber si ya está restaurado: `selectIsRehydrated` lee `_persist.rehydrated`. HerbStore **no** usa `PersistGate` global (que retiene toda la UI hasta rehidratar): Home no depende de lo persistido; cada pantalla afectada muestra su propio estado de restauración (RF-11).
+
+**El disco no es de fiar: saneado y versión.** Lo que se lee puede venir de una versión anterior de la app, de un archivo corrupto o de un JSON truncado. Por eso:
+- `PERSIST_VERSION` es la versión del esquema; si lo leído trae otra, todos los slices vuelven a su estado inicial.
+- `sanitizePersistedState` valida **slice por slice** con las mismas reglas que lo produjeron: `restoreSearchHistory` reutiliza `normalizeSearchText` y `MAX_SEARCH_HISTORY` y acepta solo un historial que esas reglas pudieron generar (≤10, sin vacíos, recortado y sin identidades duplicadas). Cualquier otra cosa → historial vacío **completo**: "reparar" (quitar una entrada, cortar la cola) inventaría un orden que el usuario nunca produjo.
+- Un JSON ilegible hace fallar la lectura de redux-persist y rehidrata con `undefined`: se queda el estado inicial y la siguiente escritura sobrescribe lo corrupto. Ningún caso cierra la app.
+
+**MMKV.** Almacén clave-valor de Tencent sobre un archivo mapeado en memoria (`mmap`): lecturas síncronas y muy rápidas a través de JSI (en v4, con Nitro Modules). Es nativo: exige Development Build y recompilar; no hay config plugin. El adapter (`createSafeStorage`) envuelve cada operación para que **todo resuelva**: un error de lectura devuelve `null` (estado vacío), uno de escritura se informa (solo la operación, nunca el valor) y la app sigue.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Almacén clave-valor | MMKV (`react-native-mmkv` 4, JSI/Nitro) | `SharedPreferences` (síncrono, XML) / **DataStore** (Flow, asíncrono, transaccional); MMKV también existe para Android | `UserDefaults` / `@AppStorage`; MMKV también existe para iOS |
+| Qué se guarda | whitelist explícita de slices (`PERSISTED_KEYS`) | lo que el repositorio escribe a mano en DataStore | lo que escribes en `UserDefaults` o con `@AppStorage` |
+| Serialización | JSON por slice (redux-persist) | Proto DataStore (esquema) o Preferences DataStore (claves tipadas) | `Codable` → `Data`, o tipos primitivos |
+| Restaurar al arrancar | `persistStore` → `REHYDRATE`; `_persist.rehydrated` | `dataStore.data.first()` / `stateIn(...)` en el `ViewModel` | `@AppStorage` lee al instanciar; `UserDefaults` es síncrono |
+| Datos corruptos | `migrate` + `sanitizePersistedState` → estado inicial | `CorruptionHandler` (`ReplaceFileCorruptionHandler`) de DataStore | `try? JSONDecoder().decode` con valor por defecto |
+| Migraciones | `version` + `migrate` | `DataMigration` de DataStore | claves versionadas a mano |
+
+**Errores típicos al venir de nativo.** (1) Persistir todo el store (o la caché `api`): crecen el disco y el arranque y se resucitan datos caducados. (2) Confiar en lo leído como si fuera del tipo de TypeScript: el disco devuelve `unknown`. (3) Leer el carrito antes de `REHYDRATE` y "vaciarlo" con una escritura. (4) Mutar el estado restaurado. (5) Guardar datos personales "temporalmente" en un slice persistido. (6) Olvidar que cambiar una dependencia nativa exige recompilar: Fast Refresh no carga MMKV.
+
+### Decisiones de T1 (RF-3)
+
+- **redux-persist + MMKV con whitelist explícita** (plan). Trade-off: versionado y saneado manuales. Descartado: persistir todo el store o `api`, y AsyncStorage (asíncrono por el bridge, más lento; MMKV ya es el stack obligatorio).
+- **Saneado en `migrate`** frente a un `stateReconciler` propio o transforms. Elegido: `migrate` corre una vez entre leer y `REHYDRATE`, recibe el estado completo con su `_persist.version` y nunca rechaza. Trade-off: un slice nuevo exige su restaurador (el tipo lo obliga). Descartado: transforms por clave (no ven la versión) y un reconciliador propio (reimplementar la mezcla).
+- **Adapter seguro separado (`persist-storage.ts`) de la instancia MMKV (`mmkv-storage.ts`).** El plan describe un único `mmkv-storage.ts`; se separó la política de fallos en un módulo puro para probar "error de lectura → vacío" en `test:logic` (Node no puede importar MMKV). `mmkv-storage.ts` sigue siendo el único import de MMKV. Descartado: probar el fallo solo a mano en dispositivo.
+- **`recoveryStrategy: 'discard-on-error'`** en MMKV: ante un error de CRC/longitud se descarta el archivo en vez de recuperar uno parcial. Trade-off: se pierde el historial en vez de intentar salvar parte. Descartado: `recover-on-error` (un estado a medias que el saneado rechazaría igualmente).
+- **Instancia propia `herbstore.persist`** sin cifrado: solo contiene datos no sensibles por diseño (whitelist). Descartado: la instancia por defecto (compartida con cualquier otro uso futuro) y cifrar (exigiría gestionar una clave; constitución, punto 5, ya prohíbe guardar datos sensibles).
+- **`overrideExisting: __DEV__` en los tres `injectEndpoints`** (decisión del usuario). Fast Refresh vuelve a ejecutar el módulo e inyecta los mismos endpoints: en desarrollo se sustituyen sin el `ERROR … without overrideExisting` que tapaba errores reales; en producción sigue `false` y un nombre duplicado por error se sigue detectando. Trade-off: en desarrollo un duplicado real se sobrescribe sin aviso. Descartado: ignorar el ruido.
+
+### Versiones instaladas (T1, 2026-10-12, `npx expo install` sobre Expo 57.0.28)
+
+| Paquete | Versión | Nativo | Notas |
+| --- | --- | --- | --- |
+| `redux-persist` | 6.0.0 | no | Trae sus tipos; sus acciones se excluyen del `serializableCheck`. |
+| `react-native-mmkv` | 4.3.2 | sí | v4 = Nitro Modules + JSI; API `createMMKV()`, `getString/set/remove`. Sin config plugin. |
+| `react-native-nitro-modules` | 0.37.1 | sí | Peer obligatorio de MMKV v4 (`peerDependencies`). |
+| `react-hook-form` | 7.90.0 | no | Se usa en T6. |
+| `zod` | 4.6.7 | no | Declarada explícitamente (antes solo transitiva 3.25 vía `@expo/cli`, que conserva su copia). |
+| `@hookform/resolvers` | 5.9.1 | no | Peer `zod ^3.25 \|\| ^4`, `react-hook-form ^7.55`. |
+| `expo-crypto` | ~57.0.4 | sí | Única de las siete en `bundledNativeModules` de SDK 57; `randomUUID()` y `digestStringAsync` (T8/T9). Sin config plugin. |
+
+### Registro de T1
+
+- Tests primero (rojos por la razón esperada: export/módulo inexistente): `search-history.test.ts` (+`restoreSearchHistory`), `core/storage/persist-policy.test.ts` (whitelist exacta, `api`/`preferences` ausentes, saneado por slice, versión, `migrate` que nunca rechaza y la tubería real de redux-persist sobre un backend en memoria: solo `searchHistory` y `_persist` llegan al disco, reinicio con orden/dedupe/límite, cinco formas de corrupción → vacío y sobrescrito, lectura fallida → vacío) y `core/storage/persist-storage.test.ts`. 566 → 619 tests.
+- Nuevos: `core/storage/{persist-policy,persist-storage,mmkv-storage}.ts`, `core/store/rehydration.ts`. Modificados: `core/store/store.ts` (`persistReducer` raíz, `persistStore`, `serializableCheck`), `search/logic/search-history.ts` (`restoreSearchHistory`), comentario de `search-history-slice.ts`, `overrideExisting: __DEV__` en `home-api.ts`, `products-api.ts` y `orders-api.ts`.
+- Verificaciones: `npx expo lint`, `npx tsc --noEmit`, `npm run test:logic` (619/619), `npx expo install --check` ("Dependencies are up to date") y `npx expo-doctor@latest` (21/21). `mock-server/` sin cambios. Sin cambios en `app.json`: ni MMKV ni `expo-crypto` necesitan config plugin.
+- Development Build recompilado en Android (Gradle; MMKV y Nitro autolinkados) e iOS (CocoaPods: «NitroMmkv is boosted by nitro»). En iOS, `pod install` falló primero porque el `Podfile.lock` generado estaba desfasado respecto a `expo-modules-core` 57.0.22 (anterior a T1); se regeneró borrando `ios/Podfile.lock` y repitiendo `pod install` (salida CNG ignorada, sin edición manual).
+
+### Comprobación propia en dispositivo (T1, 2026-10-12)
+
+| Caso | Android (Samsung SM-A037M, adb) | iOS (simulador iPhone 17 Pro, axe/simctl) |
+| --- | --- | --- |
+| Contenido de MMKV (`herbstore.persist`) | solo `searchHistory` y `_persist` | igual |
+| Orden y deduplicación tras reiniciar | "zinc", "omega", "ZINC" → `["ZINC","omega"]` restaurado | "ZINC", "omega", "zinc" → `["zinc","omega"]` restaurado |
+| Límite | 11 búsquedas más → 10, sale la más antigua | cubierto por `test:logic` |
+| Quitar una entrada y reiniciar | se mantiene quitada | se mantiene quitada |
+| «Borrar todo» y reiniciar | vacío | — |
+| Archivo MMKV con basura | vacío, sin cierre | vacío, sin cierre |
+| Historial con identidades duplicadas (archivo válido, CRC recalculado) | vacío | — |
+| Slice que no es JSON | vacío y sobrescrito con JSON válido | igual |
+| Versión de esquema 2 | vacío | vacío |
+| Control: edición válida del archivo (`"jj"`→`"kk"`, `"omega"`→`"delta"`) | se restaura tal cual (MMKV acepta el archivo) | igual |
+| Fast Refresh de `home-api`, `products-api`, `orders-api` | sin `ERROR … without overrideExisting`; control con `overrideExisting: false` sí lo muestra | sin el error |
+
+Método de la corrupción: con la app detenida se edita el archivo MMKV del contenedor (Android: `run-as`; iOS: `simctl get_app_container`) cambiando bytes de igual longitud y recalculando el CRC32 que MMKV guarda en `herbstore.persist.crc`; así MMKV acepta el archivo y decide solo el saneado de la app. El control con una edición válida demuestra que el vacío viene del saneado y no de un descarte de MMKV. En iOS, la tecla Return por HID (`axe key 40`) no dispara `onSubmitEditing`; las búsquedas se registraron tocando un resultado (también guarda historial, RF-17 del Día 3).
+
+### Validación en dispositivo de T1 a petición del usuario (2026-10-12)
+
+El usuario pidió que el agente ejecutara la validación manual pendiente. Metro sin `CI` (con Fast Refresh), mock en `:3001`, Android con `adb reverse` 8081/3001. Evidencia: árbol de UI (`uiautomator dump` / `axe describe-ui`), contenido de MMKV decodificado hasta el `actualSize` que guarda `herbstore.persist.crc` (CRC32 comprobado), logs de Metro/`logcat`/`log show` y PID nuevo en cada reinicio.
+
+| Caso | Android (Samsung SM-A037M) | iOS (simulador iPhone 17 Pro) |
+| --- | --- | --- |
+| 1. «zinc», «omega», «ZINC» (enviadas con el teclado) | OK: `["ZINC","omega"]` | OK: `["ZINC","omega"]`, enviadas con la tecla «buscar» del teclado en pantalla |
+| 2. Cerrar (`am force-stop` / `simctl terminate`) y reabrir | OK: mismo historial y orden (PID 17322 → 17871) | OK: igual (PID 953 → 1507) |
+| 3. 11 búsquedas distintas | OK: quedan 10, sale «vitamina»; igual tras reiniciar | OK: igual, en el dispositivo y tras reiniciar |
+| 4a. Quitar «calcio» con su «X» y reiniciar | OK: sigue quitada | OK: sigue quitada |
+| 4b. «Borrar todo» y reiniciar | OK: vacío | OK: vacío |
+| 5. Contenido de MMKV | OK: una sola clave `persist:root` con `searchHistory` y `_persist`; nada de `api`, catálogo ni `preferences` | OK: igual |
+| 6. Archivo sobrescrito con `basura` (había 2 búsquedas) | OK: MMKV registra `check crc … fail` y descarta; sin cierre (0 `FATAL EXCEPTION`), historial vacío; «magnesio» se guarda y sobrevive a otro reinicio | OK: igual (`check crc … fail` en `log show`, sin informes de fallo); «magnesio» sobrevive |
+| 7. Identidades duplicadas (`"kelp"`→`"ZINC"` con CRC recalculado) | OK: MMKV carga el archivo («loaded … 1 key-values») y el saneado deja el historial vacío | OK: igual |
+| 7. Control: edición válida (`"hemp"`→`"kelp"`) | OK: se restaura `zinc, kelp, magnesio` | OK: igual |
+| 8. Fast Refresh editando un comentario de `home-api.ts` | OK: el módulo se vuelve a ejecutar (aviso «Refreshing…» como `PopupWindow` y `[api] GET /home` ~1,5 s después de guardar) sin `without overrideExisting` | OK: `[api] GET /home` ~1 s después de guardar, con Android detenido; sin `without overrideExisting` |
+
+Notas del método:
+- **iOS, enviar la búsqueda.** `axe key 40` (y también 88 y 158) no dispara `onSubmitEditing`: es una tecla HID de "teclado físico". Con el teclado físico conectado, iOS minimiza el teclado en pantalla. Se desactivó temporalmente en el simulador `com.apple.keyboard.preferences AutomaticMinimizationEnabled` (con `simctl spawn … defaults write`), se escribió tocando las teclas del teclado en pantalla (nunca `axe type`, porque vuelve a minimizarlo) y se tocó «buscar». Al terminar se restauró el valor 1. No hizo falta tocar un resultado.
+- **`strings | tail -1` engaña.** MMKV no pone a cero los bytes que quedan después de `actualSize` al compactar el archivo, así que esa orden muestra restos de historiales anteriores pegados a la última entrada. El contenido real es el que llega hasta `actualSize`. Para el Día 4 (T8, prueba de «cero PII»), esto significa que un valor que se haya escrito alguna vez puede seguir en el archivo como bytes muertos.
+- **La señal de Fast Refresh** (`GET /home`) es indirecta: solo aparece si los datos de Home están caducados (más de 60 s). En iOS se hicieron cinco ediciones. La 3.ª y la 5.ª dieron la señal; la 1.ª y la 4.ª se hicieron con los datos aún frescos. La 2.ª no la dio sin una causa clara, y una ráfaga de capturas tampoco mostró el aviso «Refreshing…». En ninguna de las cinco apareció `without overrideExisting`. El último error de ese tipo en `.expo/dev/logs/start.log` es de las 20:56, el control de T1, anterior a esta sesión. El inspector de Metro volvió a cerrar con 1006 la conexión CDP externa.
+
+---
+
+## Día 4 — T2: moneda preferida, carrito puro, selectors y badge real
+
+### Bloque T2 — Estado global frente a local, Redux Toolkit y dinero en centavos (≈10 min)
+
+**¿Dónde vive cada dato?** La regla práctica es preguntar *quién lo lee*:
+- Lo lee **una sola pantalla** y muere con ella → *estado local* (`useState`, React Hook Form): la cantidad del detalle, el texto del campo.
+- Lo leen **varias pantallas distantes** o debe sobrevivir a una navegación → *estado global de cliente* (Redux): el carrito (lo leen la insignia del tab, el carrito, el detalle y el checkout), la moneda preferida (la lee cada tarjeta de producto).
+- Su fuente de verdad **es el servidor** → *estado remoto* (RTK Query): el catálogo y el detalle. El carrito guarda solo una *instantánea* mínima de cada línea (decisión del plan) para poder pintarse sin red; no es el catálogo.
+
+**Anatomía de Redux Toolkit con lo que se construye hoy.**
+- *Acción*: un objeto plano `{ type: 'cart/productAdded', payload }` que describe **qué pasó** (no cómo cambia el estado). Los `createSlice` generan los creadores (`productAdded(payload)`).
+- *Reducer*: función **pura** `(estadoAnterior, acción) → estadoSiguiente`. No hace red, no lee el reloj y no muta. Aquí delega en funciones puras de `cart.ts` (`addLine`, `decrementLine`…), que son lo que realmente se prueba.
+- *Slice*: el trozo del estado que un reducer posee (`cart`, `preferences`, `searchHistory`) más sus acciones. `combineReducers` junta los slices en el store.
+- *Selector*: función pura `(estado) → valor derivado` (`selectCartUnits`, `selectSubtotalMxnCents`). Se guarda en el store lo **mínimo** (las líneas) y todo lo demás se **deriva**: guardar también "unidades" o "subtotal" crea dos verdades que pueden desincronizarse. `createSelector` (reselect) memoiza por referencia de entradas; se usa **solo** cuando el selector devuelve un objeto nuevo (`selectShippingProgress`), porque `useSelector` compara con `Object.is` y un objeto nuevo en cada llamada provoca re-renders y un aviso en desarrollo. Un selector que devuelve un número no necesita memoización.
+- *Immer*: dentro de `createSlice` puedes escribir `state.x = 1` y Redux Toolkit lo convierte en una copia inmutable con *structural sharing* (lo que no cambió conserva su referencia). Aquí los reducers **devuelven** el siguiente estado construido por funciones puras y, si nada cambió, devuelven el mismo `state`: `Object.is` ve "sin cambio" y ni re-renderiza ni reescribe MMKV.
+- Flujo unidireccional: la UI **despacha** un evento → el reducer calcula el estado → los selectors lo leen → la UI se vuelve a pintar. Nada escribe el estado "por la puerta de atrás".
+
+**Dinero: enteros, nunca decimales binarios.** `0.1 + 0.2 === 0.30000000000000004`. Con coma flotante, "¿llegó a 800 MXN?" puede fallar por una millonésima. HerbStore guarda el precio como lo manda el catálogo (`277.9`), pero **toda aritmética** pasa por *centavos enteros de MXN* (el valor canónico, RF-5): `toMxnCents` (USD × 18), suma de líneas en enteros, comparación con `80_000` y, solo al final, `fromMxnCents` (÷ 18 con redondeo *half-up* al centavo) y `Intl.NumberFormat` para el texto. Cambiar de moneda cambia la **vista**, nunca el valor canónico: por eso 799,99 MXN no cumple el umbral y 800,00 sí, también si la pantalla muestra USD.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Contenedor de estado global | `store` de Redux + `Provider` | `ViewModel` con `StateFlow<CartState>` (o un repositorio `@Singleton`) | clase `@Observable` inyectada con `.environment` |
+| Evento de usuario | acción `dispatch(productAdded(...))` | intención/evento `viewModel.onAddToCart(...)` (MVI) | método del modelo `cart.add(...)` |
+| Transición pura | reducer `(state, action) → state` | `state.update { it.copy(...) }` / `reduce(state, intent)` | `mutating func` sobre un `struct`, o `reduce` en TCA |
+| Valor derivado | selector (`createSelector` si devuelve objeto) | `map { }.distinctUntilChanged()`, `derivedStateOf` | propiedad computada; `@Observable` solo re-renderiza lo que se leyó |
+| Suscripción | `useAppSelector(selector)` + `Object.is` | `collectAsStateWithLifecycle()` | la vista lee propiedades del `@Observable` |
+| Inmutabilidad | Immer / copiar y devolver | `data class` + `copy` | `struct` (tipos valor) |
+| Dinero | enteros en centavos (`number`) | `Long` en centavos o `BigDecimal` | `Decimal` o `Int` en centavos |
+
+**Decisiones de este bloque.**
+- *Centavos enteros* frente a `Decimal`/`BigDecimal` (librería extra) y a `number` decimal. Trade-off: hay que convertir en cada borde. Descartada la coma flotante: hace dudoso el límite exacto de 800 MXN.
+- *Selectors que derivan* frente a guardar unidades y subtotal en el store. Trade-off: se recalculan en cada lectura (O(líneas), despreciable). Descartado duplicar estado.
+- *`applyStockRefresh` que acota* (decisión del usuario) frente a solo actualizar el número y dejar la cantidad por encima del stock. Trade-off: la cantidad del usuario puede bajar sin que lo pida; por eso devuelve las líneas afectadas para informarle (T9).
+- *Restaurar línea por línea* (decisión del usuario) frente a vaciar el carrito entero si una línea falla. Trade-off: se conserva lo válido y se pierde solo lo corrupto. A diferencia del historial de búsqueda (donde reparar inventaría un orden), una línea corrupta es independiente de las demás.
+
+**Errores típicos al venir de nativo.** (1) Mutar el estado fuera de Immer (`state.lines.push(...)` en un `useEffect` o en un selector). (2) Un selector que devuelve un objeto o array nuevo en cada llamada. (3) Guardar en Redux algo derivado (unidades, subtotal). (4) Dinero con `toFixed` y `parseFloat` a mitad de cálculo. (5) Despachar cambios del carrito antes de que termine la rehidratación: el estado leído del disco no se mezcla si el slice ya cambió. (6) `useSelector(state => state)`: re-renderiza con cualquier cambio del store, incluida la caché de RTK Query.
+
+### Decisiones de T2 (RF-3)
+
+- **Centavos enteros MXN como valor canónico** (plan). Toda suma y comparación pasa por `toMxnCents` (USD × 18); `fromMxnCents` (÷ 18, *half-up*) y `Intl.NumberFormat` son el último paso. `toDisplayCents` no convierte cuando la moneda de origen y la de la vista coinciden (MXN → MXN nunca redondea). Trade-off: conversión explícita en cada borde. Descartada: coma flotante (dudoso el límite exacto de 800 MXN) y una librería `Decimal` (dependencia nueva sin necesidad: los importes caben en enteros seguros).
+- **Moneda preferida solo en memoria** (decisión del usuario, plan). `preferences-slice.ts` tiene solo `currency` y **no** está en `PERSISTED_KEYS`; el texto del selector avisa de que vuelve a pesos al reiniciar. Trade-off: hay que elegirla de nuevo tras cada arranque hasta el Día 6. Descartada: persistirla ya (la persistencia de preferencias es del Día 6).
+- **Todos los precios en la moneda preferida** (decisión del usuario). `buildProductCardModel(product, language, currency)` recibe la moneda como parámetro **obligatorio** (sin valor por defecto, para que ninguna pantalla se olvide) y `ProductCard` la lee con `useAppSelector`. Trade-off: cambiar la moneda repinta todas las tarjetas visibles; es un cambio infrecuente y no se añade `memo` sin medición. Descartada: convertir solo detalle/carrito/checkout (la misma tarjeta en dos monedas según la pantalla).
+- **Línea del carrito = instantánea mínima** `{ productId, quantity, name, imagePath?, unitPrice, currency, stock }` (decisión del usuario). El precio es decimal en su moneda de origen, igual que el catálogo; la aritmética convierte a centavos. Invariante: `1 ≤ quantity ≤ stock`, una línea por producto.
+- **`restoreCartLines`: línea por línea** (decisión del usuario). Se descartan las líneas inválidas (campos ausentes o de tipo erróneo, cantidad 0 o fraccionaria, `stock` 0, **cantidad mayor que el stock**, moneda desconocida, importe de línea que no sea un entero seguro) y las duplicadas por `productId` (gana la primera); cada línea se reconstruye solo con los siete campos, así que cualquier propiedad extra no sobrevive. Si el slice es ilegible (no es un array), el carrito queda vacío. Trade-off: se conserva lo válido y se pierde solo lo corrupto. Descartada: vaciar todo si falla una línea, y *reparar* (acotar la cantidad al stock), que inventaría una cantidad que el usuario no eligió. `PERSIST_VERSION` sigue en 1: añadir `cart` a la whitelist no cambia la forma de lo ya guardado y un estado de T1 sin `cart` restaura un carrito vacío.
+- **`applyStockRefresh` acota y elimina** (decisión del usuario). Actualiza `stock`, deja `min(cantidad, stock)` y elimina la línea con stock 0; devuelve `{ lines, adjustments }` y solo informa de lo que el usuario notaría (líneas acotadas o eliminadas, con su nombre, porque una línea eliminada ya no existe para leerlo). Un stock que sube, o que baja pero sigue cubriendo la cantidad, solo actualiza la cifra. Trade-off: la cantidad puede bajar sin que el usuario lo pida; por eso se informa (T9). Descartada: dejar la cantidad por encima del stock (carrito inconsistente).
+- **Umbral de envío gratis en vista USD** (decisión confirmada). `qualifies` y `fraction` salen del valor canónico MXN; el restante convertido nunca se muestra como `$0.00` mientras no se cumpla (mínimo 1 centavo). Con la vista en USD, 44,44 USD son 799,92 MXN: no cumple aunque la cifra coincida con el umbral mostrado (4 444 centavos); 44,45 USD (800,10 MXN) sí. Trade-off: el restante mostrado puede ser unos centavos mayor que el real. Descartada: decidir con la cifra redondeada de la vista.
+- **Selectors:** `selectCartUnits`, `selectSubtotalMxnCents` y `selectCartLines` son funciones planas (devuelven un número o la misma referencia); `selectDisplaySubtotal` (`{ cents, currency }`) y `selectShippingProgress` usan `createSelector` **solo** porque devuelven un objeto: sin memoización cada llamada produciría un objeto nuevo y `useSelector` re-renderizaría con cualquier acción del store. `selectIsCartLocked` es en T2 solo `!selectIsRehydrated`; `selectIsRehydrated` acepta `Pick<RootState, '_persist'>` para probarse en Node con un estado hecho a mano. Descartado: guardar unidades y subtotal en el store.
+- **Los reducers devuelven el mismo `state` si nada cambió** (no solo los nuevos arrays): redux-persist no reescribe MMKV y nada se repinta. Los reducers **no** conocen el bloqueo por rehidratación: quien cambie el carrito consulta `selectIsCartLocked` antes de despachar (plan). Descartado: que el reducer ignore acciones (no ve `_persist`).
+- **`CurrencyCode` se queda en `product/contracts/catalog-product.ts`**; `currency.ts` lo importa solo como tipo. Trade-off: `preferences` depende de un tipo de `product`. Descartado: mover el tipo y reescribir el contrato del catálogo (fuera de alcance).
+- **Retirada de H-4:** `CartDevControls.tsx`, `cart-count-source.ts` (+ su test), `use-cart-count.ts` y los textos `cartDev.*` ya no existen; el layout de tabs solo cambia la fuente del número (`useAppSelector(selectCartUnits)`), con `getCartBadge` y su etiqueta hablada intactos. Se pierden los atajos 0/5/100: se prueban con el estado persistido y los tests.
+
+### Registro de T2
+
+- Tests primero (rojos por la razón esperada: módulos inexistentes, y las cuatro aserciones de conversión de `buildProductCardModel`). 619 → **764** tests de lógica (se retiraron 5 de `cart-count-source`): `currency.test.ts` 14, `cart.test.ts` 71, `cart-selectors.test.ts` 24, `cart-slice.test.ts` 13, `preferences-slice.test.ts` 6, `persist-policy.test.ts` 47 (ampliado: whitelist exacta `['searchHistory', 'cart']`, saneado del carrito y la tubería real de redux-persist con el carrito) y `product-card.test.ts` 16 (ampliado a la moneda preferida). Incluyen una prueba exhaustiva USD → MXN → USD (exacta para cada centavo de 0 a 2 000 USD) y MXN → USD → MXN (pérdida máxima de 9 centavos MXN).
+- Nuevos: `preferences/logic/currency.ts`, `preferences/store/preferences-slice.ts`, `preferences/components/CurrencySelector.tsx`, `cart/logic/cart.ts`, `cart/logic/cart-selectors.ts`, `cart/store/cart-slice.ts`. Modificados: `core/storage/persist-policy.ts`, `core/store/{store,rehydration}.ts`, `product/logic/product-card.ts`, `product/components/ProductCard.tsx`, `account/screens/AccountPlaceholderScreen.tsx`, `cart/screens/CartPlaceholderScreen.tsx` (sin el bloque `__DEV__`), `app/(tabs)/_layout.tsx`, `core/i18n/resources/{es,en}.ts` (`preferences.currency.*`; sin `cartDev.*`).
+- Verificaciones: `npx expo lint` (sin avisos), `npx tsc --noEmit` y `npm run test:logic` (764/764). Sin cambios de dependencias ni de `app.json`: no hacen falta `expo install --check` ni Doctor; Metro basta (sin recompilar).
+- Búsqueda en el repositorio (excluyendo `specs/`, `LEARNING.md` y `MEMORY.md`, que los citan como historia): `CartDevControls`, `cartDev`, `cart-count-source`, `use-cart-count`, `useCartCount` y `cartCountSource` no aparecen en `src/`.
+
+### Validación en dispositivo de T2 por el agente, a petición del usuario (2026-10-12)
+
+Metro sin `CI` y mock en `:3001`; Android Samsung SM-A037M por USB (`adb reverse` 8081 y 3001 como estaba) e iPhone 17 Pro (simulador). Como aún no hay UI para agregar productos, el carrito se **sembró escribiendo el archivo MMKV con la app detenida**, con una herramienta temporal fuera del repositorio que recalcula el CRC32. Evidencia: árbol de accesibilidad (`uiautomator dump` / `axe describe-ui`), capturas, volcado del MMKV hasta el `actualSize` del `.crc` y `logcat` (0 `FATAL EXCEPTION`).
+
+| Caso | Android | iOS |
+| --- | --- | --- |
+| Carrito vacío → sin badge, etiqueta «Carrito» | OK | OK |
+| 5 unidades (2 líneas: MXN y USD) → badge «5», etiqueta «Carrito, 5 artículos» | OK (captura: badge rojo «5») | OK |
+| 99 unidades → «99», «Carrito, 99 artículos» | OK (captura: «99») | OK |
+| 100 unidades → etiqueta hablada «Carrito, 100 artículos» | OK | OK |
+| 100 unidades → texto visible `99+` | **NO: se dibuja «9…»** (anomalía A-1; corregida y revalidada, ver «Corrección de A-1») | **NO: «9…»** (anomalía A-1; corregida y revalidada) |
+| Sobrevive al reinicio, estado escrito por la propia app (se toca «zinc» del historial; el MMKV pasa a `{searchHistory:[zinc,omega], cart:{2 líneas}}` y tras `force-stop`/`terminate` el badge sigue en 5) | OK | OK |
+| Línea inválida entre válidas (cantidad 0, cantidad > stock, duplicada, válida) → quedan 2 líneas, badge 4 | OK | OK |
+| Slice `cart` JSON de forma errónea (`"corrupt"`) → carrito vacío y el historial **se conserva** | OK | OK |
+| Slice `cart` que no es JSON → todo vacío (historial incluido; límite de redux-persist, anomalía A-2), sin cierre | OK | OK |
+| Versión de esquema 2 → todo vacío, sin cierre | OK | OK |
+| Archivo con CRC inválido → MMKV lo descarta (`check crc … fail` en Android), todo vacío, sin cierre | OK | OK |
+| Historial de T1 conservado junto al carrito (`omega`, `zinc` visibles en Búsqueda en todos los casos válidos) | OK | OK |
+| Cuenta muestra el selector (MXN seleccionado por defecto, relleno), textos es y en | OK | OK |
+| Home en MXN: «Daily Balance Powder» (USD 11.99 de origen) → `$215.82`; «Everyday Whey Tablets» (MXN) → `$277.90` | OK | OK |
+| Home en USD: `USD 15.44` (277,90 MXN), `USD 11.99` (sin tocar), `USD 48.94` (880,90 MXN) | OK | OK |
+| Lista de categoría (Vitaminas) MXN ↔ USD: `USD 12.99, antes USD 15.59` ↔ `$233.82, antes $280.62`; `$179.82` ↔ `USD 9.99` | OK | OK |
+| Búsqueda «zinc» en USD: `USD 24.55` (441,90 MXN), `USD 9.16`, `USD 11.77, antes USD 14.13` | OK | OK |
+| Inglés: USD → `$15.44`, MXN → `MX$277.90` / `MX$215.82` | OK | OK |
+| MMKV nunca contiene `preferences`; tras reiniciar la vista vuelve a MXN | OK | OK |
+| Texto al 200 % (Android, Cuenta): el selector se parte en dos filas sin recortar | OK | — |
+
+Notas del método y hallazgos:
+- **Formato MMKV 4.3.2 (comprobado con los archivos reales).** El `.crc` guarda el CRC32 de `datos[4 : 4 + actualSize]` (desplazamiento 0, little-endian) y `actualSize` en 0x1C. Los 4 primeros bytes del archivo de datos están sin usar (conservan restos, p. ej. `basu` de la prueba «basura» de T1). El contenido empieza con un varint de 4 bytes que MMKV salta y sigue con pares `varint(len(clave)) clave varint(len(valor)) valor`; para un string, `valor` es `varint(len) bytes`. Con eso se puede escribir un valor de **otra longitud** (no solo ediciones del mismo tamaño como en T1): se recalcula el CRC, se actualiza `actualSize` y se pone a cero el resto del archivo, para que el valor antiguo no sobreviva como bytes muertos.
+- **A-1 (anomalía, CORREGIDA después): `99+` se dibujaba «9…» en ambas plataformas.** Con 99 se veía «99». El texto que recibe el tab era `'99+'` (`getCartBadge` no cambió) y la etiqueta hablada era correcta, pero el `Badge` de la navegación truncaba lo que no cabía. No se debía a T2 (solo cambió el origen del número). El usuario decidió corregirlo dentro de T2: causa real, cambio y revalidación en «Corrección de A-1» (más abajo). La causa que aquí se apuntó (contenedor de 24 dp) era inexacta: son 31 dp.
+- **A-2: un slice que no es JSON vacía todo el estado persistido.** redux-persist convierte cada slice con `JSON.parse` antes de llamar a `migrate`; si uno falla, descarta el estado completo (el historial también). Un slice con JSON válido pero forma errónea sí se sanea slice por slice. Es el mismo comportamiento que T1 ya registraba; nunca cierra la app.
+- Ni `axe` ni `uiautomator` exponen el rasgo *selected* de los botones del selector (`accessibilityState.selected` lo pone `AppButton`, sin cambios): el estado seleccionado se comprobó viendo el botón relleno en las capturas.
+- Limpieza: MMKV restaurado a los archivos originales (historial vacío, sin `cart`) en ambos dispositivos, `font_scale` en 1.0, `adb reverse` 8081/3001 como estaba, `AutomaticMinimizationEnabled` sin tocar (1), Metro y mock detenidos, sin `.env.local` ni cambios temporales en el repositorio.
+
+### Corrección de A-1: el badge `99+` (2026-10-12, a petición del usuario)
+
+**Concepto (breve): una caja absoluta no «pide» espacio, lo recibe.** En React Native todo se maqueta con Yoga (flexbox). Un hijo con `position: 'absolute'` sale del flujo: sus `top/start/end` lo colocan respecto al contenedor, pero **no** le dan un ancho. Si además no tiene `width` explícito, Yoga mide su contenido con el ancho del contenedor como máximo; con `numberOfLines={1}` el texto que no cabe se recorta con «…». Un `Text` solo conoce su tamaño tras medirse, y esa medida depende de la fuente, del relleno y de la escala del texto del sistema.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Insignia sobre un icono | `Text` absoluto dentro del contenedor del icono, con ancho máximo = el del contenedor | `BadgedBox(badge = { Badge { Text("99+") } })`: la insignia mide su contenido (alto 16 dp, 11 sp, relleno 4 dp) y crece hacia fuera | `.badge("99+")` / `.badge(100)`: el sistema dibuja y dimensiona la píldora |
+| Quién decide el ancho | el layout, a mano (aquí: la librería de navegación) | `Layout` de `BadgedBox` | UIKit/SwiftUI |
+| Texto ampliado | `allowFontScaling` + `maxFontSizeMultiplier` (en un `Text` propio) | `sp` escala solo; se acota con `LocalDensity` / `fontScale` | Dynamic Type; se acota con `dynamicTypeSize(...)` |
+| Si no cabe | `numberOfLines` + «…» (o `adjustsFontSizeToFit`) | `maxLines` + `TextOverflow.Ellipsis` | `lineLimit` + `…` o `minimumScaleFactor` |
+
+**Causa raíz real (leída en `node_modules/expo-router/build/react-navigation/`, no recordada).**
+- `TabBarIcon.js`: el contenedor del icono es `wrapperUikit` = **31 × 28 dp** (el diagnóstico anterior hablaba de 24 dp: es la variante `material`, que aquí no se usa). El icono mide 25 dp y va centrado.
+- `elements/Badge.js`: un `Animated.Text` con `numberOfLines={1}`, `fontSize = floor(size × 0,75)` = **14** (con `size` = 25 × 0,75 = 18,75), `paddingHorizontal: 4`, alto fijo 18,75 y `minWidth` 18,75. En `TabBarIcon` se posiciona con `position: 'absolute'`, `end: -3`, `top: -3` y **sin ancho**.
+- Yoga limita ese hijo al ancho del contenedor (31 dp), sea cual sea el desplazamiento. Medido en Android: el `TextView` truncado ocupaba exactamente 58 px = 31 dp (1,875 px/dp). «99+» a 14 sp necesita ≈ 33 dp (texto ≈ 25 + relleno 8) → no cabe → «9…». «99» necesita ≈ 25 dp y cabe: por eso 99 se veía bien y 100 no.
+- Dos agravantes: el texto del badge **escala** con el tamaño de fuente del sistema (`tabBarAllowFontScaling` no estaba desactivado) dentro de una píldora de alto fijo, así que con ≈ 1,4× ya «99» se truncaría; y al anclarse por `end` un badge más ancho crece **hacia el icono** y lo tapa (en la captura inicial cubría casi todo el carrito).
+- Por qué la prueba anterior no lo vio: el árbol de accesibilidad (`uiautomator`/`axe`) devuelve el texto completo `99+` aunque se dibuje «9…». Esta anomalía solo se detecta con captura.
+
+**Cambio realizado (solo estilo; sin `Platform.select`, la diferencia es la misma en ambas plataformas).**
+- Nuevo `src/features/navigation/tab-bar-badge.ts`: `tabBarBadgeStyle` con `fontSize: 12`, `paddingHorizontal: 3`, `start: 21`, `top: -4` y `end: undefined`. Con 12 sp y relleno 3, «99+» mide **27,2 dp** (medido) y deja ≈ 3,8 dp de margen bajo los 31. El ancla pasa de `end` a `start` (21 dp, el borde izquierdo): el badge solo roza la esquina superior derecha del icono y un texto más largo crece hacia fuera. `end` debe quedar sin valor: con `start` y `end` a la vez Yoga fija el ancho a `31 − start − end` y todos los badges serían la misma píldora.
+- `src/app/(tabs)/_layout.tsx`: `tabBarBadgeStyle` y `tabBarAllowFontScaling: false` en `screenOptions`. Solo el badge lee ese flag (la etiqueta del tab es una función propia y lo ignora), así que las etiquetas conservan su escala acotada.
+- `getCartBadge`, su test, la etiqueta hablada y el resto de T2 no cambian.
+
+**Decisión (RF-3).**
+- **Elegida:** conservar el `Badge` de la navegación (color del tema, contraste automático, animación de aparición) y cambiar solo su estilo: fuente de 12 sp, relleno de 3 dp, ancla por `start`, sin escalado de texto. **Trade-off:** el badge no crece con el texto ampliado (a 2,0× las etiquetas sí crecen, hasta su tope, y el badge no) y su cifra es 2 sp menor que antes; el dato completo sigue en la etiqueta hablada («Carrito, 100 artículos»). En iOS las etiquetas del tab ya tenían el escalado desactivado a propósito (la vista de contenido grande muestra el título), así que el badge pasa a ser coherente con ellas.
+- **Descartada 1: badge propio** (un `Text` dentro de `tabBarIcon` con `maxFontSizeMultiplier` y sin tope de ancho). Permitiría un escalado acotado, pero reimplementa color, contraste y animación, y deja de usar `tabBarBadge`. Se reconsidera en la auditoría del Día 6 si se exige que el badge escale.
+- **Descartada 2: dejar escalar** el texto del badge, con `fontSize` más pequeño. A partir de ≈ 1,4× vuelve a truncar, con un alto fijo de 18,75 dp.
+- **Descartada 3: fijar `width`** a ≈ 34 dp solo para la cadena `99+`. Se rompe con otra fuente (la de Samsung es más ancha) y todas las píldoras con texto serían iguales.
+- **Sin test de lógica:** el arreglo es puramente de estilo y la medida depende de Yoga y de la fuente del dispositivo; un test de un objeto de estilo no probaría nada. Se valida en dispositivo.
+
+**Validación en dispositivo (agente, a petición del usuario; Metro sin `CI`, mock en `:3001`, carrito sembrado en MMKV con la app detenida y CRC recalculado). Evidencia: captura del tab bar + árbol de accesibilidad.**
+
+| Caso | Android (Samsung SM-A037M) | iOS (iPhone 17 Pro, simulador) |
+| --- | --- | --- |
+| 0 unidades → sin badge, etiqueta «Carrito» | OK | OK |
+| 5 → «5», etiqueta «Carrito, 5 artículos» | OK | OK |
+| 99 → «99», «Carrito, 99 artículos» | OK | OK |
+| **100 → `99+` completo**, «Carrito, 100 artículos» | **OK** (TextView 27,2 dp de ancho, antes 31 dp truncado) | **OK** |
+| Texto ampliado, 100 → `99+` completo, sin recorte, sin tapar el icono | OK con `font_scale` 1,3, 1,5 y 2,0 (el badge mantiene su tamaño: 51 × 36 px en todos) | OK con `accessibility-extra-extra-extra-large` (app reiniciada tras cambiar el tamaño) |
+| Texto ampliado, 99 y 5 | OK a 2,0 | OK |
+| Etiqueta hablada (`content-desc` / `AXLabel` del tab) | intacta en todos los casos | intacta en todos los casos |
+
+Comprobaciones: Metro sin avisos ni errores (`end: undefined` no genera advertencia de estilo) y `logcat` con 0 `FATAL EXCEPTION`.
+
+**Anomalías y notas.**
+- **H-1/H-11 observado, no tocado (Día 6):** con `font_scale` ≥ 1,3 los iconos del tab bar de Android salen recortados (a 2,0 el carrito pierde el cuerpo y el de Cuenta queda partido). El badge no empeora esto: no escala, y ya no cubre el icono.
+- **Método:** la primera captura tras un arranque en frío del dev client puede salir en blanco (un velo del launcher) aunque el árbol de accesibilidad ya sea correcto; hay que repetir la captura o esperar.
+- **Plan:** `plan.md` («Retirada de H-4») dice que el layout «solo cambia la fuente»; ahora también declara `tabBarBadgeStyle` y `tabBarAllowFontScaling`. No se ha editado el plan; queda para el planificador si el usuario lo considera necesario.
+- Limpieza: MMKV restaurado byte a byte a los archivos originales (historial vacío, sin `cart`) en ambos dispositivos; `font_scale` 1,0; `content_size` del simulador `large` (era `large`); `appearance` `light` sin tocar; `AutomaticMinimizationEnabled` sin tocar; `adb reverse` 8081 y 3001 como estaba; Metro y mock detenidos; sin `.env.local`.
+
+### Comparación Android / iOS de T2 (para repasar)
+
+| Concepto | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- |
+| Badge del tab | `NavigationBarItem` con `BadgedBox { Badge { Text("99+") } }` (el límite lo pones tú) | `.badge(100)` en `TabView`: el sistema lo dibuja |
+| Estado de la preferencia de moneda | `MutableStateFlow<Currency>` en un `ViewModel` de aplicación | propiedad de un `@Observable` en `.environment` |
+| Selector de dos opciones | `SingleChoiceSegmentedButtonRow` | `Picker` con `.pickerStyle(.segmented)` |
+| Dinero | `Long` en centavos (o `BigDecimal`) y `NumberFormat.getCurrencyInstance(locale)` | `Decimal` y `.formatted(.currency(code:))` |
+| Restaurar con datos corruptos | `ReplaceFileCorruptionHandler` + validar cada elemento al leer | `try?` al decodificar cada elemento con `Codable` y descartar el que falle |
+
+## Día 4 — T3: detalle real con stock vigente y retirada de `OrderDevControls`
+
+### Bloque T3 — Una pantalla de detalle: composición, estado local y compartir (≈10 min)
+
+**Composición: contenido que se desplaza + barra fija.** El detalle es una `View` con `flex: 1` que contiene DOS hermanos: un `ScrollView` (galería, textos, cantidad) y la barra de compra (`StickyAddBar`). La barra es hermana del scroll, **no** hija: así nunca se desplaza y el scroll recibe exactamente el espacio que sobra. Alternativas descartadas: `position: 'absolute'` abajo (hay que reservar a mano un `paddingBottom` igual a la altura de la barra, que cambia con el texto ampliado) y `stickyHeaderIndices` (pega *cabeceras* arriba, no una barra al fondo).
+- *Safe area:* la barra **no** suma el inset inferior del dispositivo. La pantalla vive dentro del tab navigator y el tab bar queda debajo (ya cubre el indicador de inicio): rellenar con `useSafeAreaInsets().bottom` contaría ese espacio dos veces. La cabecera nativa del `Stack` ya resuelve el inset superior.
+- *Teclado:* aquí no aplica, el detalle no tiene campos de texto. Donde sí hay (el formulario de checkout, T6) se usa `automaticallyAdjustKeyboardInsets` en el `ScrollView` o `KeyboardAvoidingView`.
+
+**¿Dónde vive cada dato?** (retoma el bloque de T2)
+- *Remoto* (RTK Query): el producto y su `stock` vigente. Se pide con `getProduct` y se refresca con la misma regla de 60 s de todas las pantallas.
+- *Global* (Redux): la moneda preferida; el detalle solo la **lee**.
+- *Local* (`useState`): la cantidad. Solo la pantalla la usa y muere con ella. Lo que llega al carrito es la acción de T4, no la cantidad.
+- **Derivar en vez de sincronizar.** Si una revalidación baja el stock por debajo de lo elegido (5 elegidas, quedan 2), la pantalla no necesita un `useEffect` que corrija el estado: guarda la *elección* y **dibuja siempre** `clampQuantity(elección, stock)`. React 19 penaliza `setState` síncrono dentro de efectos y dos copias del mismo dato acaban desincronizadas.
+- **Reiniciar estado con `key`.** La ruta de producto es *singular*: abrir B desde A **reutiliza** el componente con otro `id`. `<ProductDetailContent key={product.id}>` lo remonta y la cantidad de A no pasa a B, sin efectos.
+- **`data` frente a `currentData` (error real, ver «Hallazgos»).** El hook de RTK Query devuelve en `data` el último resultado *de cualquier argumento*; `currentData` solo el del argumento actual. Con una ruta singular, `data` pintaba el producto A bajo el `id` de B hasta que llegaba B.
+
+**`expo-image` (lo que ya hace `RemoteImage`).** Cachea en **disco** por defecto (`cachePolicy: 'disk'`; `'memory-disk'` añade memoria) y decodifica fuera del hilo de JS; `placeholder` y `transition` suavizan la llegada; `recyclingKey` evita ver el bitmap anterior en vistas recicladas. Aquí el *placeholder* es el marco cuadrado de color neutro (el servidor genera imágenes planas: un blurhash no se justifica), el cierre cruzado de 200 ms se pone a 0 con movimiento reducido y un fallo muestra texto visible («Imagen no disponible»). La galería es un `ScrollView` horizontal con `pagingEnabled` (2 imágenes: sin virtualización) y puntos decorativos; el *viewport* es un único elemento accesible `adjustable` («Imagen 1 de 2») con acciones siguiente/anterior.
+
+**Compartir.** `Share.share({ title, message }, { dialogTitle })` de React Native abre la hoja del sistema. En **Android el campo `url` se ignora** (solo viaja `message`), en iOS `message` y `url` son campos distintos (leído en `node_modules/react-native/Libraries/Share/Share.js`). Por eso el enlace va **dentro del mensaje**: un solo texto idéntico en ambas plataformas. El enlace es `herbstore://product/<id>`, el mismo esquema de `app.json` que `core/navigation/linking.ts` ya normaliza a la ruta `/product/<id>`; un test comprueba esa ida y vuelta. Que otra app abra el enlace es del Día 5.
+
+| Idea | React Native (HerbStore) | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- | --- |
+| Contenido + barra fija | `View` con `ScrollView` + `StickyAddBar` hermanos | `Scaffold(bottomBar = { BottomAppBar { … } })` | `.safeAreaInset(edge: .bottom) { … }` |
+| Estado local de la pantalla | `useState` (muere con la pantalla) | `rememberSaveable { mutableIntStateOf(1) }` | `@State private var quantity = 1` |
+| Reiniciar al cambiar de producto | `key={product.id}` | `key(productId) { … }` o un `ViewModel` por id | `.id(productId)` en la vista |
+| Dato derivado en vez de copia | `clampQuantity(elección, stock)` en el render | `derivedStateOf { min(…) }` | propiedad computada |
+| Galería paginada | `ScrollView horizontal pagingEnabled` | `HorizontalPager` | `TabView { … }.tabViewStyle(.page)` |
+| Imagen remota | `expo-image` (disco + memoria, `transition`) | Coil `AsyncImage` (memoria + disco) | `AsyncImage` (sin caché propia) o Nuke/Kingfisher |
+| Cantidad accesible | `accessibilityRole="adjustable"` + `accessibilityActions` | `Modifier.semantics { stateDescription = …; customActions = … }` | `Stepper` / `.accessibilityAdjustableAction` |
+| Compartir | `Share.share` (hoja del sistema) | `Intent.createChooser(ACTION_SEND)` | `ShareLink(item:)` / `UIActivityViewController` |
+
+**Errores típicos al venir de nativo.** (1) Leer `data` creyendo que es «el dato de este id» (`currentData`). (2) Guardar la cantidad corregida con un efecto en lugar de derivarla. (3) Una barra «fija» que es hija del scroll o que ignora el texto grande. (4) Una línea de texto que *aparece* al final de una pantalla con scroll: cae detrás de la barra y nadie la ve. (5) Fiarse de `url` en `Share` en Android. (6) Un botón de «+» deshabilitado en el máximo: ya no puede «intentar superar» el stock ni anunciar el límite.
+
+### APIs reales comprobadas (código instalado, Expo 57.0.28 / RN 0.86.3)
+- `Share` (`react-native/Libraries/Share/Share.js` y `.d.ts`): Android solo usa `title` y `message` (`dialogTitle` como título del selector); iOS pasa `message`, `url` y `subject`. Devuelve una promesa (`sharedAction` | `dismissedAction`; en Android siempre `sharedAction`). Un fallo se captura con `.catch` y solo se registra en desarrollo.
+- `expo-image` ~57.0.5 (`build/Image.types.d.ts`): `cachePolicy` (`'disk'` por defecto), `placeholder`, `priority`, `recyclingKey`, `transition`; el componente ya existía como `RemoteImage` y no se tocó.
+- `AccessibilityInfo.announceForAccessibility`, `accessibilityRole="adjustable"`, `accessibilityValue.text` y `accessibilityActions` (ya usados por el carrusel de Home): en Android `increment`/`decrement` se registran como `ACTION_SCROLL_FORWARD`/`BACKWARD` con la etiqueta dada (comprobado con la herramienta `A11y`: «Aumentar cantidad» / «Disminuir cantidad», «Imagen siguiente» / «Imagen anterior»).
+- Sin dependencias nuevas, sin cambios de `app.json` ni nativos: Metro basta (no se recompiló).
+
+### Decisiones de T3 (RF-3)
+- **Compartir: botón con texto en el contenido** (Elegida) frente a una acción de la cabecera (Descartada). Trade-off: ocupa una fila del contenido; ganan el texto visible («Compartir»), el objetivo táctil de 48 dp y el escalado con la fuente (los iconos de cabecera no escalan). **Mensaje único con el enlace dentro** (Elegida) frente a `message` + `url` por plataforma con `Platform.select` (Descartada): duplicaría el enlace en iOS y añade una rama que el Día 5 decidirá con validación nativa.
+- **Cantidad en el cuerpo, total + botón en la barra.** Trade-off: para cambiar la cantidad hay que desplazarse hasta ella (el total de la barra se actualiza siempre). Descartada: el selector dentro de la barra: con texto ampliado dos controles + total no caben y la barra crecería aún más.
+- **La cantidad es estado local de la elección y se muestra siempre acotada** (Elegida) frente a un efecto que corrija el estado o a guardarla en Redux (Descartadas, ver el bloque).
+- **El botón «Agregar al carrito» existe pero NO hace nada en T3** (Elegida, lectura literal del plan): el despacho de `cart/productAdded`, el feedback animado y las reglas de carrito bloqueado/rehidratación son de T4 (`onAdd` es opcional y la pantalla no lo pasa). Solo el estado «agotado» sí se presenta ya: la barra muestra «Agotado» desactivado y sin total, y se oculta el selector. Trade-off: durante T3 el botón se pulsa sin efecto.
+- **Línea de límite permanente** («Máximo disponible: 3 unidades.», en negrita al intentar superarlo) más `announceForAccessibility` (Elegidas). Primera versión descartada: un texto que *aparecía* solo al superar el stock: caía detrás de la barra fija y no se veía (hallazgo de la validación). El «+» **se queda habilitado** en el máximo para poder anunciar el límite; el «−» se desactiva en 1.
+- **La barra no suma el inset inferior** (el tab bar ya lo cubre); descartado `useSafeAreaInsets().bottom`.
+- **Galería: se reutilizan las funciones puras de `home/carousel/banner-pager`** (offset ↔ índice, paso acotado, «n de N»). Trade-off: `product` importa de `home` y los nombres dicen «banner». Descartadas: copiarlas (dos fuentes de verdad) y moverlas a `core/` (refactor de código ya aprobado de otro día; queda como mejora). Los puntos son decorativos: el *viewport* `adjustable` es la alternativa accesible.
+- **`parseProductDetail` rechaza el payload donde `inStock` y `stock > 0` discrepan** (Elegida; el servidor deriva uno del otro, así que una discrepancia no es el contrato) frente a fiarse de uno de los dos. El modelo de la pantalla decide por el **número**.
+- **El total convierte la línea completa** (`cantidad × precio canónico`, luego `fromMxnCents`), como el subtotal del carrito, y no `cantidad × precio unitario redondeado`: 5 unidades de 149,90 MXN son USD 41,64, no 41,65. Así el detalle y el carrito coinciden.
+- **Topes de escala del texto** medidos en iOS AX5 (3,1–3,6×): `productTitle` (2,0) para nombre y precio («Magnes / ium / Glycina / te» sin tope), `sectionHeading` (2,0, ya existente) para «Descripción» y «Cantidad», y `purchaseBar` (2,0) para la barra: sin tope ocupaba el 43 % de la altura y dejaba solo la imagen para desplazar; con 2,0 ocupa ≈ 22 %. Android no cambia (su máximo es 2,0).
+- **Revalidación a los 60 s con `useRevalidateWhenStale`** (foco, primer plano, reconexión), porque el stock en pantalla solo es tan fresco como la última respuesta. Con datos y un fallo posterior el detalle sigue mostrando el producto (sin fila de aviso, como el placeholder). Descartado: un aviso «sin conexión» propio del detalle (no pedido por el plan).
+- **El detalle NO despacha `stockRefreshed`** al cargar: refrescar la instantánea de las líneas del carrito desde el detalle no está en el «Hecho cuando» de T3; queda para T4/T5, que tocan el carrito. Anotado como seguimiento.
+- **Mock:** `GET /products/:id` y `/products/barcode/:code` devuelven `stock` (inventario vigente de `OrderStore.availableStock`) e `inStock = stock > 0`; listas, búsqueda y Home no cambian (decisión del usuario). Limitación documentada: un producto agotado durante la sesión del mock sigue saliendo disponible en listas y Home (comprobado: tras una orden de sus últimas unidades el detalle dice «Agotado» y la lista sigue sin etiqueta).
+- **Texto del servidor sin traducir:** `description` y `servingInfo.size` llegan en inglés del mock («2 capsules») y se muestran tal cual dentro de textos localizados («Porción: 2 capsules»). Es contenido de catálogo, no interfaz.
+
+### Retirada del andamiaje del Día 3 (H-4)
+Borrados: `ProductPlaceholderScreen.tsx` (y su `require` condicional bajo `__DEV__`), `checkout/components/OrderDevControls.tsx` (la carpeta `components` queda vacía y desaparece), `checkout/logic/dev-order.ts` y `dev-order.test.ts` (11 tests), los textos `orderDev.*`, `product.placeholderNote` y `product.idLabel` (es/en). `order-log.test.ts` usa una dirección ficticia local. Se conservan `orders-api.ts`, `order-log.ts`, `order-invalidation.ts` y `contracts/*` (los usa T7–T9). La búsqueda en `src/` (y en `mock-server/`) de `OrderDevControls`, `orderDev`, `dev-order`, `DEV_SHIPPING_ADDRESS`, `ProductPlaceholderScreen` y `placeholderNote` no devuelve nada. Se pierde el atajo «crear orden de prueba»: en adelante se prueba con `curl POST /orders` (así se redujo el stock de varios productos durante la validación) y con el flujo real de T9.
+
+### Registro de T3
+- Tests primero (rojos por la razón esperada: módulos y exportaciones inexistentes; en el mock, `availableStock is not a function` y el `stock` ausente). Lógica: 764 → **810** (+57: `quantity` 13, `product-share` 3, `product-detail` 14, `parse-catalog-product` +27, `product-lookup` ya existente con el tipo nuevo; −11 de `dev-order`). Mock: 73 → **81** (2 de `OrderStore.availableStock` y 6 HTTP en «product stock on the detail endpoints»; el de «id y barcode» se actualizó a `{ …producto, stock: 99, inStock: true }`). La semilla del catálogo no cambia (SHA-256 del catálogo generado idéntico antes y después: `838f7038…`).
+- Nuevos: `product/logic/{quantity,product-share,product-detail}.ts`, `product/components/{ProductGallery,QuantitySelector,StickyAddBar}.tsx`, `product/screens/ProductDetailScreen.tsx`. Modificados: `product/contracts/{catalog-product,parse-catalog-product}.ts` (`ProductDetail`, `ServingInfo`, `parseProductDetail`), `product/data/products-api.ts` (`getProduct` → `ProductDetail`), `product/logic/product-lookup.ts`, `app/(tabs)/(home)/product/[id].tsx`, `design-system/tokens.ts` (`productTitle`, `purchaseBar`), `core/i18n/resources/{es,en}.ts`, `checkout/contracts/order.ts` (un comentario) y, en el mock, `orders/order-store.js`, `routes/products.js`, `server.js`, README y tests.
+- Verificaciones: `npx expo lint` (0 avisos), `npx tsc --noEmit`, `npm run test:logic` (810/810) y `npm --prefix mock-server test` (81/81). Sin cambios de dependencias ni de `app.json`: no hacen falta `expo install --check` ni Doctor; no se recompiló el Development Build.
+
+### Validación en dispositivo de T3 por el agente, a petición del usuario (2026-10-12/13)
+Metro sin `CI` y mock en `:3001`; Android Samsung SM-A037M por USB (`adb reverse` 8081 y 3001 como estaba) e iPhone 17 Pro (simulador). El stock se forzó con `curl POST /orders` (medio temporal, nada en el repositorio). Evidencia: árbol de accesibilidad (`uiautomator`, `axe describe-ui`, herramienta `A11y` ampliada con una orden `perform`), capturas y logs de Metro.
+
+| Caso | Android | iOS |
+| --- | --- | --- |
+| Detalle con galería, marca, nombre, calificación, precio, «Disponible: 99 unidades», porción, descripción, cantidad, barra | OK | OK |
+| Galería: deslizar cambia de imagen y de punto; valor accesible «Imagen 2 de 2» (ida y vuelta) | OK | OK |
+| Galería: acciones accesibles siguiente/anterior (`ACTION_SCROLL_FORWARD/BACKWARD`, «Imagen siguiente/anterior») | OK (con TalkBack activo) | no comprobable con `axe` |
+| Cantidad: mínimo 1 (− desactivado), sube de 1 en 1, total «Total: …» se actualiza | OK | OK |
+| Cantidad: máximo = stock (3 y 2): el «+» en el tope conserva el máximo y la línea «Máximo disponible…» queda en negrita | OK | OK |
+| Cantidad: acciones accesibles incrementar/decrementar cambian el valor «n de N» y el total; tope con 3 incrementos sobre stock 2 | OK (TalkBack) | no comprobable |
+| Anuncio hablado del límite / del nuevo total | llamada ejecutada (rama `limited`); la voz **no es verificable por el agente** | ídem |
+| Stock bajo la selección con la pantalla abierta (5 elegidas, el stock baja a 2, foco tras 65 s): pasa a «2 de 2» y el total se corrige solo | OK | no repetido |
+| Cantidad de A no pasa a B al abrir otro producto (`key`) | OK (3 → 1) | OK |
+| Stock 1 (plural/singular): «1 unidad» / «In stock: 1 unit», «Máximo disponible: 1 unit.» | OK (es, en) | — |
+| Agotado de origen (`product-261009-001`): «Agotado», sin selector ni total, botón «Agotado» desactivado | OK | OK |
+| Agotado en la sesión del mock: detalle «Agotado»; la lista del mismo producto sigue disponible (limitación documentada) | OK | — |
+| Precio MXN ↔ USD (Cuenta): 811,90 MXN → `USD 45.11`; 3 uds → `USD 135.32`; USD 9.99 en USD; total de 3 → `USD 29.97`; oferta `En oferta, … antes …` | OK | OK |
+| Inglés (selector de Fundamentos): textos, `$12.38` y plurales | OK | — |
+| Compartir: abre la hoja del sistema con «Mira … en HerbStore: herbstore://product/…»; se cierra y la pantalla conserva su estado | OK (`ChooserActivity`) | OK |
+| Deep link `herbstore://product/<id>` con la app abierta abre/reemplaza el detalle | OK | OK |
+| Id inexistente (`…-999`, 404) o malformado (`…/xyz`) → «Producto no encontrado» con «Volver» | OK | no repetido |
+| Atrás vuelve a Inicio | OK (tecla Atrás) | no probado (el botón nativo «Inicio» está presente) |
+| Estados: cargando (mock con 7 s de latencia, spinner + «Cargando producto…»), sin conexión (mock detenido), error (servidor falso con 503), «Reintentar» recupera | OK | OK |
+| Texto grande | OK con `font_scale` 2,0 (el contenido cabe; los iconos del tab bar se recortan, H-1) | OK con `accessibility-extra-extra-extra-large` tras los topes de escala (relanzando la app, H-10) |
+| Tema oscuro | OK | OK |
+| Objetivos táctiles | − / + / Compartir / Agregar: 90 px = 48 dp (`uiautomator`) | 48 × 48 pt (`axe`) |
+| Movimiento reducido: `scrollTo` de la galería sin animación | OK (`transition_animation_scale` 0 → `animated=false`, 1,0 → `true`, comprobado con un log temporal ya retirado) | **no evidenciado** (como en días anteriores) |
+| Sin cierre inesperado | OK (0 `FATAL EXCEPTION`/`AndroidRuntime`) | OK |
+
+### Hallazgos de T3
+- **E-1 (corregido): `data` en lugar de `currentData`.** Con la ruta singular, abrir B desde A pintaba el producto de A bajo el `id` de B mientras cargaba (visto en iOS). Corregido con `currentData`; evidencia: tras el cambio, el spinner aparece de verdad (7 s de latencia). El mismo fallo existía en el placeholder del Día 3 (que solo mostraba el nombre).
+- **E-2 (corregido): la línea del límite quedaba detrás de la barra fija.** Primera versión: aparecía solo al superar el stock, al final del scroll y bajo la barra. Ahora es permanente y no cambia la altura de línea al ponerse en negrita (un cambio de 4 pt movía la página).
+- **E-3 (corregido): barra y títulos con AX5.** Sin topes la barra ocupaba el 43 % de la pantalla y el nombre se partía en mitad de palabra; ver las decisiones.
+- **Nota de método:** `axe tap` no activó «Reintentar» a la primera en iOS; `axe touch --down --up --delay 0.15` sí. Con TalkBack activo `perform` de la herramienta `A11y` devuelve `ok=false` aunque la acción llega a JS (el valor cambia): se comprueba por el árbol, no por ese booleano.
+- **Observado, no tocado:** H-1/H-11 (iconos del tab bar recortados con `font_scale` 2,0 en Android; Día 6) y el botón flotante «Tools» del dev client sobre la cabecera. En la primera acción de la galería con TalkBack recién activado el log mostró `animated=false` con las animaciones al 100 %; no se reprodujo en dos ciclos posteriores (0 → `false`, 1,0 → `true`); sospecha: lectura inicial del ajuste de Samsung al activar TalkBack.
+- **Pendiente de seguimiento (no es de T3):** (a) T4/T5: refrescar la instantánea del carrito (`stockRefreshed`) desde el detalle; (b) la voz de TalkBack/VoiceOver (anuncios del límite y del total) queda para la auditoría del Día 6 con un lector real; (c) la validación nativa profunda de compartir y de deep links en frío es del Día 5 (el launcher del dev client intercepta el enlace).
+- Limpieza: Metro y mock detenidos; `font_scale` 1,0; modo noche `no`; escalas de animación 1,0; TalkBack apagado (`enabled_accessibility_services` vacío, `accessibility_enabled` 0, `touch_exploration_enabled` 0); `adb reverse` 8081 y 3001 como estaba; simulador con `content_size` `large` (era `large`), `appearance` `light` (era `light`) y `AutomaticMinimizationEnabled` 1 sin tocar; MMKV sin tocar (no se agregó nada al carrito ni al historial); sin `.env.local`; herramientas temporales fuera del repositorio.
+
+### Comparación Android / iOS de T3 (para repasar)
+
+| Concepto | Android (Kotlin/Compose) | iOS (Swift/SwiftUI) |
+| --- | --- | --- |
+| Estado que sobrevive a girar la pantalla | `rememberSaveable` (Bundle) | `@SceneStorage` / `@State` recreado por la vista |
+| Cantidad acotada como dato derivado | `derivedStateOf { quantity.coerceIn(1, stock) }` | `var shown: Int { min(max(quantity, 1), stock) }` |
+| Stepper accesible | `Modifier.semantics { stateDescription; customActions }` en el valor | `Stepper` (adjustable con + y − como acciones) |
+| Barra de compra fija | `bottomBar` del `Scaffold` | `.safeAreaInset(edge: .bottom)` |
+| Compartir | `Intent.ACTION_SEND` + `createChooser` (el `url` va en el texto) | `ShareLink` (admite `url` y `message` separados) |
+| Resultado remoto del id actual | `StateFlow` filtrado por el id (`flatMapLatest`) | `.task(id: productID)` descarta el resultado anterior |
+
+## Día 4 — T6: formulario de dirección
+
+- Tests primero: los dos archivos de lógica fallaron con `ERR_MODULE_NOT_FOUND`; después quedaron verdes. El schema normaliza con `trim`, aplica límites exactos y conserva mensajes como claves i18n. El mapeador acepta únicamente paths conocidos y descarta completamente sus valores.
+- La dirección vive exclusivamente en React Hook Form; `zodResolver` convierte el schema en errores por control. El resumen accesible agrupa errores de validación y cada mensaje se enlaza mediante `aria-errormessage`. El checkout no crea intento ni persiste datos: la creación queda fuera de T6.
+- Analogía: RHF se parece a un `ViewModel` con estado de campos y validación en Compose, mientras que en SwiftUI equivale a `@State`/`@Observable` de una `Form`; Zod es la validación pura reutilizable, no una regla embebida en la vista.
+- Verificación complementaria (2026-10-13): mock y Metro existentes (`:3001`/`:8081`), Samsung SM-A037M conectado por USB y iPhone 17 Pro simulador booted. Android validó carrito no vacío, navegación a checkout, controles accesibles, teclado/insets, submit vacío con resumen global accesible y 7 errores por control; el árbol expuso targets de 48 dp. iOS validó carrito no vacío, campos y botón `Continuar` en el árbol AX, targets de 44 pt y submit vacío con errores enlazados por control. El árbol AX de iOS no expuso el resumen global accesible tras el submit (no apareció su texto/label), por lo que T6 queda bloqueada para cierre hasta corregir o justificar esa diferencia. No se ejecutó envío válido ni POST: T6 deja `onSubmit` sin efecto. No se modificó código.
+
+## Día 4 — T4: agregar al carrito y feedback
+
+### Evidencia y decisiones
+- Tests primero: los tres archivos nuevos fallaron por `ERR_MODULE_NOT_FOUND`; después quedaron verdes 41/41 específicos y 851/851 en `npm run test:logic`.
+- `addProductToCart` consulta el bloqueo y las líneas actuales antes de emitir, como máximo, un evento `cart/productAdded`; badge y subtotal son selectores del mismo cambio de Redux. Un lockout de 700 ms trata el doble toque como una interacción.
+- `AddToCartFeedback` usa shared values y `withTiming`: el worklet actualiza opacidad, traslado y escala en el hilo UI. Con movimiento reducido, traslado = 0, escala = 1 y no hay fades; el mensaje permanece 2,2 s.
+- El detalle aplica `stockRefreshed` a una línea existente solo si el stock cambió y `selectIsCartLocked` es falso. No se añadieron dependencias, config ni APIs nativas.
+- La validación descubrió dos diferencias reales de Android: un hijo absoluto de la barra no quedaba visible fuera de sus límites y la preferencia de movimiento reducido podía llegar después del primer render. El feedback pasó a una capa absoluta de la pantalla medida contra la altura real de la barra; al entrar en reduced motion restaura explícitamente opacidad 1, traslado 0 y escala 1. Descartado: insertar el mensaje en el flujo de la barra, porque movería el layout al aparecer y desaparecer.
+- Analogía: shared values/worklets se parecen a `Animatable`/`animate*AsState` en Compose y a `withAnimation` en SwiftUI; Redux conserva un único evento, equivalente a enviar una intención a un reducer MVI o a un store unidireccional.
+
+### Validación T4 (2026-10-13)
+
+| Caso | Android (Samsung físico) | iOS (iPhone 17 Pro simulador) |
+| --- | --- | --- |
+| Movimiento normal: pulsar agrega una unidad y actualiza badge | OK: árbol muestra «Se agregó 1 unidad…» y «Carrito, 1 artículo» en la misma interacción | OK: captura con feedback transitorio y badge; un segundo toque deliberado posterior actualiza a 2 |
+| Movimiento reducido | OK: escalas del sistema en 0; el mensaje de límite permanece visible sin depender de movimiento | OK: `ReduceMotionEnabled=1`; mensaje visible, sin traslado/escala/fade según la rama determinista |
+| Producto agotado | OK: `product-261009-001`, botón «Agotado» con `enabled=false` | OK: botón AX con `enabled=false` y motivo accesible |
+| Límite de stock | OK: con stock vigente 1, conserva badge 1 y muestra «El carrito conserva el máximo…» | OK: misma cantidad y feedback visible en captura |
+| Rehidratación | Test del thunk: con `_persist.rehydrated=false` no emite `productAdded`; el botón usa el mismo selector para `disabled` | Misma lógica y UI compartidas |
+| Único dispatch | 41 tests específicos verdes; cada alta aceptada emite exactamente un `cart/productAdded` | Misma lógica compartida |
+
+Verificaciones: `npx expo lint` sin avisos; `npx tsc --noEmit` en verde; 41/41 tests específicos y `npm run test:logic` 853/853 al cierre. No aplicaban Expo Doctor ni recompilación del Development Build.
+
+### Día 4 — T6: corrección de accesibilidad iOS y cierre
+
+- **Causa:** iOS no expuso de forma estable el `View` accesible que contenía un `Text` anidado cuando aparecía tras el submit. Android sí lo exponía.
+- **Corrección mínima:** el `AppText` del resumen es ahora el elemento accesible (`accessibilityRole="alert"`, `accessibilityLabel` y `accessibilityLiveRegion="polite"`); el contenedor solo conserva el estilo visual. `AccessibilityInfo.announceForAccessibility` anuncia el mismo texto al cambiar el resumen. No se añadieron APIs nativas ni dependencias. El helper puro `buildValidationSummary` evita divergencias entre el label y el texto visible.
+- **Rojo → verde:** `validation-summary.test.ts` falló primero con `ERR_MODULE_NOT_FOUND`; tras crear el helper pasa. `npm run test:logic`: **859/859**; `npx expo lint` y `npx tsc --noEmit`: verdes.
+
+| Caso T6 | Android — Samsung SM-A037M | iOS — iPhone 17 Pro simulador |
+| --- | --- | --- |
+| Formulario vacío, 7 errores por control y resumen global | OK en validación previa; 48 dp | OK tras corrección; AX expone resumen completo y 7 errores; 44 pt |
+| Formulario válido, sin POST real | OK: T6 no implementa envío | OK: T6 no implementa envío |
+| Cambio es/en | OK en validación previa | OK en validación previa |
+| Teclado e insets | OK en validación previa | OK |
+| Texto ampliado | OK en validación previa | OK en validación previa |
+| Tema oscuro | OK en validación previa | OK en validación previa |
+| Carrito vacío | OK en lógica/ruta: vuelve a carrito, sin intento | OK en lógica/ruta: vuelve a carrito, sin intento |
+| Storage/logs | Tests de cero PII y logs: dirección ausente | Tests de cero PII y logs: dirección ausente |
+
+La comprobación de Android en esta sesión quedó limitada a la evidencia previa: `adb` no está disponible en el PATH actual; no se inventa una nueva ejecución. No se generó POST ni se guardó dirección. La analogía RN permanece: `announceForAccessibility` equivale a emitir un evento semántico desde un `ViewModel`/semantics de Compose y a `UIAccessibility.post` en SwiftUI/UIKit; el `Text` accesible es el nodo que VoiceOver puede recorrer.
+
+## Día 4 — T7: contratos y consulta de órdenes
+
+- Rojo → verde: el parser anterior no aceptaba status HTTP ni proyectaba el resumen; tras ampliar `fetchJson`, contratos, API y mock, `npm run test:logic` queda en **859/859** y `npm --prefix mock-server test` en **81/81**.
+- `parseErrorBody` es opt-in: los endpoints existentes mantienen sus errores sin cuerpo. Los 4xx de órdenes solo conservan códigos, campos saneados y el link de status si coincide exactamente con la key actual; nunca `message`, body original, dirección o key completa.
+- El resumen confirmado es una proyección inmutable de id, líneas, importes, moneda y fecha, sin dirección. 200 solo acepta `confirmed` y 202 solo `pending`; una pareja incoherente es inválida/incierta.
+- El GET de status conserva los reintentos GET y el POST no reintenta. El mock procesa primero el intento antes de aplicar delay/fault, por lo que una consulta posterior puede recuperar un POST retrasado o fallido.
+- Analogía: el parser con status equivale a un `sealed class` de Kotlin/Swift que valida simultáneamente envelope y código HTTP; `parseErrorBody` es un interceptor opt-in, no otro cliente HTTP.
+-
+## Día 4 — T8: fingerprint, máquina idempotente y persistencia
+
+- Rojo → verde: los seis módulos nuevos comenzaron con `ERR_MODULE_NOT_FOUND`; después `npm run test:logic` quedó en **870/870**.
+- El request canónico vive solo en memoria: recorta strings, ordena items y claves recursivamente y rechaza duplicados. El hash recibe la función por inyección para probarlo con Node y usar `expo-crypto` en la app.
+- La máquina conserva `preliminary` solo ante validación/stock agotado temprano; incertidumbre, pending, key reutilizada y errores elevan/conservan `unresolved`. Solo confirmed o 404/410 contractuales liberan. Cancelar no altera el intento.
+- Persistencia es una proyección no reversible: key, fingerprint, estado y `remoteStatus`; historial sanitizado y deduplicado por id. Preliminary restaurado se promueve antes de habilitar checkout; el listener consulta status una vez tras `REHYDRATE`.
+- Analogía: la máquina es `sealed class` + reducer MVI/StateFlow en Kotlin y un `enum` con transiciones puras en SwiftUI; el selector de bloqueo es `derivedStateOf`/computed property.
+- Evidencia: lint, typecheck y `git diff --check` verdes; no hubo cambios de dependencias, mock, config ni proyectos nativos. El test de persistencia con dirección ficticia no encuentra su valor en JSON persistible. Android/iOS no requieren recompilación en T8; validación de dispositivo queda para T9/T10.
+
+## Día 4 — T9: checkout de extremo a extremo
+
+- Rojo → verde: la prueba inicial no encontró `checkout-thunks.ts`; tras añadir el borde de request, thunks y pantallas, `npm run test:logic` quedó en **871/871**, con lint, typecheck y `git diff --check` verdes.
+- `submitOrder` bloquea síncronamente antes de generar el POST, usa UUID/SHA-256 de `expo-crypto` y conserva el request únicamente en memoria. `checkOrderStatus` solo reenvía la key; nunca dirección.
+- Confirmación registra un resumen sanitizado, vacía el carrito e invalida catálogo una vez. Stock agotado temprano consulta detalles vigentes y aplica `applyStockRefresh`; el carrito avisa cuando un intento sigue sin resolver.
+- Analogía: el thunk orquestador equivale a un `ViewModel` que coordina un repositorio y emite eventos a `StateFlow`; en SwiftUI equivale a una `Task` del modelo observable. Las pantallas solo presentan estado y eventos.
+- No se pudo ejecutar la matriz manual Android/iOS en esta sesión; no se inventa evidencia. No hubo cambios de dependencias, mock, configuración ni proyectos nativos; T10 queda pendiente.
+
+### Validación manual complementaria de T9 (2026-10-13)
+
+Comandos ejecutados: `npm --prefix mock-server run dev`, Metro existente en `:8081`, `adb reverse tcp:8081 tcp:8081`, `adb reverse tcp:3001 tcp:3001`, lanzamiento del Development Build, `uiautomator dump` en Samsung SM-A037M y `axe describe-ui/tap/touch/swipe` en el simulador iPhone 17 Pro. El mock respondió y la app cargó catálogo en ambas plataformas.
+
+| Área | Android — Samsung SM-A037M | iOS — iPhone 17 Pro Simulator |
+| --- | --- | --- |
+| Pantallas relevantes y accesibilidad | OK parcial: Inicio → Carrito; árbol expone línea, subtotal, progreso, `+`, `−`, Eliminar y checkout; targets observados de 90 px (48 dp). | OK parcial: Carrito → Checkout; AX expone campos, errores/labels y `Continuar`; targets previos de formulario 44 pt. |
+| Envío válido y confirmación | No completado: esta sesión no logró introducir de forma fiable todos los campos y no se generó POST desde UI. | No completado: `axe type`/teclado dejó el formulario incompleto; no se generó POST desde UI. |
+| Estados POST/GET (confirmed, pending, timeout, 503, incoherente, offline, 404/410, reinicio) | No observados manualmente en UI en esta sesión; cubiertos por `attempt-machine`, `order-outcome`, thunks y cero-PII en `npm run test:logic` (871/871 previamente). | Igual limitación. `ORDER_POST_DELAY_MS`, `ORDER_POST_FAULT` y `ORDER_ACTIVE_MS` quedaron sin activar desde UI. |
+| Doble toque, bloqueo y limpieza exacta | No observados manualmente; cubiertos por los tests deterministas de T9/T8. | No observados manualmente; cubiertos por los mismos tests. |
+| Storage/logs sin PII | No se inspeccionó una transición real de T9; la prueba determinista de estado persistible y redacción de logs permanece en verde. | Igual. |
+| es/en, texto ampliado, tema oscuro, reduced motion | No se repitió la matriz específica de T9; hay evidencia previa de esas capacidades en T3–T6. | No se repitió la matriz específica de T9; hay evidencia previa de esas capacidades en T3–T6. |
+
+**Limitación exacta:** el formulario válido no fue alcanzado manualmente en esta ejecución; por tanto no se afirma ninguna transición de orden ni que la matriz quede validada en dispositivo. No se reprodujo ningún fallo bloqueante ni se modificó código. T9 queda **parcialmente validada**: lógica automática completa, UI/rutas parcialmente inspeccionadas, matriz manual de checkout pendiente (T10).
+
+## Día 4 — T10: cierre y validación final (2026-10-13)
+
+### Teoría de cierre
+
+El checkout separa tres responsabilidades: Redux conserva únicamente metadatos no reversibles, RTK Query habla con el servidor y la pantalla presenta una máquina de estados (`preliminary`, `unresolved`, `confirmed`). Esto equivale a un `ViewModel`/`StateFlow` con una `sealed class` en Kotlin y a un modelo observable con un `enum`/estado asociado en SwiftUI. La dirección vive en React Hook Form, como un estado temporal del formulario; no es un `SavedStateHandle`, DataStore, `UserDefaults` ni `@AppStorage`.
+
+La animación de agregar usa shared values y worklets en el hilo UI: conceptualmente se parece a `Animatable`/`animate*AsState` de Compose y `withAnimation` de SwiftUI. El gesto usa `ReanimatedSwipeable`, equivalente a `SwipeToDismissBox` y `.swipeActions`. Movimiento reducido conserva el evento, el mensaje y el cambio de estado, pero elimina traslado y escala. La decisión evita trabajo por frame en JS, aunque obliga a probar el resultado visual en ambos sistemas.
+
+### Matriz carrito, checkout y storage
+
+La matriz determinista completa se ejecuta en `attempt-machine`, `order-outcome`, reducers y la prueba de cero PII (`npm run test:logic`). La siguiente tabla registra el comportamiento esperado y la evidencia disponible por plataforma; **no se presenta una transición de POST como observada cuando el formulario no pudo completarse**.
+
+| Caso | Android — Samsung SM-A037M | iOS — iPhone 17 Pro Simulator |
+| --- | --- | --- |
+| Reinicio `preliminary → unresolved` | Lógica ✅; UI de reinicio/POST no observada: teclado impidió envío | Lógica ✅; UI de reinicio/POST no observada: `axe type` dejó el formulario incompleto |
+| Primer 400 `VALIDATION_ERROR` | Lógica ✅: limpia solo `preliminary`, asigna paths y desbloquea | Lógica ✅: mismo resultado |
+| Primer 409 `OUT_OF_STOCK` | Lógica ✅: limpia, refresca stock/líneas y exige key nueva | Lógica ✅: mismo resultado |
+| 409 `IDEMPOTENCY_KEY_REUSED` | Lógica ✅: eleva/conserva `unresolved` y consulta status | Lógica ✅: mismo resultado |
+| 202 pending y terminal 200 confirmed | Lógica ✅; pantallas accesibles inspeccionadas, transición no disparada | Lógica ✅; pantallas accesibles inspeccionadas, transición no disparada |
+| 404/410 coherentes | Lógica ✅: libera solo con pareja status/code | Lógica ✅: mismo resultado |
+| Terminal incoherente, offline, timeout, 5xx | Lógica ✅: conserva/eleva `unresolved`, nunca confirma | Lógica ✅: mismo resultado |
+| Storage y logs | Test de estado persistible/logs ✅, sin dirección, body ni key completa; no se inspeccionó una transición real | Igual; no se inspeccionó una transición real |
+| Carrito bloqueado y limpieza | Reducer/selector ✅; árbol accesible de carrito inspeccionado | Reducer/selector ✅; árbol AX de carrito/checkout inspeccionado |
+
+Los estados terminales incoherentes y ambos 409 son, por diseño, demostrables de forma reproducible en lógica aunque no sean alcanzables con un formulario manual incompleto. El mock conserva su limitación intencionada: `stock` vigente existe en detalle y barcode, pero listas/Home solo exponen `inStock`; pueden mostrar «Disponible» después de agotar un producto en la misma sesión. No se guarda PII: el request y la dirección solo existen durante el submit en memoria.
+
+### Validación por plataforma y límites honestos
+
+- **Android:** el Development Build cargó Carrito y Checkout y el árbol UI expuso controles, errores, checkout y targets de 48 dp en la evidencia complementaria de T9. No fue posible completar de forma fiable todos los campos ni generar un POST; por ello no se afirma confirmación, pending, timeout, 409, reinicio ni storage real. La matriz de idioma es/en, texto grande, dark mode y reduced motion queda respaldada por recursos, lógica y validaciones previas de T3–T6, no por una nueva ejecución completa de T10.
+- **iOS:** el simulador cargó Carrito y Checkout; AX expuso campos, resumen de errores y botón Continue, con targets previos de 44 pt. `axe type`/teclado no permitió alcanzar un formulario válido y tampoco se generó POST. Por la misma razón no se afirma la matriz de estados de red ni un reinicio real. La evidencia previa cubre recursos es/en, texto ampliado y tema oscuro; reduced motion está implementado y probado en lógica, pero no se declara observado manualmente en iOS.
+
+La limitación no es un fallo funcional reproducido: es una limitación del procedimiento de entrada de T9. Se conserva para la auditoría del Día 6 en vez de inventar evidencia. RNF-2 queda cubierto por la lógica y la implementación; RNF-3 por árboles/targets observados y pruebas; RNF-4 por las comprobaciones automáticas de cierre.
+
+### Decisiones y trade-offs cerrados
+
+- Redux Toolkit + RTK Query: una fuente global/remota explicable; se descartan Context para un carrito mutable frecuente y Zustand fuera del stack. Es análogo a `ViewModel`/UDF, no a una caché remota duplicada.
+- Moneda MXN/USD en Cuenta, solo en memoria: evita duplicar controles y separa idioma de moneda; el trade-off es volver a MXN al reiniciar. Se descarta persistirla hasta el Día 6.
+- Todos los precios se convierten en todas las pantallas: evita que una misma tarjeta muestre monedas distintas; aumenta los renders visibles al cambiar preferencia.
+- Carrito bloqueado durante `preliminary`/`unresolved`: evita vaciar líneas ajenas al pedido confirmado; el trade-off es esperar a un resultado observable.
+- Instantánea mínima por línea: permite subtotal y umbral offline tras reinicio; puede quedar desfasada hasta refrescar y se corrige con detalle/`OUT_OF_STOCK`. No es una segunda caché del catálogo.
+- `stock` numérico solo en detalle/barcode del mock: conserva los contratos y filtros del Día 3; listas/Home pueden mostrar disponibilidad desfasada.
+- **R-1 se mantiene:** reconectar con datos de menos de 60 s no fuerza una petición y el aviso offline permanece hasta pull, Reintentar o foco después de 60 s. Trade-off: el usuario puede ver un aviso aunque la red ya vuelva. Se descarta cambiar ese requisito en este día.
+- `overrideExisting: __DEV__` silencia duplicados esperables de Fast Refresh sin quitar la protección en producción; la alternativa era aceptar ruido que ocultaba errores.
+
+### Ejercicio sin solución
+
+Implementa `selectCheckoutAvailability(state)` como selector puro. Debe devolver `restoring`, `empty`, `blocked` o `ready`, sin mutar el estado ni leer dirección. Escribe primero una tabla con: rehidratación pendiente, carrito vacío, intento `preliminary`/`unresolved` y carrito válido. Añade tests de referencias y explica la equivalencia con `derivedStateOf`/computed property de Compose y SwiftUI.
+
+### Preguntas de repaso (respuestas cortas)
+
+1. **¿Qué persiste `preliminary`?** Solo key, fingerprint y estado; nunca dirección ni body.
+2. **¿Qué hace un reinicio con `preliminary`?** Lo promueve a `unresolved` y consulta status sin dirección.
+3. **¿Cuándo libera `unresolved`?** Con confirmed o una pareja coherente 404/410.
+4. **¿Qué ocurre con un 409 temprano?** Limpia solo preliminary; refresca stock en OUT_OF_STOCK y exige una key nueva.
+5. **¿Qué evita el fingerprint?** Reenviar una identidad distinta para un request semánticamente igual sin guardar el payload.
+6. **¿Por qué no se reintenta el POST?** Un timeout puede ocultar una orden creada; solo se consulta la misma key.
+7. **¿Dónde vive la dirección?** En el formulario y en la memoria del submit, no en Redux ni MMKV.
+8. **¿Qué elimina reduced motion?** Movimiento no esencial; conserva mensajes y cambios de estado.
+9. **¿Qué analogía tiene `attempt-machine`?** Una `sealed class` con transiciones puras, como reducer MVI o estado asociado SwiftUI.
+10. **¿Qué cubre `selectIsCartLocked`?** Rehidratación pendiente y cualquier intento no resuelto, bloqueando otra modificación.
+
+### Checklist oral de cierre
+
+- [ ] Separar estado remoto, global, local y persistido; comparar Redux con ViewModel/StateFlow y SwiftUI.
+- [ ] Explicar por qué preliminary se promueve al reiniciar y por qué timeout consulta en lugar de repetir POST.
+- [ ] Recorrer la matriz: ambos 409, 202, confirmed, 404/410 y terminal incoherente.
+- [ ] Demostrar que storage/logs no contienen dirección, body, valores de campo ni key completa.
+- [ ] Explicar shared values/worklets y su equivalencia con Compose/SwiftUI.
+- [ ] Explicar gesto horizontal, alternativa accesible por botón y targets 48 dp/44 pt.
+- [ ] Justificar R-1 y la limitación de stock de listas/Home del mock.
+- [ ] Nombrar los límites de la validación manual y separar evidencia de tests de evidencia de dispositivo.
+
+### Resultados de cierre
+
+| Comprobación | Resultado |
+| --- | --- |
+| `npm run test:logic` | **871/871**, 0 fallos |
+| `npm --prefix mock-server test` | **81/81**, 0 fallos |
+| `npx expo lint` | ✅ sin errores |
+| `npx tsc --noEmit` | ✅ sin errores |
+| `npx expo install --check` | ✅ dependencies are up to date |
+| `npx expo-doctor@latest` | ✅ 21/21 comprobaciones |
+| `git diff --check` | ✅ sin salida |
+| Paridad i18n es/en | ✅ mismas claves, interpolaciones y textos no vacíos |
+| Símbolos retirados T2–T5 | ✅ búsqueda sin resultados |
+
+No cambian dependencias, configuración ni `ios/`/`android/` en T10; no se requiere recompilación adicional. El commit de cierre del día es `feat: complete day 4 cart and checkout`.

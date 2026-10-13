@@ -174,10 +174,13 @@ describe('catalog HTTP contracts', () => {
       `/products/barcode/${product.ean13}`,
     );
 
+    // The detail is the catalog product plus the live `stock` (see 'product stock on the detail
+    // endpoints'); `inStock` is derived from it, and a fresh server has 99 units of an available one.
+    const detail = { ...product, stock: 99, inStock: true };
     assert.equal(byId.response.status, 200);
-    assert.deepEqual(byId.body, product);
+    assert.deepEqual(byId.body, detail);
     assert.equal(byBarcode.response.status, 200);
-    assert.deepEqual(byBarcode.body, product);
+    assert.deepEqual(byBarcode.body, detail);
   });
 
   it('distinguishes invalid, valid missing, and existing product resources', async () => {
@@ -235,6 +238,130 @@ describe('catalog HTTP contracts', () => {
     assert.equal(laterPage.body.page, 99);
     assert.equal(laterPage.body.totalPages, 30);
     assert.equal(laterPage.body.total, 300);
+  });
+});
+
+describe('product stock on the detail endpoints', () => {
+  const HOUR_MS = 60 * 60 * 1000;
+  const available = catalog[42];
+  const soldOut = catalog[0];
+  const address = {
+    fullName: 'Test Customer',
+    phone: '5512345678',
+    postalCode: '03100',
+    state: 'CDMX',
+    city: 'Benito Juárez',
+    street: 'Fictional Avenue',
+    exteriorNumber: '42',
+  };
+  let baseUrl;
+  let server;
+  let now;
+
+  function order(productId, quantity) {
+    return {
+      items: [{ productId, quantity }],
+      shippingAddress: address,
+      currency: 'MXN',
+    };
+  }
+
+  async function stockOf(product) {
+    const byId = await requestJson(baseUrl, `/products/${product.id}`);
+    const byBarcode = await requestJson(baseUrl, `/products/barcode/${product.ean13}`);
+
+    assert.equal(byId.response.status, 200);
+    assert.equal(byBarcode.response.status, 200);
+    assert.equal(byBarcode.body.stock, byId.body.stock);
+    assert.equal(byBarcode.body.inStock, byId.body.inStock);
+
+    return { stock: byId.body.stock, inStock: byId.body.inStock };
+  }
+
+  before(async () => {
+    now = Date.parse('2026-10-10T12:00:00.000Z');
+    server = createApp({
+      latencyMs: 0,
+      orderClock: () => now,
+      // A pending that outlives the 24 h window: it can expire and give its units back.
+      orderProcessingMs: 30 * HOUR_MS,
+    }).listen(0, '127.0.0.1');
+    await new Promise((resolve, reject) => {
+      server.once('listening', resolve);
+      server.once('error', reject);
+    });
+    baseUrl = `http://127.0.0.1:${server.address().port}`;
+  });
+
+  after(async () => {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  });
+
+  it('starts with 99 units of an available product and 0 of the fixed sold-out one', async () => {
+    assert.equal(soldOut.id, 'product-261009-001');
+    assert.deepEqual(await stockOf(available), { stock: 99, inStock: true });
+    assert.deepEqual(await stockOf(soldOut), { stock: 0, inStock: false });
+  });
+
+  it('drops with a pending order and keeps `inStock` equal to `stock > 0`', async () => {
+    const first = await postJson(baseUrl, '/orders', {
+      key: 'stock-first',
+      body: order(available.id, 2),
+    });
+    assert.equal(first.response.status, 202);
+    assert.deepEqual(await stockOf(available), { stock: 97, inStock: true });
+
+    const rest = await postJson(baseUrl, '/orders', {
+      key: 'stock-rest',
+      body: order(available.id, 97),
+    });
+    assert.equal(rest.response.status, 202);
+    assert.deepEqual(await stockOf(available), { stock: 0, inStock: false });
+  });
+
+  it('leaves lists, search and Home exactly as before, whatever the live stock is', async () => {
+    // `available` is now sold out in this session, and every catalog route still shows the catalog.
+    const list = await requestJson(
+      baseUrl,
+      `/products?${new URLSearchParams({ q: available.name, limit: '50' })}`,
+    );
+    const listed = list.body.items.find(({ id }) => id === available.id);
+    assert.ok(listed, 'the product is still in the list');
+    assert.equal(listed.inStock, true);
+    assert.deepEqual(list.body, queryProducts(catalog, { q: available.name, limit: '50' }));
+
+    const everyItem = await requestJson(baseUrl, '/products?limit=50');
+    assert.ok(everyItem.body.items.every((item) => !('stock' in item)));
+    const home = await requestJson(baseUrl, '/home');
+    assert.equal(JSON.stringify(home.body).includes('"stock"'), false);
+  });
+
+  it('returns the units when the pending expires', async () => {
+    now += 24 * HOUR_MS;
+
+    assert.deepEqual(await stockOf(available), { stock: 99, inStock: true });
+  });
+
+  it('does not change the stock of a rejected order or of a sold-out product', async () => {
+    const rejected = await postJson(baseUrl, '/orders', {
+      key: 'stock-rejected',
+      body: order(soldOut.id, 1),
+    });
+
+    assert.equal(rejected.response.status, 409);
+    assert.deepEqual(await stockOf(soldOut), { stock: 0, inStock: false });
+    assert.deepEqual(await stockOf(available), { stock: 99, inStock: true });
+  });
+
+  it('keeps the existing errors of the detail endpoints', async () => {
+    const missing = await requestJson(baseUrl, '/products/product-does-not-exist');
+    const failed = await requestJson(baseUrl, `/products/${available.id}?fail=true`);
+
+    assert.equal(missing.response.status, 404);
+    assert.equal('stock' in missing.body, false);
+    assert.equal(failed.response.status, 500);
   });
 });
 

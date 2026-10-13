@@ -10,7 +10,6 @@ import { createOrderSummary } from './order-totals.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 const ACTIVE_MS = 24 * HOUR_MS;
-const RETENTION_MS = 48 * HOUR_MS;
 const DEFAULT_PROCESSING_MS = 1_000;
 const DEFAULT_AVAILABLE_STOCK = 99;
 
@@ -24,15 +23,18 @@ export class OrderStore {
     clock = () => Date.now(),
     idFactory = randomUUID,
     processingMs = DEFAULT_PROCESSING_MS,
+    activeMs = ACTIVE_MS,
   }) {
     if (!Number.isFinite(processingMs) || processingMs < 0) {
       throw new TypeError('Order processing time must be a non-negative number.');
     }
+    if (!Number.isFinite(activeMs) || activeMs <= 0) throw new TypeError('Order active time must be positive.');
 
     this.products = products;
     this.clock = clock;
     this.idFactory = idFactory;
     this.processingMs = processingMs;
+    this.activeMs = activeMs;
     this.attempts = new Map();
     this.inventory = new Map(
       products.map((product) => [
@@ -146,6 +148,17 @@ export class OrderStore {
     return this.#activeResult(attempt);
   }
 
+  /**
+   * Units that can still be ordered right now: the initial inventory minus pending reservations
+   * and confirmed orders (an expired pending gives its units back, a confirmed one does not).
+   * `undefined` for a product the store does not know. The product detail endpoints expose it as
+   * `stock`, so it first settles every attempt up to "now", exactly like `getStatus`.
+   */
+  availableStock(productId) {
+    this.#reconcile();
+    return this.inventory.get(productId)?.available;
+  }
+
   inspect() {
     this.#reconcile();
     return {
@@ -179,8 +192,8 @@ export class OrderStore {
   #reconcile() {
     const now = this.clock();
     for (const [key, attempt] of [...this.attempts.entries()]) {
-      const expiresAtMs = attempt.createdAtMs + ACTIVE_MS;
-      const forgetAtMs = attempt.createdAtMs + RETENTION_MS;
+      const expiresAtMs = attempt.createdAtMs + this.activeMs;
+      const forgetAtMs = attempt.createdAtMs + this.activeMs * 2;
 
       if (
         attempt.status === 'pending' &&

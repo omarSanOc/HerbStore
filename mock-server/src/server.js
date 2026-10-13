@@ -38,6 +38,20 @@ function readOrderProcessingTime(value) {
   return processingMs;
 }
 
+function readOrderActiveTime(value) {
+  if (value === undefined) return undefined;
+  const activeMs = Number(value);
+  if (!Number.isFinite(activeMs) || activeMs <= 0) throw new TypeError('Order active time must be positive.');
+  return activeMs;
+}
+
+function readOrderPostDelay(value) {
+  if (value === undefined) return 0;
+  const delayMs = Number(value);
+  if (!Number.isFinite(delayMs) || delayMs < 0) throw new TypeError('Order POST delay must be non-negative.');
+  return delayMs;
+}
+
 function wait(durationMs) {
   return new Promise((resolve) => setTimeout(resolve, durationMs));
 }
@@ -47,10 +61,18 @@ export function createApp({
   orderClock,
   orderIdFactory,
   orderProcessingMs = process.env.ORDER_PROCESSING_MS,
+  orderPostDelayMs = process.env.ORDER_POST_DELAY_MS,
+  orderPostFault = process.env.ORDER_POST_FAULT,
+  orderActiveMs = process.env.ORDER_ACTIVE_MS,
 } = {}) {
   const app = express();
   const catalogLatencyMs = readLatency(latencyMs);
   const parsedOrderProcessingMs = readOrderProcessingTime(orderProcessingMs);
+  const parsedOrderActiveMs = readOrderActiveTime(orderActiveMs);
+  const parsedOrderPostDelayMs = readOrderPostDelay(orderPostDelayMs);
+  if (orderPostFault !== undefined && !['server-error', 'inconsistent'].includes(orderPostFault)) {
+    throw new TypeError('Unknown order POST fault.');
+  }
   const orderStore = new OrderStore({
     products: catalog,
     ...(orderClock === undefined ? {} : { clock: orderClock }),
@@ -58,6 +80,7 @@ export function createApp({
     ...(parsedOrderProcessingMs === undefined
       ? {}
       : { processingMs: parsedOrderProcessingMs }),
+    ...(parsedOrderActiveMs === undefined ? {} : { activeMs: parsedOrderActiveMs }),
   });
 
   app.disable('x-powered-by');
@@ -75,9 +98,12 @@ export function createApp({
   );
   app.use('/home', createHomeRouter(catalog));
   app.use('/categories', createCategoriesRouter(catalog));
-  app.use('/products', createProductsRouter(catalog));
+  app.use(
+    '/products',
+    createProductsRouter(catalog, (id) => orderStore.availableStock(id)),
+  );
   app.use('/brands', createBrandsRouter(catalog));
-  app.use('/orders', createOrdersRouter(orderStore));
+  app.use('/orders', createOrdersRouter(orderStore, { postDelayMs: parsedOrderPostDelayMs, postFault: orderPostFault }));
   // Generated placeholders: outside the catalog latency on purpose (image speed is not under test).
   app.use('/images', createImagesRouter(catalog));
 

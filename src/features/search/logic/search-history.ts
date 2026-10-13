@@ -60,3 +60,34 @@ export function removeSearch(history: SearchHistory, text: string): SearchHistor
 export function clearHistory(history: SearchHistory): SearchHistory {
   return history.length === 0 ? history : EMPTY_SEARCH_HISTORY;
 }
+
+/**
+ * Reads a persisted history back (Day 4, spec 004 RF-12). Storage is outside the app's control
+ * (an older build, a corrupt file, a hand edit), so the value arrives as `unknown`.
+ *
+ * It accepts only what the rules above can produce: an array of at most `MAX_SEARCH_HISTORY`
+ * strings, each already trimmed with a non-empty identity and no identity repeated, and keeps it
+ * intact in the same order. Anything else becomes the empty history AS A WHOLE: repairing a broken
+ * history (dropping one entry, cutting the tail) would invent an order the user never produced.
+ * The rules are reused (`normalizeSearchText`, `MAX_SEARCH_HISTORY`), not duplicated.
+ */
+export function restoreSearchHistory(stored: unknown): SearchHistory {
+  if (!Array.isArray(stored) || stored.length === 0 || stored.length > MAX_SEARCH_HISTORY) {
+    return EMPTY_SEARCH_HISTORY;
+  }
+
+  const identities = new Set<string>();
+  for (const entry of stored) {
+    if (typeof entry !== 'string' || entry !== entry.trim()) {
+      return EMPTY_SEARCH_HISTORY;
+    }
+
+    const key = normalizeSearchText(entry);
+    if (key === '' || identities.has(key)) {
+      return EMPTY_SEARCH_HISTORY;
+    }
+    identities.add(key);
+  }
+
+  return [...(stored as string[])];
+}

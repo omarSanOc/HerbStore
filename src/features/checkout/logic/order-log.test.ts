@@ -2,9 +2,19 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import type { OrderRequest } from '../contracts/order.ts';
-import { DEV_SHIPPING_ADDRESS, buildDevOrderRequest } from './dev-order.ts';
+import type { OrderRequest, ShippingAddress } from '../contracts/order.ts';
 import { describeOrderForLog, maskIdempotencyKey } from './order-log.ts';
+
+// A fictitious address, obviously fake: it only exists to prove that the log line never prints it.
+const ADDRESS: ShippingAddress = Object.freeze({
+  fullName: 'Test Customer',
+  phone: '0000000000',
+  postalCode: '00000',
+  state: 'Test State',
+  city: 'Test City',
+  street: 'Test Street',
+  exteriorNumber: '0',
+});
 
 describe('maskIdempotencyKey', () => {
   it('keeps only the last 4 characters, enough to see that two POSTs share a key', () => {
@@ -20,7 +30,11 @@ describe('maskIdempotencyKey', () => {
 });
 
 describe('describeOrderForLog', () => {
-  const request = buildDevOrderRequest('product-261009-002', 'USD');
+  const request: OrderRequest = {
+    items: [{ productId: 'product-261009-002', quantity: 1 }],
+    currency: 'USD',
+    shippingAddress: ADDRESS,
+  };
 
   it('prints status, masked key and product ids for a pending answer', () => {
     assert.equal(
@@ -50,7 +64,7 @@ describe('describeOrderForLog', () => {
     });
 
     assert.match(line, /products=p1,p2$/);
-    for (const value of Object.values(DEV_SHIPPING_ADDRESS)) {
+    for (const value of Object.values(ADDRESS)) {
       assert.ok(!line.includes(value) || value.length < 2, `leaks "${value}"`);
     }
     assert.ok(!line.includes('shippingAddress'));

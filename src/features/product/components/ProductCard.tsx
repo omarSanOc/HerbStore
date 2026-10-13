@@ -2,7 +2,9 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
+import { useAppSelector } from '@/core/store/hooks';
 import { AppText, RemoteImage, radii, spacing, useAppTheme } from '@/design-system';
+import { selectPreferredCurrency } from '@/features/preferences/store/preferences-slice';
 
 import type { CatalogProduct } from '../contracts/catalog-product';
 import { buildProductCardModel } from '../logic/product-card';
@@ -24,7 +26,7 @@ type ProductCardProps = {
  * with the previous price), the rating, the availability when the product is out of stock, and the
  * badge; the hint is the action. The picture and the visible texts are not read a second time.
  * What to show and how to format it lives in `buildProductCardModel` (pure); this component lays
- * it out.
+ * it out. Prices are shown in the preferred currency (Account), converted at 1 USD = 18 MXN.
  *
  * Availability is text ("Out of stock") and part of the spoken label, never only a color or a
  * dimmed picture (RNF-2). The height is never fixed: the text wraps and the card grows, so nothing
@@ -34,7 +36,10 @@ export function ProductCard({ product, onPress, width }: Readonly<ProductCardPro
   const { t, i18n } = useTranslation();
   const { colors } = useAppTheme();
   const reduceMotion = useReducedMotionPreference();
-  const model = buildProductCardModel(product, i18n.language);
+  // Each card reads the preferred currency itself, so changing it in Account repaints every
+  // visible card whatever list (Home row, grid, search) holds it.
+  const currency = useAppSelector(selectPreferredCurrency);
+  const model = buildProductCardModel(product, i18n.language, currency);
   const { rating, badge } = model;
 
   const spokenParts = [

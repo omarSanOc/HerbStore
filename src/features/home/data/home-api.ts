@@ -9,6 +9,10 @@ import { buildHomeRequest } from './home-request';
  * the retry policy and the 60 s / 300 s cache rules with every other endpoint.
  */
 export const homeApi = baseApi.injectEndpoints({
+  // Fast Refresh re-runs this module and injects the same endpoints again: in development they
+  // are replaced silently instead of logging an error each time; in production a duplicated
+  // endpoint name stays an error (plan 004, T1, user decision).
+  overrideExisting: __DEV__,
   endpoints: (build) => ({
     getHome: build.query<HomeData, void>({
       query: () => buildHomeRequest(homeFixture),

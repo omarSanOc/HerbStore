@@ -67,6 +67,16 @@ export const sizes = {
  *   and left two rows of the list; at 2.0 the word needs 128 pt (a half row holds it on 384 pt
  *   and wider windows, narrower ones stack) and the bar is 58 pt high. Android's largest scale is
  *   2.0, so Android does not change.
+ * - `productTitle`: the name and the price of the product detail use the 28 pt heading. A catalog
+ *   name is made of long words ("Magnesium", "Glycinate", 9 letters) and a price of long numbers
+ *   ("USD 1,187.01"). At iOS AX5 (about 3.6x, 100 pt) the name was split as "Magnes / ium /
+ *   Glycina / te"; at 2.0 (56 pt) the longest word needs about 300 pt, which fits a 360 pt phone,
+ *   and 2.0 is the largest scale Android offers, so Android does not change.
+ * - `purchaseBar`: the bar pinned under the product detail (total + "Add to cart"). At iOS AX5
+ *   (about 3.1x) it stacked "Total", the amount and a two-line button and took 43 % of the screen
+ *   height, leaving only the picture to scroll; at 2.0 it is about 22 % and the button label still
+ *   fits one line on a 360 pt phone. 2.0 is the largest scale Android offers, so Android does not
+ *   change.
  */
 export const fontScaleLimits = {
   tabLabel: 1.2,
@@ -76,4 +86,6 @@ export const fontScaleLimits = {
   selectionMark: 1.5,
   sectionHeading: 2,
   actionLabel: 2,
+  productTitle: 2,
+  purchaseBar: 2,
 } as const;

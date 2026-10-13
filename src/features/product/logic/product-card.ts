@@ -1,5 +1,6 @@
-import { formatCurrency, formatInteger, formatRating } from '../../../core/format/format-number.ts';
-import type { CatalogProduct } from '../contracts/catalog-product.ts';
+import { formatInteger, formatRating } from '../../../core/format/format-number.ts';
+import { formatMoney, toDisplayCents } from '../../preferences/logic/currency.ts';
+import type { CatalogProduct, CurrencyCode } from '../contracts/catalog-product.ts';
 
 /** The single badge a card shows. Decided by priority, so a product never shows two. */
 export type ProductCardBadge = 'offer' | 'new' | 'best_seller';
@@ -28,9 +29,9 @@ export function getProductBadge({ price, listPrice, badges }: BadgeInput): Produ
 
 export type ProductCardModel = Readonly<{
   name: string;
-  /** Final price in the product's own currency. */
+  /** Final price, converted to the preferred currency. */
   price: string;
-  /** Previous price, only for a real offer; the card draws it struck through. */
+  /** Previous price in the preferred currency, only for a real offer; drawn struck through. */
   listPrice?: string;
   badge?: ProductCardBadge;
   /** False draws "Out of stock" as text and adds it to the spoken label (never only a color). */
@@ -44,15 +45,26 @@ type CardInput = Pick<
   'name' | 'price' | 'listPrice' | 'currency' | 'rating' | 'reviewCount' | 'badges' | 'inStock'
 >;
 
-/** Everything a product card shows, already formatted for the interface language. */
-export function buildProductCardModel(product: CardInput, language: string): ProductCardModel {
+/**
+ * Everything a product card shows, already formatted for the interface language. Prices come in
+ * the currency of the product and are shown in the PREFERRED one (spec 004, RF-5): converted
+ * through the canonical MXN value at 1 USD = 18 MXN, never rounded when the currency is the same.
+ * The offer badge is still decided from the prices of origin, which share one currency.
+ */
+export function buildProductCardModel(
+  product: CardInput,
+  language: string,
+  currency: CurrencyCode,
+): ProductCardModel {
   const badge = getProductBadge(product);
+  const show = (amount: number) =>
+    formatMoney(toDisplayCents(amount, product.currency, currency), currency, language);
 
   return {
     name: product.name,
-    price: formatCurrency(product.price, product.currency, language),
+    price: show(product.price),
     ...(badge === 'offer' && product.listPrice !== undefined
-      ? { listPrice: formatCurrency(product.listPrice, product.currency, language) }
+      ? { listPrice: show(product.listPrice) }
       : {}),
     ...(badge === undefined ? {} : { badge }),
     inStock: product.inStock,

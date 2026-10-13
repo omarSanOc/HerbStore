@@ -1,5 +1,5 @@
 import type { ApiError } from '../../../core/api/api-error.ts';
-import type { CatalogProduct } from '../contracts/catalog-product.ts';
+import type { ProductDetail } from '../contracts/catalog-product.ts';
 
 /**
  * What the product route renders. A discriminated union, like `HomeScreenState`: the screen
@@ -7,7 +7,7 @@ import type { CatalogProduct } from '../contracts/catalog-product.ts';
  */
 export type ProductLookupState =
   | { status: 'loading' }
-  | { status: 'found'; product: CatalogProduct }
+  | { status: 'found'; product: ProductDetail }
   | { status: 'not-found' }
   | { status: 'offline' }
   | { status: 'error' };
@@ -21,7 +21,7 @@ export type ProductLookupState =
  * - `isFetching`: a request (first load, manual retry or revalidation) is in flight.
  */
 export type ProductLookupSnapshot = Readonly<{
-  data: CatalogProduct | undefined;
+  data: ProductDetail | undefined;
   error: ApiError | undefined;
   isFetching: boolean;
 }>;
@@ -36,7 +36,8 @@ export type ProductLookupSnapshot = Readonly<{
  *   connection", error suggests "the server had a problem".
  * - Without data, a request in flight is `loading`, so a manual retry shows the spinner and not
  *   the old failure that RTK keeps through `pending`. An `aborted` error is a cancellation.
- * - With data, any other failure keeps showing the product (the placeholder has no notice row).
+ * - With data, any other failure keeps showing the product (the detail has no notice row: the
+ *   figures on screen are the last ones received).
  */
 export function classifyProductLookup({
   data,

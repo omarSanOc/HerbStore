@@ -12,17 +12,22 @@ describe('parseOrderResult', () => {
         id: 'order-1',
         items: [{ productId: 'p1', quantity: 2, unitPrice: 10, lineTotal: 20 }],
         currency: 'MXN',
+        subtotal: 20,
+        shipping: 0,
         total: 20,
         status: 'confirmed',
         createdAt: '2026-10-12T00:00:00.000Z',
       },
     };
 
-    assert.deepEqual(parseOrderResult(payload), { status: 'confirmed', orderId: 'order-1' });
+    assert.deepEqual(parseOrderResult(payload, 200), {
+      status: 'confirmed', orderId: 'order-1',
+      summary: { id: 'order-1', items: [{ productId: 'p1', quantity: 2, unitPrice: 10, lineTotal: 20 }], currency: 'MXN', subtotal: 20, shipping: 0, total: 20, createdAt: '2026-10-12T00:00:00.000Z' },
+    });
   });
 
   it('projects a pending answer to its retry delay and drops the echoed key', () => {
-    assert.deepEqual(parseOrderResult({ status: 'pending', retryAfterSeconds: 1, key: 'dev-1' }), {
+    assert.deepEqual(parseOrderResult({ status: 'pending', retryAfterSeconds: 1, key: 'dev-1' }, 202), {
       status: 'pending',
       retryAfterSeconds: 1,
     });

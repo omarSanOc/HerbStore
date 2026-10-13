@@ -15,13 +15,20 @@ Contratos disponibles en este checkpoint:
 - `GET /home` → banners ficticios, categorías destacadas y secciones derivadas del catálogo.
 - `GET /categories` → árbol de categorías/subcategorías con conteos.
 - `GET /products` → filtros, búsqueda, sort y paginación `{ items, page, totalPages, total }`.
-- `GET /products/:id` y `GET /products/barcode/:code` → detalle por identidad.
+- `GET /products/:id` y `GET /products/barcode/:code` → detalle por identidad, con `stock` vigente (ver «Stock del detalle»).
 - `GET /brands` → marcas ficticias con conteos.
 - `GET /images/:kind/:name` → PNG ficticio generado (ver "Imágenes ficticias").
 - `POST /orders` → recibe `Idempotency-Key` y un body strict `{ items, shippingAddress, currency }`; crea un único intento pending o devuelve el mismo resultado para un retry semánticamente equivalente.
 - `GET /orders/status/:key` → devuelve 200 `confirmed`, 202 `pending`, 404 `not_created` o 410 `expired`.
 
 Las rutas inexistentes responden 404 `NOT_FOUND` y los bodies que superan el límite de `express.json()` responden 413 `PAYLOAD_TOO_LARGE`, ambos con el envelope `{ error: { code, message } }` en JSON y sin eco de la ruta.
+
+## Stock del detalle
+
+- Solo `GET /products/:id` y `GET /products/barcode/:code` añaden `stock` (unidades que se pueden pedir **ahora**) y calculan `inStock = stock > 0`. Los productos se devuelven como copia: el catálogo no se modifica.
+- El stock sale del inventario de `OrderStore`: 99 unidades por producto al arrancar (0 en los que el catálogo marca sin stock, p. ej. `product-261009-001`), baja con cada orden pending o confirmada y vuelve si una orden pending expira a las 24 h. Una orden confirmada consume sus unidades para siempre (hasta reiniciar el servidor).
+- Listas (`GET /products`), búsqueda y Home **no** cambian: no llevan `stock` y su `inStock` sigue siendo el estático del catálogo. Por eso un producto agotado durante la sesión puede seguir saliendo como «Disponible» en ellas; el detalle (y el 409 `OUT_OF_STOCK`) dan el dato real. Es una limitación conocida (plan 004).
+- Comprobación rápida: `curl http://localhost:3001/products/product-261009-043` → `"stock": 99`; tras `POST /orders` de 2 unidades → `"stock": 97`.
 
 ## Imágenes ficticias
 

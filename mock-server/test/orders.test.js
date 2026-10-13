@@ -402,6 +402,40 @@ describe('order idempotency, reservations, and retention', () => {
     assert.equal(store.submit('retained-key', validRequest()).kind, 'pending');
   });
 
+  it('reports the live available stock, which tracks pending, confirmed and expired orders', () => {
+    const { store, advance, setNow } = createHarness({ processingMs: 30 * HOUR_MS });
+
+    assert.equal(store.availableStock('mx-low'), 2);
+    assert.equal(store.availableStock('mx-half'), 99);
+    assert.equal(store.availableStock('unavailable'), 0);
+    assert.equal(store.availableStock('does-not-exist'), undefined);
+
+    store.submit('live-stock', validRequest({ items: [{ productId: 'mx-low', quantity: 1 }] }));
+    assert.equal(store.availableStock('mx-low'), 1);
+    const tooMany = store.submit(
+      'too-many',
+      validRequest({ items: [{ productId: 'mx-low', quantity: 2 }] }),
+    );
+    assert.equal(tooMany.kind, 'out_of_stock');
+    assert.equal(store.availableStock('mx-low'), 1);
+
+    advance(HOUR_MS);
+    assert.equal(store.availableStock('mx-low'), 1);
+
+    // A pending that is still unconfirmed at 24 h expires and gives its unit back.
+    setNow(START_MS + 24 * HOUR_MS);
+    assert.equal(store.availableStock('mx-low'), 2);
+  });
+
+  it('keeps confirmed units consumed after the order expires', () => {
+    const { store, setNow } = createHarness({ processingMs: 1_000 });
+
+    store.submit('consumed', validRequest({ items: [{ productId: 'mx-low', quantity: 2 }] }));
+    assert.equal(store.availableStock('mx-low'), 0);
+    setNow(START_MS + 25 * HOUR_MS);
+    assert.equal(store.availableStock('mx-low'), 0);
+  });
+
   it('stores only permitted non-personal active data', () => {
     const { store } = createHarness();
     store.submit('privacy-key', validRequest());

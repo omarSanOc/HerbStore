@@ -60,47 +60,80 @@ describe('getProductBadge', () => {
 });
 
 describe('buildProductCardModel', () => {
-  it('formats the price with the currency of the product, not the language', () => {
-    const mxn = buildProductCardModel(product({ price: 277.9, currency: 'MXN' }), 'es');
-    const usd = buildProductCardModel(product({ price: 11.99, currency: 'USD' }), 'es');
+  it('shows the price in the preferred currency, in the format of the interface language', () => {
+    const mxn = product({ price: 277.9, currency: 'MXN' });
 
-    assert.equal(plain(mxn.price), '$277.90');
-    assert.equal(plain(usd.price), 'USD 11.99');
-    assert.equal(plain(buildProductCardModel(product({ price: 11.99, currency: 'USD' }), 'en').price), '$11.99');
-    assert.equal(plain(buildProductCardModel(product({ price: 277.9, currency: 'MXN' }), 'en').price), 'MX$277.90');
+    assert.equal(plain(buildProductCardModel(mxn, 'es', 'MXN').price), '$277.90');
+    assert.equal(plain(buildProductCardModel(mxn, 'en', 'MXN').price), 'MX$277.90');
+    assert.equal(plain(buildProductCardModel(mxn, 'es', 'USD').price), 'USD 15.44');
+    assert.equal(plain(buildProductCardModel(mxn, 'en', 'USD').price), '$15.44');
   });
 
-  it('carries the struck-through list price only for a real offer', () => {
-    const offer = buildProductCardModel(product({ price: 210.9, listPrice: 253.08 }), 'es');
+  it('converts a USD product to the preferred currency at 1 USD = 18 MXN', () => {
+    const usd = product({ price: 11.99, currency: 'USD' });
+
+    assert.equal(plain(buildProductCardModel(usd, 'es', 'MXN').price), '$215.82');
+    assert.equal(plain(buildProductCardModel(usd, 'en', 'MXN').price), 'MX$215.82');
+    // Same currency: the amount is shown as it came, with no round trip.
+    assert.equal(plain(buildProductCardModel(usd, 'es', 'USD').price), 'USD 11.99');
+    assert.equal(plain(buildProductCardModel(usd, 'en', 'USD').price), '$11.99');
+  });
+
+  it('the price of origin never decides the displayed currency (the preference does)', () => {
+    for (const currency of ['MXN', 'USD'] as const) {
+      const fromMxn = buildProductCardModel(product({ price: 360, currency: 'MXN' }), 'en', currency);
+      const fromUsd = buildProductCardModel(product({ price: 20, currency: 'USD' }), 'en', currency);
+
+      // 360 MXN and 20 USD are the same canonical value, so they read the same in either view.
+      assert.equal(fromMxn.price, fromUsd.price);
+    }
+  });
+
+  it('carries the struck-through list price only for a real offer, converted like the price', () => {
+    const offer = buildProductCardModel(product({ price: 210.9, listPrice: 253.08 }), 'es', 'MXN');
     assert.equal(offer.badge, 'offer');
     assert.equal(plain(offer.listPrice), '$253.08');
 
-    const regular = buildProductCardModel(product(), 'es');
+    const inUsd = buildProductCardModel(product({ price: 360, listPrice: 540 }), 'es', 'USD');
+    assert.equal(plain(inUsd.price), 'USD 20.00');
+    assert.equal(plain(inUsd.listPrice), 'USD 30.00');
+
+    const regular = buildProductCardModel(product(), 'es', 'USD');
     assert.equal(regular.listPrice, undefined);
   });
 
+  it('decides the offer badge from the prices of origin, whatever the preferred currency', () => {
+    for (const currency of ['MXN', 'USD'] as const) {
+      assert.equal(buildProductCardModel(product({ price: 360, listPrice: 540 }), 'en', currency).badge, 'offer');
+      assert.equal(buildProductCardModel(product({ price: 360, listPrice: 360 }), 'en', currency).badge, undefined);
+    }
+  });
+
   it('formats rating and review count', () => {
-    const model = buildProductCardModel(product({ rating: 4.9, reviewCount: 1234 }), 'en');
+    const model = buildProductCardModel(product({ rating: 4.9, reviewCount: 1234 }), 'en', 'MXN');
     assert.deepEqual(model.rating, { value: '4.9', count: 1234, countText: '1,234' });
   });
 
   it('has no rating without reviews', () => {
-    assert.equal(buildProductCardModel(product({ rating: 0, reviewCount: 0 }), 'en').rating, undefined);
+    assert.equal(
+      buildProductCardModel(product({ rating: 0, reviewCount: 0 }), 'en', 'MXN').rating,
+      undefined,
+    );
   });
 
   it('reports availability so the card can say it in text, not only in color', () => {
-    assert.equal(buildProductCardModel(product({ inStock: true }), 'es').inStock, true);
-    assert.equal(buildProductCardModel(product({ inStock: false }), 'es').inStock, false);
+    assert.equal(buildProductCardModel(product({ inStock: true }), 'es', 'MXN').inStock, true);
+    assert.equal(buildProductCardModel(product({ inStock: false }), 'es', 'USD').inStock, false);
   });
 
   it('keeps the name as catalog data', () => {
-    assert.equal(buildProductCardModel(product({ name: 'Zinc 25 mg' }), 'en').name, 'Zinc 25 mg');
+    assert.equal(buildProductCardModel(product({ name: 'Zinc 25 mg' }), 'en', 'USD').name, 'Zinc 25 mg');
   });
 
   it('does not mutate the product', () => {
     const input = product({ listPrice: 300, ...badges('NEW') });
     const snapshot = structuredClone(input);
-    buildProductCardModel(input, 'es');
+    buildProductCardModel(input, 'es', 'USD');
     assert.deepEqual(input, snapshot);
   });
 });

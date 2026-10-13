@@ -71,7 +71,7 @@ function sendOrderResult(response, result, { includeKey = false } = {}) {
   }
 }
 
-export function createOrdersRouter(orderStore) {
+export function createOrdersRouter(orderStore, { postDelayMs = 0, postFault } = {}) {
   const router = Router();
 
   router.get('/status/:key', (request, response) => {
@@ -83,7 +83,19 @@ export function createOrdersRouter(orderStore) {
       request.get('Idempotency-Key'),
       request.body,
     );
-    sendOrderResult(response, result, { includeKey: true });
+    const reply = () => {
+      if (postFault === 'server-error') {
+        response.status(503).json({ error: { code: 'SERVICE_UNAVAILABLE' } });
+        return;
+      }
+      if (postFault === 'inconsistent') {
+        response.status(409).json({ status: 'confirmed', error: { code: 'OUT_OF_STOCK' } });
+        return;
+      }
+      sendOrderResult(response, result, { includeKey: true });
+    };
+    if (postDelayMs > 0) setTimeout(reply, postDelayMs);
+    else reply();
   });
 
   return router;

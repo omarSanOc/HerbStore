@@ -12,7 +12,9 @@ import type {
   CategoryNode,
   CurrencyCode,
   ProductBadge,
+  ProductDetail,
   ProductPage,
+  ServingInfo,
   SubcategoryNode,
 } from './catalog-product.ts';
 
@@ -93,6 +95,47 @@ export function parseCatalogProduct(value: unknown): CatalogProduct | undefined 
     inStock,
     images: [...(images as string[])],
   };
+}
+
+function parseServingInfo(value: unknown): ServingInfo | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const { size, servingsPerContainer } = value;
+
+  return isText(size) && isCount(servingsPerContainer) && servingsPerContainer >= 1
+    ? { size, servingsPerContainer }
+    : undefined;
+}
+
+/**
+ * Validates `GET /products/:id` and `/products/barcode/:code`: a catalog product (all its rules
+ * apply) plus a non-empty `description`, the `servingInfo` and the live `stock`.
+ *
+ * `stock` is a safe whole number >= 0 and must agree with `inStock` (`inStock === stock > 0`): the
+ * server derives one from the other, so a payload where they differ is not the contract and the
+ * whole detail is rejected instead of guessing which one is right. The parser projects, so wire
+ * fields the app does not trust (`ean13`, `isOwnBrand`...) are dropped and nothing aliases the input.
+ */
+export function parseProductDetail(value: unknown): ProductDetail | undefined {
+  const product = parseCatalogProduct(value);
+  if (product === undefined || !isRecord(value)) {
+    return undefined;
+  }
+  const { description, stock } = value;
+  const servingInfo = parseServingInfo(value.servingInfo);
+
+  if (
+    !isText(description) ||
+    servingInfo === undefined ||
+    !isCount(stock) ||
+    !Number.isSafeInteger(stock) ||
+    product.inStock !== stock > 0
+  ) {
+    return undefined;
+  }
+
+  return { ...product, description, servingInfo, stock };
 }
 
 /**

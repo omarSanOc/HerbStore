@@ -12,7 +12,7 @@ import type { FetchJsonOutcome } from '../network/http.ts';
  */
 export type ApiError =
   | { kind: 'network' }
-  | { kind: 'http'; status: number }
+  | { kind: 'http'; status: number; body?: unknown }
   | { kind: 'invalid' }
   | { kind: 'timeout' }
   | { kind: 'aborted' };
@@ -27,7 +27,7 @@ export function toBaseQueryResult<T>(outcome: FetchJsonOutcome<T>): ApiResult<T>
     case 'ok':
       return { data: outcome.data };
     case 'http':
-      return { error: { kind: 'http', status: outcome.status } };
+      return { error: { kind: 'http', status: outcome.status, ...(outcome.body === undefined ? {} : { body: outcome.body }) } };
     case 'network':
     case 'invalid':
     case 'timeout':
@@ -69,7 +69,7 @@ export function toApiError(error: unknown): ApiError | undefined {
         return { kind: error.kind };
       case 'http':
         if ('status' in error && typeof error.status === 'number') {
-          return { kind: 'http', status: error.status };
+          return { kind: 'http', status: error.status, ...('body' in error ? { body: error.body } : {}) };
         }
     }
   }

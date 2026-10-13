@@ -2,14 +2,14 @@ import { baseApi } from '@/core/api/base-api';
 
 import type {
   BrandOption,
-  CatalogProduct,
   CategoryNode,
+  ProductDetail,
   ProductPage,
 } from '../contracts/catalog-product';
 import {
   parseBrandOptions,
-  parseCatalogProduct,
   parseCategoryTree,
+  parseProductDetail,
   parseProductPage,
 } from '../contracts/parse-catalog-product';
 import { getNextPageParam } from '../logic/product-pages';
@@ -27,6 +27,10 @@ import {
  * cast: its `parse` already validated the payload as exactly that type.
  */
 export const productsApi = baseApi.injectEndpoints({
+  // Fast Refresh re-runs this module and injects the same endpoints again: in development they
+  // are replaced silently instead of logging an error each time; in production a duplicated
+  // endpoint name stays an error (plan 004, T1, user decision).
+  overrideExisting: __DEV__,
   endpoints: (build) => ({
     /**
      * `GET /products?...`: ONE cache entry per list identity (`ProductQueryArgs`, no page), whose
@@ -53,13 +57,16 @@ export const productsApi = baseApi.injectEndpoints({
       providesTags: (data) => productListTags(data?.pages),
     }),
 
-    /** `GET /products/:id`. `id` must come from `parseProductId`. */
-    getProduct: build.query<CatalogProduct, string>({
+    /**
+     * `GET /products/:id`. `id` must come from `parseProductId`. The answer is the detail: the
+     * catalog product plus `description`, `servingInfo` and the live `stock` (see `ProductDetail`).
+     */
+    getProduct: build.query<ProductDetail, string>({
       query: (id) => ({
         path: `/products/${encodeURIComponent(id)}`,
-        parse: parseCatalogProduct,
+        parse: parseProductDetail,
       }),
-      transformResponse: (response) => response as CatalogProduct,
+      transformResponse: (response) => response as ProductDetail,
       providesTags: (_data, _error, id) => [productTag(id)],
     }),
 

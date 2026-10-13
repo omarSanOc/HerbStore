@@ -17,7 +17,23 @@ function sendProductNotFound(response) {
   sendError(response, 404, 'PRODUCT_NOT_FOUND', 'The product was not found.');
 }
 
-export function createProductsRouter(products) {
+/**
+ * The detail of a product: the catalog entry plus the LIVE stock. `inStock` is derived from it, so
+ * it can differ from the (static) value that lists and Home keep showing for the same product.
+ * Returns a copy: the catalog itself is never mutated.
+ */
+function toDetail(product, readStock) {
+  const stock = readStock(product.id) ?? 0;
+
+  return { ...product, stock, inStock: stock > 0 };
+}
+
+/**
+ * @param {import('../catalog/product-contract.js').Product[]} products
+ * @param {(productId: string) => number | undefined} readStock units available now; only the two
+ *   detail endpoints use it, lists and search keep the catalog as generated.
+ */
+export function createProductsRouter(products, readStock) {
   const router = Router();
 
   router.get('/', (request, response) => {
@@ -60,7 +76,7 @@ export function createProductsRouter(products) {
         return;
       }
 
-      response.json(product);
+      response.json(toDetail(product, readStock));
     } catch (error) {
       if (error instanceof ProductQueryError) {
         sendInvalidQuery(response);
@@ -83,7 +99,7 @@ export function createProductsRouter(products) {
         return;
       }
 
-      response.json(product);
+      response.json(toDetail(product, readStock));
     } catch (error) {
       if (error instanceof ProductQueryError) {
         sendInvalidQuery(response);

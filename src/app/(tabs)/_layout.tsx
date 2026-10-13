@@ -1,11 +1,13 @@
 import { Tabs } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 
+import { useAppSelector } from '@/core/store/hooks';
 import { useAppTheme } from '@/design-system';
 import { getCartBadge } from '@/features/cart/format-cart-badge';
-import { useCartCount } from '@/features/cart/use-cart-count';
+import { selectCartUnits } from '@/features/cart/logic/cart-selectors';
 import { TabBarLabel } from '@/features/navigation/components/TabBarLabel';
 import { TabBarSymbol } from '@/features/navigation/components/TabBarSymbol';
+import { tabBarBadgeStyle } from '@/features/navigation/tab-bar-badge';
 
 // Any deep link into a tab starts from Home, the first tab, instead of an arbitrary one.
 export const unstable_settings = {
@@ -15,7 +17,8 @@ export const unstable_settings = {
 export default function TabsLayout() {
   const { t } = useTranslation();
   const { colors } = useAppTheme();
-  const cartCount = useCartCount();
+  // The real cart: units across all lines, derived from the persisted slice.
+  const cartCount = useAppSelector(selectCartUnits);
 
   return (
     <Tabs
@@ -27,6 +30,10 @@ export default function TabsLayout() {
         tabBarStyle: { backgroundColor: colors.surface, borderTopColor: colors.border },
         // Fixed-height bar: labels scale only up to `fontScaleLimits.tabLabel`.
         tabBarLabel: (props) => <TabBarLabel {...props} />,
+        // Only the badge reads this: the custom label above ignores it. The built-in badge sits in a
+        // fixed-height pill and cannot cap its scale, so it keeps its size (see `tab-bar-badge.ts`).
+        tabBarAllowFontScaling: false,
+        tabBarBadgeStyle,
       }}>
       <Tabs.Screen
         name="(home)"

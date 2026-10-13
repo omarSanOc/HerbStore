@@ -2,9 +2,9 @@
  * Shared catalog contract: the product as the app TRUSTS it after validation
  * (`parseCatalogProduct`), not as the wire carries it.
  *
- * The server sends more per product (`isOwnBrand`, `subscribeAndSave`, `servingInfo`,
- * `description`, `ean13`); the list and Home only need this projection. The detail screen
- * (Day 4) will extend it instead of re-parsing from scratch.
+ * The server sends more per product (`isOwnBrand`, `subscribeAndSave`, `ean13`); the list and Home
+ * only need this projection. The detail screen extends it (`ProductDetail`) instead of re-parsing
+ * from scratch.
  */
 
 export type CurrencyCode = 'MXN' | 'USD';
@@ -30,6 +30,25 @@ export type CatalogProduct = Readonly<{
   /** Server paths such as `/images/products/product-001-front.png`. */
   images: readonly string[];
 }>;
+
+/** How a product is taken: `size` is server text ("2 capsules"), the count is whole and >= 1. */
+export type ServingInfo = Readonly<{
+  size: string;
+  servingsPerContainer: number;
+}>;
+
+/**
+ * What `GET /products/:id` (and `/products/barcode/:code`) answer: the catalog product plus what
+ * only the detail needs. `stock` is the LIVE number of units that can be ordered now and `inStock`
+ * is `stock > 0` (the parser rejects a payload where they disagree). Lists and Home do not carry
+ * `stock`: their `inStock` is the static catalog value (plan 004, known limitation).
+ */
+export type ProductDetail = CatalogProduct &
+  Readonly<{
+    description: string;
+    servingInfo: ServingInfo;
+    stock: number;
+  }>;
 
 /** One page of `GET /products`: `{ items, page, totalPages, total }`. */
 export type ProductPage = Readonly<{

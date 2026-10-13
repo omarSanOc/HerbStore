@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import type { ApiError } from '../../../core/api/api-error.ts';
-import type { CatalogProduct } from '../contracts/catalog-product.ts';
+import type { ProductDetail } from '../contracts/catalog-product.ts';
 import { classifyProductLookup, type ProductLookupSnapshot } from './product-lookup.ts';
 
-const product: CatalogProduct = {
+const product: ProductDetail = {
   id: 'product-261009-001',
   brand: 'AsterVale Nutrition',
   name: 'Complete Daily Powder',
@@ -20,6 +20,9 @@ const product: CatalogProduct = {
   badges: [],
   inStock: true,
   images: [],
+  description: 'A fictional product.',
+  servingInfo: { size: '1 scoop (20 g)', servingsPerContainer: 29 },
+  stock: 99,
 };
 
 /*
@@ -27,12 +30,12 @@ const product: CatalogProduct = {
  * through a failure), `error` is the failure of the latest settled request (RTK keeps it through
  * the next pending request and clears it on success) and `isFetching` is true while in flight.
  */
-const settled = (data: CatalogProduct | undefined, error?: ApiError): ProductLookupSnapshot => ({
+const settled = (data: ProductDetail | undefined, error?: ApiError): ProductLookupSnapshot => ({
   data,
   error,
   isFetching: false,
 });
-const fetching = (data: CatalogProduct | undefined, error?: ApiError): ProductLookupSnapshot => ({
+const fetching = (data: ProductDetail | undefined, error?: ApiError): ProductLookupSnapshot => ({
   data,
   error,
   isFetching: true,

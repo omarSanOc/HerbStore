@@ -10,6 +10,9 @@ export default function CartLayout() {
   return (
     <Stack screenOptions={screenOptions}>
       <Stack.Screen name="cart" options={{ title: t('placeholders.cart.title') }} />
+      <Stack.Screen name="checkout" options={{ title: t('checkout.title') }} />
+      <Stack.Screen name="order-status" options={{ title: t('checkout.status.title') }} />
+      <Stack.Screen name="order-confirmation" options={{ title: t('checkout.confirmation.title') }} />
     </Stack>
   );
 }

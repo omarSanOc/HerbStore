@@ -12,7 +12,7 @@ export const DEFAULT_TIMEOUT_MS = 8_000;
  */
 export type FetchJsonOutcome<T> =
   | { kind: 'ok'; data: T; status: number }
-  | { kind: 'http'; status: number }
+  | { kind: 'http'; status: number; body?: unknown }
   | { kind: 'network' }
   | { kind: 'invalid' }
   | { kind: 'timeout' }
@@ -28,7 +28,9 @@ export type FetchJsonOptions<T> = {
   /** Extra request headers (e.g. `Idempotency-Key`); they are added on top of `Accept`. */
   headers?: Readonly<Record<string, string>>;
   /** Validates the decoded JSON; return `undefined` when it does not have the expected shape. */
-  parse: (payload: unknown) => T | undefined;
+  parse: (payload: unknown, status: number) => T | undefined;
+  /** Opt-in parser for non-2xx JSON bodies. The returned value is attached to `http.body`. */
+  parseErrorBody?: (status: number, payload: unknown) => unknown;
   /** Caller cancellation. */
   signal?: AbortSignal;
   timeoutMs?: number;
@@ -43,6 +45,7 @@ export async function fetchJson<T>(
     body,
     headers,
     parse,
+    parseErrorBody,
     signal,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     fetchImpl = fetch,
@@ -90,11 +93,19 @@ export async function fetchJson<T>(
     }
 
     if (!response.ok) {
-      return { kind: 'http', status: response.status };
+      if (parseErrorBody === undefined) return { kind: 'http', status: response.status };
+      try {
+        const body = parseErrorBody(response.status, await response.json());
+        return body === undefined
+          ? { kind: 'http', status: response.status }
+          : { kind: 'http', status: response.status, body };
+      } catch {
+        return { kind: 'http', status: response.status };
+      }
     }
 
     try {
-      const data = parse(await response.json());
+      const data = parse(await response.json(), response.status);
       return data === undefined
         ? { kind: 'invalid' }
         : { kind: 'ok', data, status: response.status };

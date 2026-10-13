@@ -1,5 +1,5 @@
 # Spec 004 — Día 4: estado, carrito y checkout
-Estado: aprobada
+Estado: implementada
 
 ## Contexto y objetivo
 Después de consultar el catálogo, este día completa el flujo de compra simulado desde detalle hasta orden confirmada. El objetivo es distinguir estado remoto, global y local; persistir solo la información necesaria; y aplicar animaciones, gestos, formularios e idempotencia sin duplicar pedidos ni perder un intento incierto.

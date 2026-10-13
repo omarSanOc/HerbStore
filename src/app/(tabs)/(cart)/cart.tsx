@@ -1,5 +1,5 @@
-import { CartPlaceholderScreen } from '@/features/cart/screens/CartPlaceholderScreen';
+import { CartScreen } from '@/features/cart/screens/CartScreen';
 
 export default function CartRoute() {
-  return <CartPlaceholderScreen />;
+  return <CartScreen />;
 }

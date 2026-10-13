@@ -6,6 +6,7 @@ import {
   parseBrandOptions,
   parseCatalogProduct,
   parseCategoryTree,
+  parseProductDetail,
   parseProductPage,
 } from './parse-catalog-product.ts';
 
@@ -80,6 +81,90 @@ describe('parseCatalogProduct', () => {
     assert.equal(parseCatalogProduct([]), undefined);
     assert.equal(parseCatalogProduct(wireProduct(1, { price: '12.99' })), undefined);
     assert.equal(parseCatalogProduct(wireProduct(1, { rating: 5.5 })), undefined);
+  });
+});
+
+/** A product shaped like the real `GET /products/:id` answer: the catalog entry plus `stock`. */
+function wireDetail(index: number, extra: Mutable = {}): Mutable {
+  return wireProduct(index, { stock: 99, ...extra });
+}
+
+describe('parseProductDetail: valid details', () => {
+  it('extends the catalog product with description, serving info and stock', () => {
+    assert.deepEqual(parseProductDetail(wireDetail(7)), {
+      ...parseCatalogProduct(wireProduct(7)),
+      description: 'A fictional product.',
+      servingInfo: { size: '1 scoop (20 g)', servingsPerContainer: 29 },
+      stock: 99,
+    });
+  });
+
+  it('accepts a sold out product: stock 0 together with inStock false', () => {
+    const parsed = parseProductDetail(wireDetail(1, { stock: 0, inStock: false }));
+
+    assert.equal(parsed?.stock, 0);
+    assert.equal(parsed?.inStock, false);
+  });
+
+  it('accepts stock 1 and a large stock', () => {
+    assert.equal(parseProductDetail(wireDetail(1, { stock: 1 }))?.stock, 1);
+    assert.equal(parseProductDetail(wireDetail(1, { stock: 10_000 }))?.stock, 10_000);
+  });
+
+  it('does not keep the wire fields the app does not trust, and does not alias the input', () => {
+    const wire = wireDetail(3);
+    const parsed = parseProductDetail(wire);
+
+    assert.ok(parsed);
+    assert.equal('ean13' in parsed, false);
+    assert.equal('isOwnBrand' in parsed, false);
+    assert.notEqual(parsed.servingInfo, wire.servingInfo);
+    wire.servingInfo.size = 'changed';
+    assert.equal(parsed.servingInfo.size, '1 scoop (20 g)');
+  });
+});
+
+describe('parseProductDetail: invalid details', () => {
+  const cases: [string, (detail: Mutable) => void][] = [
+    ['no stock', (detail) => delete detail.stock],
+    ['a fractional stock', (detail) => (detail.stock = 2.5)],
+    ['a negative stock', (detail) => (detail.stock = -1)],
+    ['a stock that is text', (detail) => (detail.stock = '5')],
+    ['a stock that is not finite', (detail) => (detail.stock = Infinity)],
+    ['a stock beyond the safe integers', (detail) => (detail.stock = 2 ** 60)],
+    ['stock 0 but inStock true', (detail) => ((detail.stock = 0), (detail.inStock = true))],
+    ['stock above 0 but inStock false', (detail) => ((detail.stock = 4), (detail.inStock = false))],
+    ['no description', (detail) => delete detail.description],
+    ['an empty description', (detail) => (detail.description = '')],
+    ['a description that is not text', (detail) => (detail.description = 5)],
+    ['no serving info', (detail) => delete detail.servingInfo],
+    ['serving info that is not an object', (detail) => (detail.servingInfo = '2 capsules')],
+    ['a serving size that is empty', (detail) => (detail.servingInfo.size = '')],
+    ['a serving size that is not text', (detail) => (detail.servingInfo.size = 2)],
+    ['no servings per container', (detail) => delete detail.servingInfo.servingsPerContainer],
+    ['zero servings per container', (detail) => (detail.servingInfo.servingsPerContainer = 0)],
+    ['fractional servings per container', (detail) => (detail.servingInfo.servingsPerContainer = 2.5)],
+    ['a catalog field that is malformed', (detail) => (detail.price = -3)],
+    ['a missing id', (detail) => delete detail.id],
+  ];
+
+  for (const [name, change] of cases) {
+    it(`is rejected with ${name}`, () => {
+      const detail = wireDetail(1);
+      change(detail);
+
+      assert.equal(parseProductDetail(detail), undefined);
+    });
+  }
+
+  it('is rejected for anything that is not an object', () => {
+    for (const value of [undefined, null, [], 'product', 5]) {
+      assert.equal(parseProductDetail(value), undefined);
+    }
+  });
+
+  it('a list item (no stock) is not a detail', () => {
+    assert.equal(parseProductDetail(wireProduct(1)), undefined);
   });
 });
 
@@ -291,6 +376,22 @@ describe('catalog parsers against the real mock server data', () => {
       parsed.items.forEach(({ id }) => seen.add(id));
     }
     assert.equal(seen.size, 300);
+  });
+
+  it('accepts the detail of every product with the stock the mock gives it', { skip }, () => {
+    assert.ok(serverModules);
+    const products = serverModules.generateCatalog() as Mutable[];
+
+    for (const product of products) {
+      // Same rule as the detail endpoints on a fresh server: 99 units, or 0 when it is sold out.
+      const stock = product.inStock ? 99 : 0;
+      const detail = parseProductDetail(json({ ...product, stock }));
+
+      assert.ok(detail, String(product.id));
+      assert.equal(detail.stock, stock);
+      assert.equal(detail.inStock, stock > 0);
+      assert.ok(detail.description.length > 0);
+    }
   });
 
   it('accepts an empty filtered page and a page beyond the last', { skip }, () => {
