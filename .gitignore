@@ -41,3 +41,6 @@ example
 # generated native folders
 /ios
 /android
+
+# Generated Gradle output of the versioned local Expo module
+/modules/device-insights/android/build/

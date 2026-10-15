@@ -1,0 +1,8 @@
+{
+  "name": "expo-device-insights",
+  "version": "1.0.0",
+  "description": "HerbStore's local DeviceInsights Expo module",
+  "main": "index.ts",
+  "license": "MIT",
+  "keywords": ["expo-module"]
+}

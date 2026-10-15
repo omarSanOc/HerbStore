@@ -1,6 +1,6 @@
 import { skipToken } from '@reduxjs/toolkit/query/react';
 import { useEffect, useRef, useState } from 'react';
-import { AccessibilityInfo, ActivityIndicator, ScrollView, Share, StyleSheet, View } from 'react-native';
+import { AccessibilityInfo, ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { toApiError } from '@/core/api/api-error';
@@ -29,6 +29,7 @@ import { StickyAddBar } from '../components/StickyAddBar';
 import { AddToCartFeedback } from '../components/AddToCartFeedback';
 import type { ProductDetail } from '../contracts/catalog-product';
 import { useGetProductQuery } from '../data/products-api';
+import { useProductShare } from '../hooks/use-product-share';
 import { buildProductDetailModel, formatProductTotal } from '../logic/product-detail';
 import {
   describeAddOutcome,
@@ -36,7 +37,6 @@ import {
   nextAddFeedback,
 } from '../logic/add-feedback';
 import { classifyProductLookup } from '../logic/product-lookup';
-import { buildProductShareUrl } from '../logic/product-share';
 import { clampQuantity, MIN_QUANTITY, stepQuantity, type QuantityChoice } from '../logic/quantity';
 import { parseProductId } from '../parse-product-id';
 
@@ -62,6 +62,7 @@ export function ProductDetailScreen({ rawId }: Readonly<ProductDetailScreenProps
   const { t } = useTranslation();
   const { colors } = useAppTheme();
   const productId = parseProductId(rawId);
+  const invalidLink = rawId === 'invalid';
   // `currentData`, NOT `data`: `data` keeps the answer of the PREVIOUS id while the new one loads,
   // and the product route is singular (product B REPLACES product A, it does not stack), so with
   // `data` the screen would show A's name, price and stock under B's id until B arrives. `currentData`
@@ -73,7 +74,10 @@ export function ProductDetailScreen({ rawId }: Readonly<ProductDetailScreenProps
 
   if (productId === undefined) {
     return (
-      <NotFoundScreen message={t('product.notFoundMessage')} title={t('product.notFoundTitle')} />
+      <NotFoundScreen
+        message={t(invalidLink ? 'product.invalidMessage' : 'product.notFoundMessage')}
+        title={t(invalidLink ? 'product.invalidTitle' : 'product.notFoundTitle')}
+      />
     );
   }
 
@@ -156,6 +160,7 @@ function ProductDetailContent({ product }: Readonly<ProductDetailContentProps>) 
   const [feedback, setFeedback] = useState(INITIAL_ADD_FEEDBACK);
   const [addBarHeight, setAddBarHeight] = useState(0);
   const lastAcceptedAdd = useRef<number | undefined>(undefined);
+  const { failed: shareFailed, share } = useProductShare(product);
 
   const { quantity } = clampQuantity(choice.quantity, product.stock);
   const model = buildProductDetailModel(product, i18n.language, currency, quantity);
@@ -189,24 +194,6 @@ function ProductDetailContent({ product }: Readonly<ProductDetailContentProps>) 
         }),
       );
     }
-  };
-
-  const onShare = () => {
-    const url = buildProductShareUrl(product.id);
-    if (url === undefined) {
-      return;
-    }
-
-    // `url` is part of the message on purpose: Android's share sheet ignores the `url` field and
-    // only sends `message`, so one text with the link reads the same on both platforms.
-    Share.share(
-      { title: product.name, message: t('product.share.message', { name: product.name, url }) },
-      { dialogTitle: t('product.share.dialogTitle'), subject: product.name },
-    ).catch(() => {
-      if (__DEV__) {
-        console.log('[share] the share sheet could not be opened');
-      }
-    });
   };
 
   const onAdd = () => {
@@ -298,8 +285,18 @@ function ProductDetailContent({ product }: Readonly<ProductDetailContentProps>) 
               <AppButton
                 accessibilityHint={t('product.share.hint')}
                 label={t('product.share.button')}
-                onPress={onShare}
+                onPress={share}
               />
+              {shareFailed ? (
+                <View style={styles.shareError}>
+                  <AppText>{t('product.share.failed')}</AppText>
+                  <AppButton
+                    accessibilityHint={t('product.share.retryHint')}
+                    label={t('product.share.retry')}
+                    onPress={share}
+                  />
+                </View>
+              ) : null}
             </View>
 
             <View style={styles.section}>
@@ -391,6 +388,10 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
   },
   action: {
+    alignItems: 'flex-start',
+  },
+  shareError: {
+    gap: spacing.sm,
     alignItems: 'flex-start',
   },
   section: {

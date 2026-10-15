@@ -19,16 +19,28 @@ import {
 } from '../../features/search/logic/search-history.ts';
 import { isRecord, isText } from '../validation/json-guards.ts';
 import { initialAttempt, type AttemptState } from '../../features/checkout/logic/attempt-machine.ts';
-import { emptyOrderHistory, type OrderHistoryState, sanitizeOrderSummary } from '../../features/orders/logic/order-history.ts';
+import { emptyOrderHistory, type OrderHistoryState, sanitizeOrderHistory } from '../../features/orders/logic/order-history.ts';
 
 /** redux-persist stores everything under `persist:<key>`. */
 export const PERSIST_KEY = 'root';
 
 /**
  * Schema version of the persisted state. Bump it when a persisted slice changes shape: a stored
- * state with another version is incompatible and every slice restarts from its initial state.
+ * state with another version is incompatible and every slice restarts from its initial state,
+ * EXCEPT the versions of `READABLE_PREVIOUS_VERSIONS`.
  */
-export const PERSIST_VERSION = 1;
+export const PERSIST_VERSION = 3;
+
+/**
+ * Older versions the restorers read correctly, so an upgrade keeps the cart, the search history,
+ * the checkout attempt (the idempotency key of an unresolved order) and the orders.
+ * - 1 (Day 4): `orderHistory` had no `notifications`; `sanitizeOrderHistory` starts it empty.
+ * - 2 (Day 5 T8): an `unusable` record had no `unusableReason` (RF-39); it is restored as `blocked`.
+ * Add a version here ONLY after a test proves the restorers read it; a breaking change leaves it out.
+ * The "migration" is the sanitizer itself: every readable version goes through the same restorers
+ * (Room would chain `Migration(1, 2)`, `Migration(2, 3)`; here the restorer tolerates every older shape).
+ */
+const READABLE_PREVIOUS_VERSIONS: readonly number[] = [1, 2];
 
 /** The only slices that reach the disk. */
 export const PERSISTED_KEYS = ['searchHistory', 'cart', 'checkoutAttempt', 'orderHistory'] as const;
@@ -60,10 +72,15 @@ const RESTORERS: { readonly [K in PersistedKey]: (stored: unknown) => PersistedS
   },
   orderHistory: (stored) => {
     if (!isRecord(stored) || !Array.isArray(stored.orders)) return emptyOrderHistory;
-    const orders = stored.orders.filter((value): value is never => isRecord(value) && isText(value.id)).map((value) => sanitizeOrderSummary(value as never));
-    return orders.reduce((state, order) => ({ orders: state.orders.some((existing) => existing.id === order.id) ? state.orders : [...state.orders, order] }), emptyOrderHistory);
+    return sanitizeOrderHistory(stored);
   },
 };
+
+function isReadableVersion(version: unknown, currentVersion: number): boolean {
+  if (version === currentVersion) return true;
+  // The previous versions are only readable by the real schema, not by an injected one.
+  return currentVersion === PERSIST_VERSION && typeof version === 'number' && READABLE_PREVIOUS_VERSIONS.includes(version);
+}
 
 function initialSlices(): PersistedSlices {
   return { searchHistory: { entries: EMPTY_SEARCH_HISTORY }, cart: { lines: EMPTY_CART }, checkoutAttempt: initialAttempt, orderHistory: emptyOrderHistory };
@@ -72,7 +89,8 @@ function initialSlices(): PersistedSlices {
 /**
  * Validates a stored state slice by slice.
  * - `undefined`/`null` (first launch, or a storage that could not be read): nothing to restore.
- * - Not an object, or without the current schema version: every slice gets its initial state.
+ * - Not an object, or without the current (or a readable previous) schema version: every slice gets
+ *   its initial state.
  * - Otherwise each whitelisted slice goes through its restorer; any other key is dropped, even if
  *   an older build stored it.
  */
@@ -87,7 +105,7 @@ export function sanitizePersistedState(
   if (
     !isRecord(stored) ||
     !isRecord(stored._persist) ||
-    stored._persist.version !== currentVersion
+    !isReadableVersion(stored._persist.version, currentVersion)
   ) {
     return initialSlices();
   }

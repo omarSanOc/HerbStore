@@ -1,0 +1,5 @@
+{
+  "ios": {
+    "NSCameraUsageDescription": "HerbStore uses the camera to scan a product's EAN-13 code."
+  }
+}

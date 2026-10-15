@@ -19,6 +19,8 @@ import { searchHistoryReducer } from '@/features/search/store/search-history-sli
 import { checkoutAttemptReducer } from '@/features/checkout/store/checkout-attempt-slice';
 import { orderHistoryReducer } from '@/features/orders/store/order-history-slice';
 import { checkoutListenerMiddleware } from '@/features/checkout/store/checkout-listeners';
+import { nativeFeedbackListenerMiddleware } from '@/features/feedback/store/native-feedback-listeners';
+import { orderNotificationListenerMiddleware } from '@/features/notifications/store/order-notification-listener';
 
 /**
  * The single Redux store: the RTK Query cache (server state) and the client state slices.
@@ -51,7 +53,9 @@ export const store = configureStore({
       // redux-persist's own actions carry callbacks (`register`, `rehydrate`, `result`): they are
       // not state and never reach a reducer's stored value, so the check skips only them.
       serializableCheck: { ignoredActions: [FLUSH, REHYDRATE, PAUSE, PERSIST, PURGE, REGISTER] },
-    }).prepend(checkoutListenerMiddleware.middleware).concat(baseApi.middleware),
+    })
+      .prepend(checkoutListenerMiddleware.middleware, nativeFeedbackListenerMiddleware.middleware, orderNotificationListenerMiddleware.middleware)
+      .concat(baseApi.middleware),
 });
 
 /** Starts the rehydration (reads MMKV once) and keeps writing the whitelisted slices. */
@@ -59,3 +63,4 @@ export const persistor = persistStore(store);
 
 export type RootState = ReturnType<typeof store.getState>;
 export type AppDispatch = typeof store.dispatch;
+export type AppStore = typeof store;

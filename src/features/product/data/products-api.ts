@@ -70,6 +70,16 @@ export const productsApi = baseApi.injectEndpoints({
       providesTags: (_data, _error, id) => [productTag(id)],
     }),
 
+    /** `GET /products/barcode/:code`: the scanner uses the same detail contract and GET policy. */
+    getProductByBarcode: build.query<ProductDetail, string>({
+      query: (code) => ({
+        path: `/products/barcode/${encodeURIComponent(code)}`,
+        parse: parseProductDetail,
+      }),
+      transformResponse: (response) => response as ProductDetail,
+      providesTags: (data) => (data === undefined ? [] : [productTag(data.id)]),
+    }),
+
     /** `GET /brands`. Facet options: not tied to any product, so no tags. */
     getBrands: build.query<BrandOption[], void>({
       query: () => ({ path: '/brands', parse: parseBrandOptions }),
@@ -87,6 +97,8 @@ export const productsApi = baseApi.injectEndpoints({
 export const {
   useGetProductsInfiniteQuery,
   useGetProductQuery,
+  useGetProductByBarcodeQuery,
+  useLazyGetProductByBarcodeQuery,
   useGetBrandsQuery,
   useGetCategoriesQuery,
 } = productsApi;

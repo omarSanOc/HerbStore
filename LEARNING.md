@@ -2752,3 +2752,151 @@ Implementa `selectCheckoutAvailability(state)` como selector puro. Debe devolver
 | Símbolos retirados T2–T5 | ✅ búsqueda sin resultados |
 
 No cambian dependencias, configuración ni `ios/`/`android/` en T10; no se requiere recompilación adicional. El commit de cierre del día es `feat: complete day 4 cart and checkout`.
+## Día 5 — Capacidades nativas y plataforma (T1–T14; cerrado y commiteado)
+
+Estado (2026-10-15): T1–T14 hechas y validadas. Por decisión del usuario se aplicaron los tres parches de SDK 57 (`expo` ~57.0.30, `expo-router` ~57.0.28, `@expo/ui` ~57.0.25); `expo install --check` y Doctor están en verde (21/21), los Development Builds se recompilaron y los tres builds EAS se repitieron (`FINISHED`). T10 queda marcada y la spec 005 `implementada`; @reviewer dio APROBADO en la validación final (2026-10-15) y el Día 5 quedó cerrado en el commit `feat: complete day 5 native platform features` (se consulta con `git log --grep "day 5"`).
+
+Spec: `specs/005-dia-5-nativo-plataforma`. Evidencia técnica fechada (comandos, capturas, mediciones): `docs/evidence/day-5-platform.md`. Catorce tareas (T1–T14; excepción documentada al máximo de 10 de la skill, porque RF-37 a RF-39 salieron de la validación de T8 y se resolvieron dentro de la misma spec). Cada incremento empieza con un bloque teórico de máximo 10 minutos (RF-1) y termina con la matriz Android físico (Samsung SM-A037M, Android 13) e iOS Simulator (iPhone 17 Pro, iOS 26.5). El Simulator **nunca** se presenta como hardware: sin cámara óptica, sin Taptic Engine, sin VoiceOver real.
+
+### Teoría del día (cada bloque ≤ 10 min, RF-1 y RF-2)
+
+**Bloque A — Interoperabilidad nativa: sync, Promise, evento y vista (DeviceInsights).**
+Un Expo Module es un contrato pequeño entre JavaScript y el sistema. Hay cuatro formas de cruzar la frontera y cada una responde a una pregunta distinta:
+
+| Forma | Pregunta que responde | Kotlin / Compose (Android) | Swift / SwiftUI (iOS) | Error típico |
+|---|---|---|---|---|
+| Función síncrona | «¿Qué plataforma soy?» (dato inmediato y barato) | `Function("getPlatform") { "android" }` | `Function("getPlatform") { "ios" }` | Usarla para trabajo lento: bloquea el hilo JS (el equivalente a llamar disco en el hilo principal). |
+| Función asíncrona (`Promise`) | «Dame los datos del equipo» (operación única) | `AsyncFunction` (corrutina) | `AsyncFunction` (async/await) | Lanzar dos a la vez: se ignora la segunda mientras haya una activa. |
+| Evento | «Avísame cuando termine» (secuencia con suscripción) | `callbackFlow`/`SharedFlow` + cancelar el collector | `AsyncStream`/Combine + cancelar la `Task` | No llamar a `remove()`: observadores duplicados y entregas a una pantalla desmontada. |
+| Vista nativa | «Quiero un control del sistema dentro de mi árbol» | `AndroidView` (interop en Compose) | `UIViewRepresentable` | Pasarle estado mutable o textos fijos: la vista recibe props inmutables y emite eventos. |
+
+Reglas del módulo: la fachada JS valida la forma del payload (modelo no vacío, ISO 8601 UTC) y lo convierte en un error controlado; Kotlin y Swift devuelven el **mismo** contrato sin identificadores sensibles; los textos localizados viajan desde JS (no se duplican recursos en Kotlin/Swift); el evento de la vista se llama `onNativePress` porque `onPress` colisiona con el `topPress` interno de Fabric.
+
+**Bloque B — Cámara, permisos y máquina de estados (escáner).**
+Un permiso es un estado que cambia fuera de la app (Ajustes) y por eso se vuelve a comprobar al volver a primer plano. El escáner nunca activa la cámara sin una pantalla previa confirmada **en cada apertura** (RF-10). La máquina discriminada (`preview → checking → ready → querying → …`) equivale a una `sealed interface UiState` con `when` exhaustivo en Kotlin y a un `enum` con valores asociados en Swift. El **epoch** (número de intento vigente) hace lo que cancelar un `Job` o una `Task`: una respuesta con epoch viejo se descarta. Una barrera síncrona (`scanner-read-barrier`) cierra la ventana entre dos lecturas de la cámara que llegan antes de que React renderice; un cooldown o un booleano `hasScanned` no distingue reintento, cancelación y resultado tardío.
+
+**Bloque C — Deep links y navegación.**
+`herbstore://product/<id>` se valida antes de navegar (inválido ≠ no encontrado ≠ ruta desconocida). Arranque en frío y app activa convergen en un solo destino y conservan una salida segura. En Expo Router, `dangerouslySingular` evita apilar dos instancias de la misma pantalla. Equivale a `navDeepLink` + `launchSingleTop` en Compose Navigation, y a `onOpenURL` + un `NavigationPath` único en SwiftUI.
+
+**Bloque D — Realimentación: háptico y compartir.**
+El háptico se pide **después** de que el reducer aceptó el cambio: un listener Redux compara el carrito antes y después (si no cambió, no vibra). Equivale a un collector de `StateFlow` app-scoped o a un `.onChange(of:)` en SwiftUI, nunca a vibrar en cada botón. Compartir devuelve una unión `shared | cancelled | failed`: cancelar no es error; un fallo (o un resultado ausente) muestra mensaje y permite reintentar. Android resuelve `sharedAction` al lanzar el selector (cancelar y compartir son indistinguibles); iOS sí distingue `dismissedAction`. Es una diferencia observable y se justifica, no se oculta (RF-27).
+
+**Bloque E — Notificaciones locales: permisos, persistencia y deduplicación.**
+Dos marcas distintas viven en el historial persistido: «solicitud de acceso registrada» (se escribe **antes** de pedir el permiso, para pedir como máximo una vez por orden aunque la app muera) y «notificada» (solo tras programar con éxito). Se parece a `shouldShowRequestPermissionRationale` + una bandera propia en DataStore (Android) y a `UNUserNotificationCenter.getNotificationSettings` + `UserDefaults` (iOS). Android 13+ muestra el diálogo dos veces por instalación; el primer «no» deja el estado **denegado recuperable** y el segundo lo vuelve **bloqueado**; iOS bloquea tras el primer rechazo. El contenido nunca lleva el id de la orden ni la dirección.
+
+**Bloque F — Cambios de navegación y de estado persistido (RF-37 a RF-39).**
+- RF-37: «Ir a Inicio» del carrito vacío se hace en `Tabs`, no con `router`: un plan puro (`POP_TO_TOP` dirigido a la pila de Inicio + `JUMP_TO`) selecciona la pestaña y vacía su pila. Compose: `popUpTo(startDestination)` + `launchSingleTop`; SwiftUI: cambiar la selección de `TabView` y vaciar el `path` de su `NavigationStack`.
+- RF-38: la redirección **no** se hace durante el render. Llamar al router al renderizar produce «Cannot update a component while rendering»; la máquina `watching | consulting | done` vive en un `useRef` y decide dentro de un efecto. Es el mismo error que modificar un `MutableState` dentro del cuerpo de un `@Composable` o cambiar `@State` desde `body`.
+- RF-39: la razón por la que las notificaciones no son utilizables (`denied-recoverable` o `blocked`) se deriva de la última lectura y se **persiste por orden**; subir `PERSIST_VERSION` a 3 es una migración: la v2 y la v1 siguen siendo legibles, y una razón ausente o inválida se sanea a `blocked`. Equivale a una migración de Room (`Migration(2, 3)`) o a una de SwiftData.
+
+**Bloque G — Distribución: perfiles EAS, CNG y compatibilidad OTA/binario.**
+CNG (`prebuild`) genera `android/` e `ios/` desde `app.json` y los config plugins; esas carpetas no se editan ni se versionan. Un perfil de `eas.json` es el equivalente a un `buildType`/flavor de Gradle (Android) o un esquema/configuración de Xcode (iOS). La **huella** (fingerprint) es el hash de todo lo que cambia el binario: permisos, plugins y sus opciones, módulos Kotlin/Swift, dependencias nativas y `app.json`. Cambios de solo JS, texto o recursos conservan la huella (candidatos a actualización OTA); lo demás exige un binario nuevo. En este proyecto `runtimeVersion: { policy: "fingerprint" }` sin `expo-updates` es un metadato inerte (no hay OTA real), y esa es una decisión consciente, no un descuido.
+
+### Qué construyó cada incremento
+
+| Incremento | Qué hace | Piezas principales |
+|---|---|---|
+| A. Base y DeviceInsights | Panel didáctico en Cuenta con valor síncrono, actualización asíncrona, evento y vista nativa accesible | `modules/device-insights` (Kotlin/Swift), `core/native/device-insights*.ts`, `features/device-insights/` |
+| B. Escáner y enlaces | Preview confirmada → cámara → EAN-13 → producto, con errores recuperables y cancelación al origen | `features/scanner/{logic,hooks,screens}`, `app/scanner/` (Stack modal propio), `core/navigation/linking.ts` |
+| C. Feedback y notificaciones | Háptico solo con mutaciones aceptadas; compartir recuperable; notificación local por orden con reintento | `features/feedback/`, `features/product/hooks/`, `features/notifications/`, `features/orders/` |
+| D. Entrega | Perfiles EAS, inventario de variables, gate de URL, matriz OTA/binario medida con fingerprint, validación remota | `eas.json`, `.env.example`, `core/config/`, evidencia |
+| Cambio de requisitos | RF-37 a RF-39 (Inicio en su raíz, redirección fuera del render, categorías de permiso) | `features/navigation/logic/`, `checkout/logic/order-status-redirect.ts`, `order-notification-notice.ts`, `PERSIST_VERSION` 3 |
+
+### Decisiones y alternativas descartadas (RF-3)
+
+| Decisión | Motivo | Trade-off | Alternativa descartada |
+|---|---|---|---|
+| Expo Module local dentro de CNG | Mantiene `ios/`/`android/` generados y el contrato didáctico | Dos implementaciones (Kotlin y Swift) y recompilar | TurboModule manual: más integración y editar proyectos generados |
+| Contrato nativo crudo + fachada JS validada y localizada | Un solo lugar para textos y validación | Un adapter más | Localizar dentro de Kotlin/Swift: duplica recursos y puede divergir del idioma activo |
+| Stack modal propio para escáner y detalle escaneado | Conserva la instancia y el rearmado al volver | Una ruta de detalle que delega en la misma pantalla | Navegar al stack de Inicio: pierde la instancia del escáner |
+| Máquina pura + epoch + barrera síncrona | Modela reintento, cancelación y resultados tardíos | Más estados explícitos | `hasScanned`/cooldown: no distingue los casos anteriores |
+| Endpoint de código de barras en `productsApi` | Reutiliza contrato, reintentos y abort | Otro endpoint/tag en la API compartida | `fetch` directo en la pantalla: pierde taxonomía de errores |
+| Listener Redux tras el reducer para háptico y notificación | El efecto ocurre solo con estado aceptado | Un middleware más | Vibrar en cada botón: vibra acciones rechazadas y duplica lógica |
+| Marca «solicitud registrada» antes del diálogo | Máximo una solicitud por orden aunque muera el proceso | Una caída justo después puede impedir otro diálogo | Marcar después del diálogo o solo en memoria |
+| `notified` solo tras programar con éxito + reintento explícito | No se pierde ni se duplica el aviso | El usuario debe reintentar | Reintento automático: podría duplicar |
+| `Tabs` + plan puro `POP_TO_TOP`/`JUMP_TO` (RF-37) | `dismissTo`/`POP_TO` no lo entiende `Tabs` y se descarta en silencio | Código específico para una salida | `router.dismissTo('/')`, `navigate` (empuja un `index` duplicado) |
+| Máquina de redirección en `useRef`, fuera del render (RF-38) | Una sola redirección y cero avisos de render | Un hook más | Redirigir en el render o con un `useEffect` sin guardia |
+| Categoría de permiso persistida con `PERSIST_VERSION` 3 (RF-39) | Texto correcto tras reiniciar | Migración v3 (v1/v2 legibles) | Derivarla al renderizar: perdería la última lectura de esa orden |
+| URL del catálogo obligatoria con gate temprano | Falla explícito, sin host implícito | Desarrollo exige `.env.local` | Defaults por plataforma (prohibidos por RF-30) |
+| `env` por perfil de `eas.json` con el placeholder público | Es público, no es secreto, reproducible desde Git y revisable | La URL real se cambiaría en el archivo (o por variable EAS de visibilidad «plain text») | Variables hospedadas en EAS: añaden estado de cuenta fuera del repositorio sin necesidad para un placeholder |
+| Matriz OTA/binario **medida** con `@expo/fingerprint` en un clon | Evidencia real, equivalente en ambas plataformas | No se publica ninguna actualización | Matriz declarativa; publicar una OTA para demostrarlo (fuera de alcance) |
+| `node:test` + matriz manual; Jest/RNTL/Maestro en el Día 6 | No ampliar el Día 5 | UI y nativo sin automatizar todavía | Adelantar una suite completa |
+
+### Errores típicos al venir de nativo (y cómo aparecen aquí)
+
+1. **Bloquear el hilo JS** con trabajo síncrono: la función síncrona solo devuelve `android`/`ios`; el trabajo real va en la `Promise`.
+2. **Olvidar el cleanup**: un evento sin `remove()` duplica observadores; en Compose sería no cancelar un `collect`, en SwiftUI no cancelar una `Task`.
+3. **Resultados tardíos**: una consulta que termina después de cancelar no debe navegar ni rearmar (epoch).
+4. **Mutación directa**: los reducers devuelven estado nuevo; el listener compara referencias antes/después.
+5. **Efectos mal declarados / efectos en el render**: RF-38 (navegar durante el render) y React 19 penaliza `setState` síncrono en efectos.
+6. **Asumir que el permiso es estático**: se vuelve a comprobar al volver a primer plano; Android 13 es distinto de Android 12 y de iOS.
+7. **Confundir Metro con Gradle/Xcode**: Fast Refresh no incorpora un permiso, un plugin o un módulo; eso cambia la huella y exige recompilar.
+8. **Atribuir al Simulator lo que solo prueba un dispositivo**: cámara óptica, Taptic Engine y VoiceOver real quedan rotulados como no acreditados.
+9. **Declarar hecho lo no observado**: la variante Android «sin diálogo runtime» está cubierta por tests deterministas y se rotula como **no validada realmente en dispositivo**.
+10. **Creer que `EXPO_PUBLIC_*` es secreto**: acaba en el bundle compilado; solo lleva datos públicos.
+
+### Comparación Android / iOS del día (para repasar)
+
+| Tema | Android | iOS | Por qué difiere |
+|---|---|---|---|
+| Cámara | Lectura óptica real en el Samsung (ML Kit) | Simulator sin cámara; Vision en dispositivo | El Simulator no tiene hardware de cámara |
+| Permiso de notificaciones | Android 13+: diálogo hasta dos veces, rechazo recuperable y luego bloqueado; <33 sin diálogo | Primer rechazo = bloqueado; `provisional`/`ephemeral` llegan como `undetermined` | Políticas del sistema |
+| Compartir | `sharedAction` al abrir el selector (cancelar = compartir) | Distingue `dismissedAction` | Contrato del selector del sistema |
+| Háptico | Medido en `dumpsys vibrator_manager` y sentido por el usuario | No acreditable en el Simulator | Sin Taptic Engine en el Simulator |
+| Deep link en frío | Probado en Release (el Dev Launcher intercepta el enlace) | Igual | El launcher del Development Build |
+| Textos y cleartext | Release bloquea HTTP al mock: válido y 404 no se distinguen en frío | Sí se distinguen | Política de tráfico cleartext de Android |
+
+### Ejercicio sin solución
+
+Diseña una máquina de permisos para una capacidad `contacts` con los estados `preview`, `requesting`, `granted`, `denied` y `blocked`.
+1. Define los eventos de entrada (confirmar, resultado del sistema, volver a primer plano, cancelar, desmontar) y qué estados los aceptan.
+2. Explica cómo impides dos solicitudes simultáneas y cómo descartas un resultado que llega después de desmontar.
+3. Decide si «denegado recuperable» y «bloqueado» deben persistirse por usuario, por sesión o por solicitud, y cómo migrarías una versión anterior del estado guardado.
+4. Indica qué parte de tu diseño podrías probar con tablas sin RN y cuál solo con un dispositivo real.
+5. Compáralo con Activity Result API + `Lifecycle` en Android y con `CNAuthorizationStatus` + `scenePhase` en iOS.
+
+### Preguntas de repaso (respuestas cortas)
+
+1. **¿Qué diferencia hay entre una función síncrona, una `Promise` y un evento nativo?** La síncrona devuelve ya (trabajo barato); la `Promise` representa una operación única; el evento es una secuencia y exige cleanup.
+2. **¿Por qué un evento debe llamar a `remove()`?** Para no duplicar observadores ni entregar a una pantalla desmontada.
+3. **¿Qué es el epoch del escáner?** La identidad del intento vigente; una respuesta con epoch viejo se descarta (como cancelar un `Job`/`Task`).
+4. **¿Qué se hace antes de activar la cámara?** Mostrar la pantalla previa, obtener confirmación en esa apertura y resolver permiso y capacidad efectiva.
+5. **¿Qué valida y qué no un iOS Simulator?** UI, estados, navegación y servicios locales; no cámara óptica, Taptic Engine ni VoiceOver real.
+6. **¿Por qué el háptico se solicita con un listener tras el reducer?** Para vibrar solo cuando el carrito cambió de verdad (no en límites, bloqueos ni dobles toques).
+7. **¿Qué distingue `permissionRequested` de `notified`?** La primera registra el intento de pedir acceso (antes); la segunda confirma una programación satisfactoria (después).
+8. **¿En qué se distinguen «denegadas recuperables» y «bloqueadas»?** En las primeras el sistema aún podría mostrar el diálogo en otra orden; en las segundas solo Ajustes lo resuelve. Mismas acciones, distinto texto.
+9. **¿Cuándo un cambio exige un binario nuevo?** Si altera la huella: permiso, plugin u opción de plugin, dependencia nativa, módulo Kotlin/Swift o `app.json`; un cambio de texto, lógica TS o imagen no la altera.
+10. **¿Por qué la evidencia remota de EAS es requisito del cierre y qué prueba?** Porque la validación local no demuestra que el servicio construya el proyecto desde cero; el build remoto valida la tubería, los perfiles y el gate de la URL, pero no que el catálogo cargue.
+
+### Checklist oral
+
+Se marca solo lo que está respaldado por evidencia registrada. Las casillas sin marcar son para que lo practiques tú en voz alta; no son evidencia del proyecto.
+
+- [ ] Explicar sync/async/evento/vista con analogías Kotlin/Compose y Swift/SwiftUI.
+- [ ] Explicar preview, permiso, foreground, epoch y cancelación del escáner.
+- [ ] Distinguir cámara, háptico y notificación reales de simulación o de un clasificador determinista.
+- [ ] Explicar el cleanup, los callbacks tardíos y el listener post-reducer.
+- [ ] Explicar RF-37 (`Tabs`), RF-38 (fuera del render) y RF-39 (migración v3).
+- [ ] Inventariar variables sin valores ni secretos y explicar el gate de URL.
+- [ ] Clasificar un cambio como OTA candidata o binario nuevo con la huella.
+- [ ] Reportar Android físico, iOS Simulator y limitaciones sin inventar evidencia.
+- [ ] Explicar por qué EAS remoto es requisito para marcar el día y qué limitaciones tiene (placeholder de URL, `preview` iOS sin credenciales de Apple).
+
+### Registro de verificación del Día 5 (T10, 2026-10-15)
+
+| Comprobación | Resultado | Nota |
+|---|---|---|
+| `npm run test:logic` | **1082/1082** | sustituye 1013/1013 (2026-10-14); repetido tras los parches |
+| `npx expo lint` / `npx tsc --noEmit` / `git diff --check` | OK / OK / OK | repetidos tras los parches |
+| `npx expo install --check` | **Dependencies are up to date** | tras `npx expo install expo@~57.0.30 @expo/ui@~57.0.25 expo-router@~57.0.28` (antes fallaba por esos tres parches) |
+| `npx expo-doctor@latest` | **21/21** | antes 20/21; solo fallaba la comprobación de versiones |
+| Android físico (Samsung SM-A037M, Android 13) | validado en T2–T8 y T11–T14; **recompilado el 2026-10-15** y humo [A] OK | Inicio, DeviceInsights, escáner, deep link, orden ficticia hasta la confirmación y RF-37; variante «sin diálogo runtime» solo determinista |
+| iOS Simulator (iPhone 17 Pro, iOS 26.5) | validado en T2–T8 y T11–T14; **recompilado el 2026-10-15** y humo [A] OK | mismos seis pasos; sin cámara óptica, Taptic ni VoiceOver real |
+| EAS `development` Android (APK) | **FINISHED**, 2026-10-15 (con parches) | build `f8ab7c9a-d558-4e4a-ad6f-3abe40d2f40e`, huella `13218f3f…` |
+| EAS `development` iOS (Simulator) | **FINISHED**, 2026-10-15 (con parches) | build `a5934fef-6623-4f16-80a4-2b1eb2cb48c4`, huella `156ff282…` |
+| EAS `preview` Android (APK) | **FINISHED**, 2026-10-15 (con parches) | build `527f5684-6357-46ba-a58f-32b6d8f8d2f3`, huella `13218f3f…` |
+| EAS `preview` iOS (`simulator: false`) | **LIMITACIÓN** | exige credenciales de Apple; no se intentó (decisión del usuario) |
+
+Qué prueba y qué no el build remoto: prueba que el servicio instala las dependencias, aplica los config plugins, genera `ios/`/`android/` con CNG y compila el módulo Kotlin/Swift con el perfil indicado, y que su huella coincide con la local. **No** prueba que la app cargue el catálogo (`EXPO_PUBLIC_API_ORIGIN` es el placeholder público `https://api.example.test`, y los artefactos no se instalaron) ni sustituye la validación en dispositivo. `EXPO_PUBLIC_API_ORIGIN` se declara en `env` de cada perfil de `eas.json` (público, no secreto, reproducible desde Git); la alternativa, una variable hospedada en EAS con visibilidad «Plain text», es la que se usaría con una URL real distinta por entorno. Detalle, comandos, límites y seguimientos del Día 6 en `docs/evidence/day-5-platform.md`.
+
+Los builds de esta vuelta reemplazan a los del mediodía (`a13ab87a…`, `08cf7ee7…`, `c66441e0…`), hechos antes de los parches. La huella cambió (Android `a6659518…` → `13218f3f…`, iOS `27b01168…` → `156ff282…`) porque `expo`, `@expo/ui` y `expo-router` son fuentes de la huella: subir un parche de una dependencia nativa pide un binario nuevo, igual que en Android con una subida de versión de Gradle o en iOS con `pod update`. La huella local y la remota coinciden. El commit de cierre es `feat: complete day 5 native platform features` (se consulta con `git log --grep "day 5"`); los builds de EAS muestran el `gitCommitHash` `4e95c67` porque se lanzaron antes de ese commit.

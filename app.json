@@ -7,11 +7,21 @@
     "icon": "./assets/images/icon.png",
     "scheme": "herbstore",
     "userInterfaceStyle": "automatic",
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
+    "locales": {
+      "es": "./locales/es.json",
+      "en": "./locales/en.json"
+    },
     "ios": {
       "icon": "./assets/expo.icon",
       "bundleIdentifier": "com.herbstore.mobile",
       "buildNumber": "1",
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "CFBundleAllowMixedLocalizations": true
+      }
     },
     "android": {
       "package": "com.herbstore.mobile",
@@ -63,11 +73,30 @@
             ]
           }
         }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera",
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "enableBackgroundRemoteNotifications": false
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "96b34e82-dfb9-4bfa-be42-3c1ee4f699e4"
+      }
     }
   }
 }

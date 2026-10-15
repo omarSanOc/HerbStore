@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useAppDispatch, useAppSelector } from '@/core/store/hooks';
 import { AppButton, AppSurface, AppText, fontScaleLimits, sizes, spacing } from '@/design-system';
+import { useGoToHomeRoot } from '@/features/navigation/use-go-to-home-root';
 import { formatMoney } from '@/features/preferences/logic/currency';
 
 import { CartLine } from '../components/CartLine';
@@ -24,6 +25,8 @@ import { lineDecremented, lineIncremented, lineRemoved } from '../store/cart-sli
 export function CartScreen() {
   const { t, i18n } = useTranslation();
   const router = useRouter();
+  // RF-37: `dismissTo('/')` is POP_TO, which the Tabs navigator ignores from the Cart tab (H-T8-2).
+  const goToHomeRoot = useGoToHomeRoot();
   const dispatch = useAppDispatch();
   const locked = useAppSelector(selectIsCartLocked);
   const attempt = useAppSelector((state) => state.checkoutAttempt);
@@ -57,7 +60,7 @@ export function CartScreen() {
   if (lines.length === 0) {
     return (
       <AppSurface level="page" style={styles.page}>
-        <EmptyCart onGoHome={() => router.dismissTo('/')} />
+        <EmptyCart onGoHome={goToHomeRoot} />
       </AppSurface>
     );
   }

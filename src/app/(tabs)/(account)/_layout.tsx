@@ -16,6 +16,11 @@ export default function AccountLayout() {
         dangerouslySingular
         options={{ title: t('placeholders.foundations.title') }}
       />
+      <Stack.Screen
+        name="device-insights"
+        dangerouslySingular
+        options={{ title: t('deviceInsights.title') }}
+      />
     </Stack>
   );
 }

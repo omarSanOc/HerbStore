@@ -72,6 +72,24 @@ describe('normalizeIncomingUrl', () => {
     });
   });
 
+  it('keeps the scanner link on the scanner preview route', () => {
+    assert.equal(normalizeIncomingUrl('herbstore://scanner'), '/scanner');
+    assert.equal(normalizeIncomingUrl('herbstore:///scanner'), '/scanner');
+  });
+
+  it('keeps a scanned product link inside the scanner stack', () => {
+    // The scanner modal owns this route (`scanner/product/[id]`): the link must reach it as is and
+    // never become `/product/<id>`, which would open the Home stack and lose the scanner under it.
+    assert.equal(
+      normalizeIncomingUrl(`herbstore://scanner/product/${PRODUCT}`),
+      `/scanner/product/${PRODUCT}`,
+    );
+    assert.equal(
+      normalizeIncomingUrl(`herbstore:///scanner/product/${PRODUCT}?x=1#y`),
+      `/scanner/product/${PRODUCT}`,
+    );
+  });
+
   describe('foreign and unusable input', () => {
     it('ignores other schemes (including the dev client launcher URL)', () => {
       assert.equal(normalizeIncomingUrl('https://example.com/product/product-261009-001'), null);

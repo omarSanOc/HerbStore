@@ -18,6 +18,11 @@ export function AccountPlaceholderScreen() {
         label={t('placeholders.account.openFoundations')}
         onPress={() => router.push('/foundations')}
       />
+      <AppButton
+        accessibilityHint={t('placeholders.account.openDeviceInsightsHint')}
+        label={t('placeholders.account.openDeviceInsights')}
+        onPress={() => router.push('/(tabs)/(account)/device-insights')}
+      />
     </PlaceholderScreen>
   );
 }

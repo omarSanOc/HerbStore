@@ -8,6 +8,8 @@ function sorted(value: unknown): unknown {
 function trimAddress(address: ShippingAddress): ShippingAddress {
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(address)) {
+    // The form schema leaves an empty optional field as `undefined`, and the key stays present.
+    if (value === undefined) continue;
     const text = value.trim();
     if (key !== 'interiorNumber' || text) result[key] = text;
   }

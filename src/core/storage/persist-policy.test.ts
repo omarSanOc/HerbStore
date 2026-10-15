@@ -33,7 +33,7 @@ const EMPTY_SLICES = {
   searchHistory: { entries: EMPTY_SEARCH_HISTORY },
   cart: { lines: EMPTY_CART },
   checkoutAttempt: initialAttempt,
-  orderHistory: { orders: [] },
+  orderHistory: { orders: [], notifications: { records: {} } },
 };
 
 function cartLine(overrides: Partial<CartLine> = {}): CartLine {
@@ -50,7 +50,7 @@ function cartLine(overrides: Partial<CartLine> = {}): CartLine {
 }
 
 /** What redux-persist itself writes: one JSON object whose values are JSON strings. */
-function storedState(slices: Record<string, unknown>, version = PERSIST_VERSION): Record<string, unknown> {
+function storedState(slices: Record<string, unknown>, version: unknown = PERSIST_VERSION): Record<string, unknown> {
   return { ...slices, _persist: { version, rehydrated: true } };
 }
 
@@ -59,8 +59,8 @@ describe('PERSISTED_KEYS (explicit whitelist)', () => {
     assert.deepEqual(PERSISTED_KEYS, ['searchHistory', 'cart', 'checkoutAttempt', 'orderHistory']);
   });
 
-  it('keeps the schema version at 1 (adding a slice to the whitelist is not a shape change)', () => {
-    assert.equal(PERSIST_VERSION, 1);
+  it('bumps the schema version when notification marks change shape (v2: marks, v3: unusable reason)', () => {
+    assert.equal(PERSIST_VERSION, 3);
   });
 
   it('never contains the RTK Query cache (api) nor the in-memory preferences', () => {
@@ -480,5 +480,142 @@ describe('redux-persist pipeline with the policy', () => {
 
     assert.deepEqual(store.getState().searchHistory.entries, []);
     persistor.pause();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// T8 raised PERSIST_VERSION to 2 (orderHistory gained `notifications`). The plan says the bump must
+// KEEP cart, search, checkout attempt and orders: dropping the attempt would lose the idempotency
+// key of an unresolved order (a duplicate order on recovery) and dropping the history loses orders.
+// ---------------------------------------------------------------------------------------------
+describe('upgrading from schema version 1 (the Day 4 build) to the current one', () => {
+  const order = {
+    id: 'order-1',
+    items: [{ productId: 'product-261009-002', quantity: 1, unitPrice: 10, lineTotal: 10 }],
+    currency: 'MXN',
+    subtotal: 10,
+    shipping: 0,
+    total: 10,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const v1State = () =>
+    storedState(
+      {
+        searchHistory: { entries: ['zinc'] },
+        cart: { lines: [cartLine()] },
+        checkoutAttempt: { key: 'k', fingerprint: 'f', status: 'preliminary' },
+        orderHistory: { orders: [order] },
+      },
+      1,
+    );
+
+  it('keeps every slice and starts the orders with no notification marks', () => {
+    assert.deepEqual(sanitizePersistedState(v1State()), {
+      searchHistory: { entries: ['zinc'] },
+      cart: { lines: [cartLine()] },
+      checkoutAttempt: { key: 'k', fingerprint: 'f', status: 'unresolved' },
+      orderHistory: { orders: [order], notifications: { records: {} } },
+    });
+  });
+
+  it('the migrate hook resolves them stamped with the CURRENT version', async () => {
+    const migrated = await migratePersistedState(v1State(), PERSIST_VERSION);
+
+    assert.deepEqual(migrated?._persist, { version: PERSIST_VERSION, rehydrated: false });
+    assert.deepEqual(migrated?.cart, { lines: [cartLine()] });
+    assert.deepEqual(migrated?.orderHistory.orders, [order]);
+  });
+
+  it('any other version still resets every slice (only the known previous ones are read)', () => {
+    for (const version of [0, -1, 1.5, '2', PERSIST_VERSION + 1]) {
+      assert.deepEqual(sanitizePersistedState(storedState({ cart: { lines: [cartLine()] } }, version)), EMPTY_SLICES, `version ${version}`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// T13 raised PERSIST_VERSION to 3 (an `unusable` record gained `unusableReason`, RF-39). A v2 state
+// (the Day 5 T8 build) must keep cart, search, attempt and orders; its unusable records had no
+// reason and are restored as `blocked`, the conservative text that build was already showing.
+// ---------------------------------------------------------------------------------------------
+describe('upgrading from schema version 2 (the T8 build) to version 3', () => {
+  const order = (id: string) => ({
+    id,
+    items: [{ productId: 'product-261009-002', quantity: 1, unitPrice: 10, lineTotal: 10 }],
+    currency: 'MXN',
+    subtotal: 10,
+    shipping: 0,
+    total: 10,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  });
+  const v2State = () =>
+    storedState(
+      {
+        searchHistory: { entries: ['zinc', 'Vitamina C'] },
+        cart: { lines: [cartLine()] },
+        checkoutAttempt: { key: 'k', fingerprint: 'f', status: 'unresolved', remoteStatus: 'pending' },
+        orderHistory: {
+          orders: [order('o-unusable'), order('o-scheduled'), order('o-failed')],
+          notifications: {
+            records: {
+              'o-unusable': { permissionRequested: true, notified: false, status: 'unusable', canOpenSettings: true },
+              'o-scheduled': { permissionRequested: true, notified: true, status: 'scheduled', canOpenSettings: false },
+              'o-failed': { permissionRequested: true, notified: false, status: 'failed', canOpenSettings: false },
+            },
+          },
+        },
+      },
+      2,
+    );
+
+  it('keeps every slice; a v2 unusable record (no reason) is blocked and the others carry no reason', () => {
+    assert.deepEqual(sanitizePersistedState(v2State()), {
+      searchHistory: { entries: ['zinc', 'Vitamina C'] },
+      cart: { lines: [cartLine()] },
+      checkoutAttempt: { key: 'k', fingerprint: 'f', status: 'unresolved', remoteStatus: 'pending' },
+      orderHistory: {
+        orders: [order('o-unusable'), order('o-scheduled'), order('o-failed')],
+        notifications: {
+          records: {
+            'o-unusable': { permissionRequested: true, notified: false, status: 'unusable', canOpenSettings: true, unusableReason: 'blocked' },
+            'o-scheduled': { permissionRequested: true, notified: true, status: 'scheduled', canOpenSettings: false },
+            'o-failed': { permissionRequested: true, notified: false, status: 'failed', canOpenSettings: false },
+          },
+        },
+      },
+    });
+  });
+
+  it('the migrate hook resolves a v2 state stamped with version 3', async () => {
+    const migrated = await migratePersistedState(v2State(), PERSIST_VERSION);
+
+    assert.deepEqual(migrated?._persist, { version: 3, rehydrated: false });
+    assert.deepEqual(migrated?.cart, { lines: [cartLine()] });
+    assert.deepEqual(migrated?.searchHistory, { entries: ['zinc', 'Vitamina C'] });
+    assert.equal(migrated?.orderHistory.orders.length, 3);
+  });
+
+  it('a v1 state is still readable by version 3', async () => {
+    const v1 = storedState({ cart: { lines: [cartLine()] }, orderHistory: { orders: [order('o1')] } }, 1);
+    const migrated = await migratePersistedState(v1, PERSIST_VERSION);
+
+    assert.deepEqual(migrated?._persist, { version: 3, rehydrated: false });
+    assert.deepEqual(migrated?.cart, { lines: [cartLine()] });
+    assert.deepEqual(migrated?.orderHistory, { orders: [order('o1')], notifications: { records: {} } });
+  });
+
+  it('a v3 state keeps a valid reason as stored', () => {
+    const v3 = storedState({
+      orderHistory: {
+        orders: [order('o1')],
+        notifications: { records: { o1: { permissionRequested: true, notified: false, status: 'unusable', canOpenSettings: true, unusableReason: 'denied-recoverable' } } },
+      },
+    }, 3);
+
+    assert.equal(sanitizePersistedState(v3)?.orderHistory.notifications.records.o1?.unusableReason, 'denied-recoverable');
+  });
+
+  it('an injected schema version never reads the real previous versions', () => {
+    assert.deepEqual(sanitizePersistedState(v2State(), 9), EMPTY_SLICES);
   });
 });
