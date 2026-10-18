@@ -1,0 +1,73 @@
+appId: com.herbstore.mobile
+name: Extra - a second product link REPLACES the first (singular route), it does not stack
+tags:
+  - extra
+# Optional (not part of RF-6, not run by default): `maestro test .maestro/deep-link-a-b.yaml`.
+# Needs the mock server running, but NOT a fresh one: it never creates an order.
+env:
+  METRO_URL: http://localhost:8081
+  PRODUCT_A_ID: product-261009-062
+  PRODUCT_A_NAME: Evening Magnesium Powder
+  PRODUCT_B_ID: product-261009-002
+  PRODUCT_B_NAME: Magnesium Glycinate Softgels
+---
+- runFlow:
+    file: subflows/fresh-app.yaml
+    env:
+      METRO_URL: ${METRO_URL}
+
+# A: the product screen shows A's name as its heading.
+- retry:
+    maxRetries: 2
+    commands:
+      - openLink: "herbstore://product/${PRODUCT_A_ID}"
+      - runFlow:
+          when:
+            platform: iOS
+          commands:
+            - tapOn:
+                text: "Open"
+                optional: true
+      - extendedWaitUntil:
+          visible: "${PRODUCT_A_NAME}"
+          timeout: 20000
+
+# B while A is open: `dangerouslySingular` makes the router REPLACE the product screen. The user
+# sees B, and A is gone from the screen (a second product screen stacked on top would still leave
+# A "under" B, which is what Back would then reveal).
+- retry:
+    maxRetries: 2
+    commands:
+      - openLink: "herbstore://product/${PRODUCT_B_ID}"
+      - runFlow:
+          when:
+            platform: iOS
+          commands:
+            - tapOn:
+                text: "Open"
+                optional: true
+      - extendedWaitUntil:
+          visible: "${PRODUCT_B_NAME}"
+          timeout: 20000
+- assertNotVisible: "${PRODUCT_A_NAME}"
+
+# ONE Back leaves the product flow for Home: A is not hiding under B. (If B had been pushed on top of
+# A, Back would reveal A and neither "Search products" nor the absence of A's name would hold.)
+# Android: the system Back key. iOS has no such key: the native header's back button is the way
+# (`resource-id: BackButton`; its label is the previous screen's title, so it is not used).
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - back
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn:
+          id: BackButton
+- extendedWaitUntil:
+    visible: "Search products"
+    timeout: 15000
+- assertNotVisible: "${PRODUCT_A_NAME}"
+- assertNotVisible: "${PRODUCT_B_NAME}"

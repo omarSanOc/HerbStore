@@ -1,0 +1,40 @@
+appId: com.herbstore.mobile
+name: Extra - link to an unknown product shows "Product not found" and leaves through Home
+tags:
+  - extra
+# Optional (not part of RF-6, not run by default): `maestro test .maestro/product-404.yaml`.
+# Needs the mock server running, but NOT a fresh one: it never creates an order.
+env:
+  METRO_URL: http://localhost:8081
+  # Catalog-shaped but absent (the mock has product-<seed>-001..300): the server answers 404.
+  MISSING_PRODUCT_ID: product-261009-999
+---
+- runFlow:
+    file: subflows/fresh-app.yaml
+    env:
+      METRO_URL: ${METRO_URL}
+
+# The app is already open on Home, so this link is a normal "warm" link. It is still sent inside a
+# retry (and waits for what the USER sees) in case the system drops it while the app is settling.
+- retry:
+    maxRetries: 2
+    commands:
+      - openLink: "herbstore://product/${MISSING_PRODUCT_ID}"
+      - runFlow:
+          when:
+            platform: iOS
+          commands:
+            - tapOn:
+                text: "Open"
+                optional: true
+      - extendedWaitUntil:
+          visible: "Product not found"
+          timeout: 20000
+- assertVisible: "The product does not exist or the link is not valid."
+# Two ways out are offered; the one that matters here is the direct one to Home.
+- assertVisible: "Go back"
+- tapOn: "Go to Home"
+- extendedWaitUntil:
+    visible: "Search products"
+    timeout: 15000
+- assertNotVisible: "Product not found"

@@ -1,0 +1,30 @@
+appId: com.herbstore.mobile
+name: Type one checkout field and close the keyboard
+# Inputs (env): FIELD_ID (testID of the TextInput, e.g. checkout-fullName), VALUE and CLOSE_WITH
+# ("enter" for fields whose keyboard has a Done key, "hide" for phone-pad / number-pad).
+---
+- scrollUntilVisible:
+    element:
+      id: ${FIELD_ID}
+    timeout: 15000
+- tapOn:
+    id: ${FIELD_ID}
+- inputText: ${VALUE}
+# Closing the keyboard is explicit, never assumed (it covers the fields below and "Continue").
+# - "enter": the Done key. A single-line TextInput blurs on submit (`submitBehavior` default), which
+#   hides the keyboard on iOS and Android. Reliable, and it is what a user does.
+# - "hide": phone-pad and number-pad have no Done key on iOS. `hideKeyboard` is Back on Android
+#   (safe: the keyboard is open right now) but on iOS it only swipes in the middle of the screen and
+#   may leave the keyboard up, so it is `optional`: the next text field is closed with Enter anyway,
+#   and the last field before "Continue" is a text one.
+- runFlow:
+    when:
+      true: ${CLOSE_WITH == 'enter'}
+    commands:
+      - pressKey: Enter
+- runFlow:
+    when:
+      true: ${CLOSE_WITH != 'enter'}
+    commands:
+      - hideKeyboard:
+          optional: true

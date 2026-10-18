@@ -79,7 +79,7 @@ export function QuantitySelector({
           accessibilityValue={{ text: t('product.quantity.value', { quantity, max: stockText }) }}
           accessible
           onAccessibilityAction={onAccessibilityAction}
-          style={[styles.value, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          style={[styles.value, { backgroundColor: colors.surface, borderColor: colors.controlBorder }]}>
           <AppText maxFontSizeMultiplier={2} variant="subheading">
             {quantity}
           </AppText>
@@ -132,7 +132,7 @@ function StepButton({
       onPress={onPress}
       style={({ pressed }) => [
         styles.stepButton,
-        { backgroundColor: colors.surface, borderColor: colors.border },
+        { backgroundColor: colors.surface, borderColor: colors.controlBorder },
         disabled ? styles.disabled : null,
         pressed && !reduceMotion ? styles.pressed : null,
       ]}>

@@ -1,6 +1,8 @@
-import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useEffect, useRef } from 'react';
+import { Pressable, ScrollView, StyleSheet, View, type Text } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
+import { moveFocusThenAnnounce } from '@/core/accessibility/screen-reader-focus';
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
 import {
   AppButton,
@@ -22,6 +24,8 @@ type SearchHistoryListProps = {
   onClear: () => void;
 };
 
+type FocusTarget = View | Text;
+
 /**
  * Recent searches (RF-18): run one, remove one or clear all, each with an immediate effect.
  *
@@ -29,6 +33,10 @@ type SearchHistoryListProps = {
  *   grows) and a 48x48 remove button whose spoken label carries the entry's own text.
  * - "Clear all" is in the heading row, which wraps below the title with a large font instead of
  *   cutting the button; there is no confirmation because the spec asks for an immediate effect.
+ * - Removing an entry or clearing the list deletes the control the screen reader is on. Left alone,
+ *   TalkBack jumps to the search field and its speech cuts the announcement off (S-6). So the list
+ *   moves the focus itself, to the entry that took the removed one's place (the next, else the
+ *   previous) or to the heading when none is left, and announces the news AFTER the focus move.
  * - Plain `ScrollView`: at most 10 rows (`MAX_SEARCH_HISTORY`), so a virtualized list would add
  *   cost and no benefit. `keyboardShouldPersistTaps="handled"` lets a tap on a row work with the
  *   keyboard open, and `keyboardDismissMode="on-drag"` closes the keyboard when the user scrolls.
@@ -46,6 +54,31 @@ export function SearchHistoryList({
   const { t } = useTranslation();
   const { colors } = useAppTheme();
   const reduceMotion = useReducedMotionPreference();
+  const headingRef = useRef<Text>(null);
+  // The "run this entry" button of each row, by entry: where the focus goes after a removal.
+  const runButtons = useRef(new Map<string, View>());
+  const cancelAnnouncement = useRef<(() => void) | undefined>(undefined);
+
+  // A screen that goes away with an announcement still pending must not speak.
+  useEffect(() => () => cancelAnnouncement.current?.(), []);
+
+  const focusThenAnnounce = (target: FocusTarget | null | undefined, message: string) => {
+    cancelAnnouncement.current?.();
+    cancelAnnouncement.current = moveFocusThenAnnounce(target, message);
+  };
+
+  const handleRemove = (entry: string) => {
+    const index = entries.indexOf(entry);
+    const neighbour = entries[index + 1] ?? entries[index - 1];
+    const target = neighbour === undefined ? headingRef.current : runButtons.current.get(neighbour);
+    onRemove(entry);
+    focusThenAnnounce(target, t('search.history.removed', { text: entry }));
+  };
+
+  const handleClear = () => {
+    onClear();
+    focusThenAnnounce(headingRef.current, t('search.history.cleared'));
+  };
 
   return (
     <ScrollView
@@ -56,6 +89,7 @@ export function SearchHistoryList({
       keyboardShouldPersistTaps="handled">
       <View style={styles.headingRow}>
         <AppText
+          ref={headingRef}
           accessibilityRole="header"
           maxFontSizeMultiplier={fontScaleLimits.sectionHeading}
           style={styles.heading}
@@ -67,7 +101,7 @@ export function SearchHistoryList({
             accessibilityHint={t('search.history.clearAllHint')}
             label={t('search.history.clearAll')}
             maxFontSizeMultiplier={fontScaleLimits.actionLabel}
-            onPress={onClear}
+            onPress={handleClear}
           />
         )}
       </View>
@@ -77,7 +111,15 @@ export function SearchHistoryList({
         entries.map((entry) => (
           <View key={entry} style={styles.row}>
             <Pressable
+              ref={(node) => {
+                if (node === null) {
+                  runButtons.current.delete(entry);
+                } else {
+                  runButtons.current.set(entry, node);
+                }
+              }}
               accessibilityHint={t('search.history.runHint')}
+              accessibilityLabel={entry}
               accessibilityRole="button"
               onPress={() => onSelect(entry)}
               style={({ pressed }) => [
@@ -98,7 +140,7 @@ export function SearchHistoryList({
               accessibilityHint={t('search.history.removeHint')}
               accessibilityLabel={t('search.history.removeLabel', { text: entry })}
               accessibilityRole="button"
-              onPress={() => onRemove(entry)}
+              onPress={() => handleRemove(entry)}
               style={({ pressed }) => [
                 styles.remove,
                 pressed && !reduceMotion ? styles.pressed : null,

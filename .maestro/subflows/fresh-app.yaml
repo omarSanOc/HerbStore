@@ -1,0 +1,82 @@
+appId: com.herbstore.mobile
+name: Fresh app - clearState, open the Development Build, pin English, land on Home
+# Inputs (env): METRO_URL, the Metro of the Development Build as the DEVICE reaches it.
+# Shared by `reset-state.yaml` (the critical flow) and the extra flows. It does NOT touch the mock.
+---
+# App data to zero: preferences, cart, search history, orders, attempt (clearState).
+- launchApp:
+    appId: com.herbstore.mobile
+    clearState: true
+    stopApp: true
+
+# After clearState the Development Build opens its launcher, not the app: point it at Metro.
+# The first link can be lost while the launcher boots. Seen on the Samsung (logcat): the link reached
+# `MainActivity` 60 ms after `launchApp` started it, BEFORE the process existed, and the launcher
+# activity that Expo opens afterwards swallowed it. On Android the launcher is therefore awaited
+# first (its "DEVELOPMENT SERVERS" heading). The pair link + wait stays in a retry as a safety net,
+# with a short wait per attempt (45 s: the bundle is already cached by Metro), so a lost link costs
+# seconds, not minutes. `exp+herbstore://` is required: the plain `herbstore://` falls into +not-found.
+- runFlow:
+    when:
+      platform: Android
+    commands:
+      - extendedWaitUntil:
+          visible: "DEVELOPMENT SERVERS"
+          timeout: 30000
+- retry:
+    maxRetries: 3
+    commands:
+      - openLink: "exp+herbstore://expo-development-client/?url=${encodeURIComponent(METRO_URL)}"
+      # iOS Simulator may ask "Open in HerbStore?" for custom schemes. Android never does: skipping
+      # the optional tap there saves its 8 s lookup.
+      - runFlow:
+          when:
+            platform: iOS
+          commands:
+            - tapOn:
+                text: "Open"
+                optional: true
+      # Either Home (bundle ready) or the one-time Dev Menu welcome sheet (first launch after clearState).
+      - extendedWaitUntil:
+          visible: "Continue|Search products|Buscar productos"
+          timeout: 45000
+- runFlow:
+    when:
+      visible: "Continue"
+    commands:
+      - tapOn: "Continue"
+      # Accepting the welcome sheet leaves the full Dev Menu open (Reload / Go home / Tools).
+      # Close it. The close button differs per platform (see README, "Dev Menu"):
+      #  - iOS: an SF Symbol button, `id: xmark` (accessible name "Cerrar"/"Close").
+      #  - Android: a clickable `View` WITHOUT resource-id whose only handle is its accessibility
+      #    text "Close" (the dev menu is always English). Maestro matches `text` against `text`,
+      #    `hintText` and `accessibilityText`, so the plain text selector reaches it.
+      - runFlow:
+          when:
+            platform: iOS
+            visible: "Go home"
+          commands:
+            - tapOn:
+                id: xmark
+      - runFlow:
+          when:
+            platform: Android
+            visible: "Go home"
+          commands:
+            - tapOn: "Close"
+- extendedWaitUntil:
+    visible: "Search products|Buscar productos"
+    timeout: 60000
+
+# Language: after clearState the app speaks the DEVICE language. The flow pins English from
+# Account (the only regex in these flows is this tab name), so es/en devices behave the same.
+# On the Samsung the tab press right after the Dev Menu closes was swallowed once in ~10 runs (the app
+# stayed on Home; see F-8 in docs/evidence/day-6-e2e.md): the pair tab + language button is retried,
+# and a press on the already active tab is harmless.
+- retry:
+    maxRetries: 2
+    commands:
+      - tapOn: "Account|Cuenta"
+      - tapOn: "English"
+- tapOn: "Home"
+- assertVisible: "Search products"

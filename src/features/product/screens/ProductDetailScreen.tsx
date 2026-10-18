@@ -3,8 +3,10 @@ import { useEffect, useRef, useState } from 'react';
 import { AccessibilityInfo, ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
+import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
 import { toApiError } from '@/core/api/api-error';
 import { useRevalidateWhenStale } from '@/core/api/use-revalidate-when-stale';
+import { useScrollReveal } from '@/core/layout/use-scroll-reveal';
 import { useAppDispatch, useAppSelector } from '@/core/store/hooks';
 import {
   AppButton,
@@ -27,6 +29,7 @@ import { ProductGallery } from '../components/ProductGallery';
 import { QuantitySelector, type QuantityStepSource } from '../components/QuantitySelector';
 import { StickyAddBar } from '../components/StickyAddBar';
 import { AddToCartFeedback } from '../components/AddToCartFeedback';
+import { ProductNoticeRow } from '../components/ProductNoticeRow';
 import type { ProductDetail } from '../contracts/catalog-product';
 import { useGetProductQuery } from '../data/products-api';
 import { useProductShare } from '../hooks/use-product-share';
@@ -36,7 +39,7 @@ import {
   INITIAL_ADD_FEEDBACK,
   nextAddFeedback,
 } from '../logic/add-feedback';
-import { classifyProductLookup } from '../logic/product-lookup';
+import { classifyProductLookup, type ProductNotice } from '../logic/product-lookup';
 import { clampQuantity, MIN_QUANTITY, stepQuantity, type QuantityChoice } from '../logic/quantity';
 import { parseProductId } from '../parse-product-id';
 
@@ -61,6 +64,7 @@ type ProductDetailScreenProps = {
 export function ProductDetailScreen({ rawId }: Readonly<ProductDetailScreenProps>) {
   const { t } = useTranslation();
   const { colors } = useAppTheme();
+  const reduceMotion = useReducedMotionPreference();
   const productId = parseProductId(rawId);
   const invalidLink = rawId === 'invalid';
   // `currentData`, NOT `data`: `data` keeps the answer of the PREVIOUS id while the new one loads,
@@ -90,18 +94,28 @@ export function ProductDetailScreen({ rawId }: Readonly<ProductDetailScreenProps
     case 'loading':
       return (
         <MessageScreen title={t('product.loadingTitle')}>
-          <ActivityIndicator
-            accessibilityLabel={t('product.loadingTitle')}
-            color={colors.primary}
-            size="large"
-          />
+          {/* Reduced motion (RF-15): the endless spinner is left out; the title says the same. */}
+          {reduceMotion ? null : (
+            <ActivityIndicator
+              accessibilityLabel={t('product.loadingTitle')}
+              color={colors.primary}
+              size="large"
+            />
+          )}
         </MessageScreen>
       );
     case 'found':
       // `key`: the product route is singular, so opening product B from product A may REUSE this
       // component with another id. A new key remounts the content and the quantity of A does not
       // leak into B (the React way to "reset state when a prop changes", with no effect).
-      return <ProductDetailContent key={state.product.id} product={state.product} />;
+      return (
+        <ProductDetailContent
+          key={state.product.id}
+          notice={state.notice}
+          onRetry={retry}
+          product={state.product}
+        />
+      );
     case 'not-found':
       return (
         <NotFoundScreen
@@ -134,6 +148,9 @@ export function ProductDetailScreen({ rawId }: Readonly<ProductDetailScreenProps
 
 type ProductDetailContentProps = {
   product: ProductDetail;
+  /** Set when the last revalidation failed: price and stock may be old (RF-17). */
+  notice?: ProductNotice;
+  onRetry: () => void;
 };
 
 /**
@@ -145,10 +162,13 @@ type ProductDetailContentProps = {
  * second copy of the state to keep in sync. The stock limit is announced to the screen reader and
  * also written as text under the selector.
  *
+ * A failed revalidation keeps the product and adds `ProductNoticeRow` on top (price and stock may be
+ * old). In Kotlin it is a `sealed interface` with `Stale(data)`; in Swift an `enum` with an associated value.
+ *
  * Compose: `var quantity by rememberSaveable { mutableIntStateOf(1) }` inside the screen and a
  * `Scaffold` with `bottomBar`; SwiftUI: `@State private var quantity = 1` and `.safeAreaInset`.
  */
-function ProductDetailContent({ product }: Readonly<ProductDetailContentProps>) {
+function ProductDetailContent({ product, notice, onRetry }: Readonly<ProductDetailContentProps>) {
   const { t, i18n } = useTranslation();
   const dispatch = useAppDispatch();
   const currency = useAppSelector(selectPreferredCurrency);
@@ -161,6 +181,10 @@ function ProductDetailContent({ product }: Readonly<ProductDetailContentProps>) 
   const [addBarHeight, setAddBarHeight] = useState(0);
   const lastAcceptedAdd = useRef<number | undefined>(undefined);
   const { failed: shareFailed, share } = useProductShare(product);
+  // The failed-share message appears under the Share button, which at a large font can be right above
+  // the pinned bar: it is brought into sight when it appears (otherwise it lands under the bar).
+  const shareErrorRef = useRef<View>(null);
+  const { scrollRef, contentRef, onScroll, onLayout: onScrollLayout, reveal } = useScrollReveal(spacing.md);
 
   const { quantity } = clampQuantity(choice.quantity, product.stock);
   const model = buildProductDetailModel(product, i18n.language, currency, quantity);
@@ -225,8 +249,23 @@ function ProductDetailContent({ product }: Readonly<ProductDetailContentProps>) 
 
   return (
     <AppSurface level="page" style={styles.page}>
-      <ScrollView contentContainerStyle={styles.scroll} contentInsetAdjustmentBehavior="automatic">
-        <View style={styles.column}>
+      <ScrollView
+        ref={scrollRef}
+        testID="product-detail-scroll"
+        contentContainerStyle={styles.scroll}
+        contentInsetAdjustmentBehavior="automatic"
+        onLayout={onScrollLayout}
+        onScroll={onScroll}
+        scrollEventThrottle={16}>
+        <View ref={contentRef} style={styles.column}>
+          {/* At the TOP of the scroll, never under the pinned bar: a line that appears at the end of a
+              scroll would fall behind it. It scrolls away with the content, so it never takes a
+              share of the screen at large font sizes the way a fixed bar does. */}
+          {notice === undefined ? null : (
+            <View style={styles.notice}>
+              <ProductNoticeRow notice={notice} onRetry={onRetry} />
+            </View>
+          )}
           <ProductGallery images={model.images} name={model.name} />
           <View style={styles.info}>
             <View style={styles.heading}>
@@ -288,11 +327,18 @@ function ProductDetailContent({ product }: Readonly<ProductDetailContentProps>) 
                 onPress={share}
               />
               {shareFailed ? (
-                <View style={styles.shareError}>
-                  <AppText>{t('product.share.failed')}</AppText>
+                <View
+                  ref={shareErrorRef}
+                  testID="product-share-error"
+                  onLayout={() => reveal(shareErrorRef.current)}
+                  style={styles.shareError}>
+                  <AppText maxFontSizeMultiplier={fontScaleLimits.inlineFeedback}>
+                    {t('product.share.failed')}
+                  </AppText>
                   <AppButton
                     accessibilityHint={t('product.share.retryHint')}
                     label={t('product.share.retry')}
+                    maxFontSizeMultiplier={fontScaleLimits.inlineFeedback}
                     onPress={share}
                   />
                 </View>
@@ -367,6 +413,10 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: sizes.contentMaxWidth,
     alignSelf: 'center',
+  },
+  notice: {
+    padding: spacing.md,
+    paddingBottom: 0,
   },
   info: {
     gap: spacing.md,

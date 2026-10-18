@@ -283,7 +283,7 @@ function StepButton({ direction, disabled, onPress }: Readonly<StepButtonProps>)
       onPress={onPress}
       style={({ pressed }) => [
         styles.stepButton,
-        { backgroundColor: colors.surface, borderColor: colors.border },
+        { backgroundColor: colors.surface, borderColor: colors.controlBorder },
         disabled ? styles.disabled : null,
         pressed && !reduceMotion ? styles.pressed : null,
       ]}>

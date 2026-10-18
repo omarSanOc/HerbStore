@@ -57,7 +57,9 @@ export function SwipeToDelete({ children, disabled, onDelete }: SwipeToDeletePro
 
 const styles = StyleSheet.create({
   actionFrame: {
-    width: 112,
+    // `minWidth`, not `width` (T6f): the label scales up to 2x and a fixed 112 split "Delete" into
+    // "Dele / te" at iOS AX5. The frame keeps 112 at normal size and grows with a larger label.
+    minWidth: 112,
     paddingLeft: spacing.sm,
   },
   action: {

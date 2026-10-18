@@ -1,0 +1,15 @@
+appId: com.herbstore.mobile
+name: Open "My orders" from the Account tab
+# Precondition: the Account root is on screen, in English.
+---
+# "My orders" sits below the fold and the platforms disagree about off-screen nodes:
+#  - iOS lists them in the accessibility tree, so Maestro already considers "My orders" visible and
+#    `scrollUntilVisible` would not move: the explicit `scroll` brings it above the tab bar.
+#  - Android (uiautomator) lists only what is on screen: the node does not exist until it is scrolled
+#    into view, so `scrollUntilVisible` is what finds it (a single `scroll` is not always enough).
+# Doing both is harmless on each platform and keeps the flow free of platform branches.
+- scroll
+- scrollUntilVisible:
+    element: "My orders"
+    timeout: 15000
+- tapOn: "My orders"

@@ -1,18 +1,16 @@
 import { CameraView } from 'expo-camera';
-import { Linking, StyleSheet } from 'react-native';
+import { Linking, ScrollView, StyleSheet } from 'react-native';
 import { useEffect, type ReactNode } from 'react';
 import { useRouter, type Href } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AppButton, AppSurface, AppText, spacing } from '@/design-system';
+import { AppButton, AppSurface, AppText, fontScaleLimits, spacing } from '@/design-system';
 import { useGoBackOrHome } from '@/features/navigation/use-go-back-or-home';
 
 import { useScannerController } from '../hooks/use-scanner-controller';
-import { getScannerViewState, shouldMountScannerCamera } from '../logic/scanner-view-state';
+import { getScannerViewState, isScannerFailureKind, scannerFailureTitleKey, shouldMountScannerCamera } from '../logic/scanner-view-state';
 import { SCANNER_SEARCH_ROUTE } from '../logic/scanner-navigation';
-
-const ERROR_STATES = new Set(['offline', 'timeout', 'temporary-error', 'invalid-data']);
 
 export function ScannerScreen() {
   const { t } = useTranslation();
@@ -20,7 +18,7 @@ export function ScannerScreen() {
   const controller = useScannerController();
   const router = useRouter();
   const { state, navigationFailed, navigationSucceeded, retryNavigation } = controller;
-  const view = getScannerViewState(state, controller.isOnline);
+  const view = getScannerViewState(state);
   const cameraMounted = shouldMountScannerCamera(state, controller.cameraActive);
   const cancelAndClose = () => {
     controller.cancel();
@@ -53,7 +51,7 @@ export function ScannerScreen() {
   if (cameraMounted) {
     return (
       <ScannerPage>
-        <AppText accessibilityLiveRegion="polite" accessibilityRole="header" variant="subheading">
+        <AppText accessibilityLiveRegion="polite" accessibilityRole="header" maxFontSizeMultiplier={fontScaleLimits.screenTitle} variant="subheading">
           {state.kind === 'querying' ? t('scanner.querying') : state.kind === 'mounting-camera' ? t('scanner.permission') : t('scanner.ready')}
         </AppText>
         <CameraView
@@ -76,7 +74,10 @@ export function ScannerScreen() {
       : state.kind === 'unavailable' ? t('scanner.unavailable')
            : state.kind === 'navigating' ? t('scanner.found')
              : state.kind === 'navigation-error' ? t('scanner.navigationError')
-          : ERROR_STATES.has(state.kind) ? t(`scanner.${state.kind === 'invalid-data' ? 'invalidData' : state.kind}`)
+          // "No connection" is news only while the device has not reported coming back; afterwards the
+          // title says so, because the lookup is NOT retried by itself and the old text would lie.
+          : state.kind === 'offline' && controller.isOnline ? t('scanner.reconnected')
+          : isScannerFailureKind(state.kind) ? t(scannerFailureTitleKey(state.kind))
             : t('scanner.heading');
 
   return (
@@ -104,12 +105,17 @@ export function ScannerScreen() {
  * under the system navigation bar (Android) or the home indicator (iOS) and cannot be pressed. The
  * header of the inner stack already covers the TOP inset, so only bottom/left/right are asked for.
  * `SafeAreaView` adds the native inset to the padding of its `style` ("additive" mode).
+ *
+ * `scrollable` is for the states that are TEXT and buttons (`MessageScreen`): at a large font the
+ * title, the message and the actions are taller than the screen (iOS AX5: "Continue" and "Close" were
+ * below the edge with nothing to scroll), so they live in a `ScrollView`. The camera state is not
+ * scrollable: the preview takes the free height (`flex: 1`) and its button stays in view.
  */
-function ScannerPage({ children }: { children: ReactNode }) {
+function ScannerPage({ children, scrollable = false }: { children: ReactNode; scrollable?: boolean }) {
   return (
     <AppSurface level="page" style={styles.page}>
-      <SafeAreaView edges={['bottom', 'left', 'right']} style={styles.content}>
-        {children}
+      <SafeAreaView edges={['bottom', 'left', 'right']} style={scrollable ? styles.page : styles.content}>
+        {scrollable ? <ScrollView contentContainerStyle={styles.messageContent} testID="scanner-message-scroll">{children}</ScrollView> : children}
       </SafeAreaView>
     </AppSurface>
   );
@@ -117,8 +123,8 @@ function ScannerPage({ children }: { children: ReactNode }) {
 
 function MessageScreen({ title, message, children }: { title: string; message: string; children: ReactNode }) {
   return (
-    <ScannerPage>
-      <AppText accessibilityRole="header" variant="subheading">{title}</AppText>
+    <ScannerPage scrollable>
+      <AppText accessibilityRole="header" maxFontSizeMultiplier={fontScaleLimits.screenTitle} variant="subheading">{title}</AppText>
       <AppText accessibilityLiveRegion="polite">{message}</AppText>
       {children}
     </ScannerPage>
@@ -128,5 +134,6 @@ function MessageScreen({ title, message, children }: { title: string; message: s
 const styles = StyleSheet.create({
   page: { flex: 1 },
   content: { flex: 1, gap: spacing.md, padding: spacing.md },
+  messageContent: { gap: spacing.md, padding: spacing.md },
   camera: { flex: 1, minHeight: 240, borderRadius: 12 },
 });

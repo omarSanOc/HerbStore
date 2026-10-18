@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 
 import { AppSurface, AppText, fontScaleLimits } from '@/design-system';
 import { NotFoundScreen } from '@/features/navigation/screens/NotFoundScreen';
+import { useNavigationLockout } from '@/features/navigation/use-navigation-lockout';
 import { useGetCategoriesQuery } from '@/features/product/data/products-api';
 import { ProductListView } from '@/features/product/list/ProductListView';
 
@@ -30,6 +31,7 @@ type CategoryProductsScreenProps = {
 export function CategoryProductsScreen({ rawId }: Readonly<CategoryProductsScreenProps>) {
   const { t } = useTranslation();
   const router = useRouter();
+  const navigate = useNavigationLockout();
   const categoryId = parseCategoryId(rawId);
   const labelKey = categoryId === undefined ? undefined : categoryLabelKey(categoryId);
   const needsServerName = categoryId !== undefined && labelKey === undefined;
@@ -68,7 +70,9 @@ export function CategoryProductsScreen({ rawId }: Readonly<CategoryProductsScree
             {name}
           </AppText>
         }
-        onOpenProduct={(id) => router.push({ pathname: '/product/[id]', params: { id } })}
+        onOpenProduct={(id) =>
+          navigate(() => router.push({ pathname: '/product/[id]', params: { id } }))
+        }
         scope={{ category: categoryId }}
       />
     </AppSurface>

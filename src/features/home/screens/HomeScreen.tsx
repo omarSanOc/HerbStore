@@ -1,7 +1,10 @@
 import { useRouter } from 'expo-router';
-import { FlatList, RefreshControl, StyleSheet } from 'react-native';
+import { FlatList, RefreshControl, StyleSheet, type View } from 'react-native';
 
+import { useReturnFocusToOpener } from '@/core/accessibility/use-return-focus-to-opener';
 import { AppSurface, spacing, useAppTheme } from '@/design-system';
+
+import { useNavigationLockout } from '@/features/navigation/use-navigation-lockout';
 
 import { HomeHeader } from '../components/HomeHeader';
 import { HomeRowItem } from '../components/HomeRowItem';
@@ -22,15 +25,23 @@ const keyExtractor = (row: HomeRow) => row.key;
  */
 export function HomeScreen() {
   const router = useRouter();
+  // Every destination of Home is a singular route: two taps ~100 ms apart must open ONE screen.
+  const navigate = useNavigationLockout();
   const { colors } = useAppTheme();
+  // The scanner is a MODAL route: when it closes, the screen reader goes back to the scan button
+  // (spec 006), not to the title TalkBack finds first.
+  const { openerRef: scanButtonRef, markOpening: markScannerOpening } =
+    useReturnFocusToOpener<View>();
   const { state, isRefreshing, refetch } = useHome();
   const rows = buildHomeRows(state);
   const { isBannerRowVisible, viewabilityConfig, onViewableItemsChanged } =
     useBannerRowVisibility();
 
   // Typed routes: the id travels as the dynamic segment and is validated again by the destination.
-  const openCategory = (id: string) => router.push({ pathname: '/category/[id]', params: { id } });
-  const openProduct = (id: string) => router.push({ pathname: '/product/[id]', params: { id } });
+  const openCategory = (id: string) =>
+    navigate(() => router.push({ pathname: '/category/[id]', params: { id } }));
+  const openProduct = (id: string) =>
+    navigate(() => router.push({ pathname: '/product/[id]', params: { id } }));
 
   return (
     <AppSurface level="page" style={styles.page}>
@@ -42,8 +53,14 @@ export function HomeScreen() {
         onViewableItemsChanged={onViewableItemsChanged}
         ListHeaderComponent={
           <HomeHeader
-            onScanPress={() => router.push('/scanner')}
-            onSearchPress={() => router.push('/search')}
+            onScanPress={() =>
+              navigate(() => {
+                markScannerOpening();
+                router.push('/scanner');
+              })
+            }
+            scanButtonRef={scanButtonRef}
+            onSearchPress={() => navigate(() => router.push('/search'))}
           />
         }
         refreshControl={

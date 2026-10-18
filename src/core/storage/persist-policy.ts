@@ -1,9 +1,9 @@
 // What is persisted and how a stored state is read back (spec 004, RF-11, RF-12, RNF-1).
 //
 // The whitelist is EXPLICIT and grows task by task: T1 `searchHistory`; T2 `cart`; T8
-// `checkoutAttempt` and `orderHistory`. Never the RTK Query cache (`api`: server state that RTK
-// Query revalidates, and could carry personal data from responses), never `preferences` (in
-// memory on Day 4; Day 6 persists it) and never form values.
+// `checkoutAttempt` and `orderHistory`; Day 6 T4a `preferences` (language, currency, theme: not
+// sensitive). Never the RTK Query cache (`api`: server state that RTK Query revalidates, and could
+// carry personal data from responses) and never form values.
 //
 // Storage is outside the app's control, so on the way back each slice is validated with the same
 // rules that produced it; an empty, corrupt or incompatible slice becomes its initial state.
@@ -20,6 +20,7 @@ import {
 import { isRecord, isText } from '../validation/json-guards.ts';
 import { initialAttempt, type AttemptState } from '../../features/checkout/logic/attempt-machine.ts';
 import { emptyOrderHistory, type OrderHistoryState, sanitizeOrderHistory } from '../../features/orders/logic/order-history.ts';
+import { DEFAULT_PREFERENCES, type Preferences, restorePreferences } from '../../features/preferences/logic/preferences.ts';
 
 /** redux-persist stores everything under `persist:<key>`. */
 export const PERSIST_KEY = 'root';
@@ -29,21 +30,23 @@ export const PERSIST_KEY = 'root';
  * state with another version is incompatible and every slice restarts from its initial state,
  * EXCEPT the versions of `READABLE_PREVIOUS_VERSIONS`.
  */
-export const PERSIST_VERSION = 3;
+export const PERSIST_VERSION = 4;
 
 /**
  * Older versions the restorers read correctly, so an upgrade keeps the cart, the search history,
  * the checkout attempt (the idempotency key of an unresolved order) and the orders.
  * - 1 (Day 4): `orderHistory` had no `notifications`; `sanitizeOrderHistory` starts it empty.
  * - 2 (Day 5 T8): an `unusable` record had no `unusableReason` (RF-39); it is restored as `blocked`.
+ * - 3 (Day 5 T13): the reason is part of the record. No build before 4 stored `preferences`, so the
+ *   upgrade 1/2/3 -> 4 only adds that slice, which starts from its defaults.
  * Add a version here ONLY after a test proves the restorers read it; a breaking change leaves it out.
  * The "migration" is the sanitizer itself: every readable version goes through the same restorers
  * (Room would chain `Migration(1, 2)`, `Migration(2, 3)`; here the restorer tolerates every older shape).
  */
-const READABLE_PREVIOUS_VERSIONS: readonly number[] = [1, 2];
+const READABLE_PREVIOUS_VERSIONS: readonly number[] = [1, 2, 3];
 
 /** The only slices that reach the disk. */
-export const PERSISTED_KEYS = ['searchHistory', 'cart', 'checkoutAttempt', 'orderHistory'] as const;
+export const PERSISTED_KEYS = ['searchHistory', 'cart', 'checkoutAttempt', 'orderHistory', 'preferences'] as const;
 
 export type PersistedKey = (typeof PERSISTED_KEYS)[number];
 
@@ -53,6 +56,7 @@ export type PersistedSlices = {
   readonly cart: Readonly<{ lines: CartLines }>;
   readonly checkoutAttempt: AttemptState;
   readonly orderHistory: OrderHistoryState;
+  readonly preferences: Preferences;
 };
 
 type PersistMarker = { version: number; rehydrated: boolean };
@@ -74,6 +78,8 @@ const RESTORERS: { readonly [K in PersistedKey]: (stored: unknown) => PersistedS
     if (!isRecord(stored) || !Array.isArray(stored.orders)) return emptyOrderHistory;
     return sanitizeOrderHistory(stored);
   },
+  // Field by field: an invalid language is "never chosen", an invalid currency or theme its default.
+  preferences: (stored) => restorePreferences(stored),
 };
 
 function isReadableVersion(version: unknown, currentVersion: number): boolean {
@@ -83,7 +89,7 @@ function isReadableVersion(version: unknown, currentVersion: number): boolean {
 }
 
 function initialSlices(): PersistedSlices {
-  return { searchHistory: { entries: EMPTY_SEARCH_HISTORY }, cart: { lines: EMPTY_CART }, checkoutAttempt: initialAttempt, orderHistory: emptyOrderHistory };
+  return { searchHistory: { entries: EMPTY_SEARCH_HISTORY }, cart: { lines: EMPTY_CART }, checkoutAttempt: initialAttempt, orderHistory: emptyOrderHistory, preferences: DEFAULT_PREFERENCES };
 }
 
 /**
@@ -115,6 +121,7 @@ export function sanitizePersistedState(
     cart: RESTORERS.cart(stored.cart),
     checkoutAttempt: RESTORERS.checkoutAttempt(stored.checkoutAttempt),
     orderHistory: RESTORERS.orderHistory(stored.orderHistory),
+    preferences: RESTORERS.preferences(stored.preferences),
   };
 }
 

@@ -1,0 +1,141 @@
+appId: com.herbstore.mobile
+name: Critical flow - search, add, address, double tap, ONE order
+tags:
+  - critical
+# Inputs (env, override with `maestro test -e KEY=VALUE`). Nothing here is a secret or a real person.
+env:
+  API_ORIGIN: http://localhost:3001
+  METRO_URL: http://localhost:8081
+  # Exactly one catalog product matches this query (Verdant Forge, fictional), so "first result" is unambiguous.
+  PRODUCT_QUERY: Evening Magnesium Powder
+  PRODUCT_ID: product-261009-062
+  FRESH_STOCK: "99"
+---
+- runFlow:
+    file: reset-state.yaml
+    env:
+      API_ORIGIN: ${API_ORIGIN}
+      METRO_URL: ${METRO_URL}
+      PRODUCT_ID: ${PRODUCT_ID}
+      FRESH_STOCK: ${FRESH_STOCK}
+
+# --- Search -------------------------------------------------------------------------------
+- tapOn: "Search products"
+# The search field has autoFocus: wait for the screen (empty history), then type into the focused field.
+- extendedWaitUntil:
+    visible: "You have not searched yet.*"
+    timeout: 15000
+- inputText: ${PRODUCT_QUERY}
+# The keyboard's search key sends the search and closes the keyboard (also the explicit close here).
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "1 product"
+    timeout: 20000
+
+# --- Add to cart --------------------------------------------------------------------------
+# The card's accessible name is "<name>. <price>. ..." (the period tells it apart from the field text).
+- tapOn: "${PRODUCT_QUERY}\\..*"
+- extendedWaitUntil:
+    visible: "Add to cart"
+    timeout: 20000
+- tapOn: "Add to cart"
+- extendedWaitUntil:
+    visible: "Cart, 1 item"
+    timeout: 10000
+
+# --- Cart -> checkout ----------------------------------------------------------------------
+- tapOn: "Cart, 1 item"
+- assertVisible: "1 product in your cart"
+- tapOn: "Continue to checkout"
+- extendedWaitUntil:
+    visible: "Delivery details"
+    timeout: 10000
+
+# --- Address (valid, fictional); each field closes the keyboard ----------------------------
+- runFlow:
+    file: subflows/fill-field.yaml
+    env: { FIELD_ID: checkout-fullName, CLOSE_WITH: enter, VALUE: "Ana Perez" }
+- runFlow:
+    file: subflows/fill-field.yaml
+    env: { FIELD_ID: checkout-phone, CLOSE_WITH: hide, VALUE: "5512345678" }
+- runFlow:
+    file: subflows/fill-field.yaml
+    env: { FIELD_ID: checkout-postalCode, CLOSE_WITH: hide, VALUE: "01234" }
+- runFlow:
+    file: subflows/fill-field.yaml
+    env: { FIELD_ID: checkout-state, CLOSE_WITH: enter, VALUE: "Jalisco" }
+- runFlow:
+    file: subflows/fill-field.yaml
+    env: { FIELD_ID: checkout-city, CLOSE_WITH: enter, VALUE: "Guadalajara" }
+- runFlow:
+    file: subflows/fill-field.yaml
+    env: { FIELD_ID: checkout-street, CLOSE_WITH: enter, VALUE: "Avenida Central" }
+- runFlow:
+    file: subflows/fill-field.yaml
+    env: { FIELD_ID: checkout-exteriorNumber, CLOSE_WITH: enter, VALUE: "10" }
+
+# --- Double tap on "Continue" ----------------------------------------------------------------
+- scrollUntilVisible:
+    element: "Continue"
+    timeout: 15000
+# Two real taps 50 ms apart. `retryTapIfNoChange: false` stops Maestro from adding a THIRD tap by
+# itself. The mock answers POST /orders after ORDER_POST_DELAY_MS (1500 ms, see README), so the
+# second tap always lands while the first request is in flight: that is the race window.
+- tapOn:
+    text: "Continue"
+    repeat: 2
+    delay: 50
+    retryTapIfNoChange: false
+
+# --- ONE confirmation --------------------------------------------------------------------------
+- extendedWaitUntil:
+    visible: "Order in progress|Order confirmed"
+    timeout: 30000
+# The default mock answers 202 pending for 1 s: the status screen unlocks "Check order status" after that.
+- runFlow:
+    when:
+      visible: "Order in progress"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: "Check order status"
+            enabled: true
+          timeout: 15000
+      - tapOn:
+          text: "Check order status"
+          retryTapIfNoChange: false
+# Confirming schedules a local notification: the system permission alert may cover the screen. The
+# alert is drawn by the OS in the DEVICE language (the app is pinned to English, the alert is not).
+- extendedWaitUntil:
+    visible: "Order confirmed|Allow|Permitir"
+    timeout: 30000
+- runFlow:
+    when:
+      visible: "Allow|Permitir"
+    commands:
+      - tapOn: "Allow|Permitir"
+- assertVisible: "Order confirmed"
+- assertVisible: "1 unit"
+
+# --- Exactly one order, checked twice ------------------------------------------------------
+# (a) Server: one order of one unit lowers the stock by exactly 1 (two orders would leave 97).
+- runScript:
+    file: scripts/read-stock.js
+    env:
+      SLOT: final
+- assertTrue:
+    condition: ${output.stock.final == output.stock.initial - 1}
+    # `label` is shown as-is (Maestro does not interpolate it): keep it a plain sentence.
+    label: "FAIL: expected exactly ONE order (final stock = initial stock - 1); the mock registered a different number."
+# (b) App: "My orders" has one row and no second one. A row's accessible name ends in "total <amount>".
+- tapOn: "Account"
+- runFlow: subflows/open-my-orders.yaml
+- extendedWaitUntil:
+    visible: "Orders confirmed on this installation.*"
+    timeout: 10000
+- assertVisible:
+    text: "Order .*total.*"
+    index: 0
+- assertNotVisible:
+    text: "Order .*total.*"
+    index: 1

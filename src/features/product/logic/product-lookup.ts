@@ -2,12 +2,18 @@ import type { ApiError } from '../../../core/api/api-error.ts';
 import type { ProductDetail } from '../contracts/catalog-product.ts';
 
 /**
+ * Notice shown above a product that is kept after a failed revalidation, with the same two values
+ * as Home's: `offline` when `fetch` got no answer, `update-failed` for any other failure.
+ */
+export type ProductNotice = 'offline' | 'update-failed';
+
+/**
  * What the product route renders. A discriminated union, like `HomeScreenState`: the screen
  * `switch`es on `status` and the compiler checks every case.
  */
 export type ProductLookupState =
   | { status: 'loading' }
-  | { status: 'found'; product: ProductDetail }
+  | { status: 'found'; product: ProductDetail; notice?: ProductNotice }
   | { status: 'not-found' }
   | { status: 'offline' }
   | { status: 'error' };
@@ -36,8 +42,10 @@ export type ProductLookupSnapshot = Readonly<{
  *   connection", error suggests "the server had a problem".
  * - Without data, a request in flight is `loading`, so a manual retry shows the spinner and not
  *   the old failure that RTK keeps through `pending`. An `aborted` error is a cancellation.
- * - With data, any other failure keeps showing the product (the detail has no notice row: the
- *   figures on screen are the last ones received).
+ * - With data, any other failure keeps showing the product PLUS a notice, because the price and
+ *   the stock on screen are only the last ones received (the Day 4 design had no notice; the user
+ *   added it after T3b). As in Home, RTK keeps `error` through the next request, so the notice stays
+ *   while a retry is in flight and disappears only with a success.
  */
 export function classifyProductLookup({
   data,
@@ -51,7 +59,9 @@ export function classifyProductLookup({
   }
 
   if (data !== undefined) {
-    return { status: 'found', product: data };
+    return failure === undefined
+      ? { status: 'found', product: data }
+      : { status: 'found', product: data, notice: failure.kind === 'network' ? 'offline' : 'update-failed' };
   }
 
   if (failure === undefined || isFetching) {

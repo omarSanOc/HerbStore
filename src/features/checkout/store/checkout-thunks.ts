@@ -14,7 +14,7 @@ import { orderRecorded } from '@/features/orders/store/order-history-slice';
 import type { OrderItem, OrderResult, ShippingAddress } from '../contracts/order';
 import { createFingerprint } from '../logic/fingerprint';
 import { canonicalizeOrderRequest } from '../logic/canonical-order-request';
-import { parseOrderOutcome } from '../logic/order-outcome';
+import { parseOrderOutcome, validationFieldsOf } from '../logic/order-outcome';
 import { tagsForOrderResult } from '../logic/order-invalidation';
 import { buildCheckoutRequest } from '../logic/checkout-request';
 import { attemptOutcome, attemptSubmitted } from './checkout-attempt-slice';
@@ -56,15 +56,18 @@ export const submitOrder = createThunk('checkout/submitOrder', async ({ shipping
   // This is the lock: dispatch is synchronous, so a second tap observes preliminary before POST.
   dispatch(attemptSubmitted({ key, fingerprint }));
   if ((getState() as ThunkState).checkoutAttempt.key !== key) return { outcome: 'uncertain' as const, ignored: true };
+  let result: OrderResult | undefined;
+  let failure: unknown;
   try {
-    const result = await dispatch(ordersApi.endpoints.createOrder.initiate({ idempotencyKey: key, request: canonical })).unwrap();
-    const outcome = finish(dispatch, () => getState() as ThunkState, result, undefined, 'post', request.items);
-    const stock = outcome.outcome === 'outOfStock' ? await refreshCartStock(dispatch, lines) : undefined;
-    return { ...outcome, key, adjustments: stock?.adjustments ?? [] };
+    result = await dispatch(ordersApi.endpoints.createOrder.initiate({ idempotencyKey: key, request: canonical })).unwrap();
   } catch (error) {
-    const outcome = finish(dispatch, () => getState() as ThunkState, undefined, error, 'post', request.items);
-    return { ...outcome, key };
+    failure = error;
   }
+  const outcome = finish(dispatch, () => getState() as ThunkState, result, failure, 'post', request.items);
+  // RF-26 (spec 004). `outOfStock` is an HTTP 409, so it ARRIVES as a failure: the refresh cannot
+  // live after a successful `unwrap()`. The attempt is already idle here, so the cart is editable.
+  const stock = outcome.outcome === 'outOfStock' ? await refreshCartStock(dispatch, lines) : undefined;
+  return { ...outcome, key, adjustments: stock?.adjustments ?? [], fields: outcome.outcome === 'validation' ? validationFieldsOf(failure) : undefined };
 });
 
 async function refreshCartStock(dispatch: AppDispatch, lines: ReturnType<typeof selectCartLines>) {

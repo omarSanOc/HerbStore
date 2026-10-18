@@ -78,7 +78,7 @@ export function SearchField({
   };
 
   return (
-    <View style={[styles.field, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+    <View style={[styles.field, { backgroundColor: colors.surface, borderColor: colors.controlBorder }]}>
       <AppIcon
         name={{ ios: 'magnifyingglass', android: 'search', web: 'search' }}
         size={22}

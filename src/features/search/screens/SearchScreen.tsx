@@ -1,10 +1,11 @@
 import { useRouter } from 'expo-router';
-import { useRef, useState } from 'react';
-import { AccessibilityInfo, Keyboard, StyleSheet, View, type TextInput } from 'react-native';
+import { useDeferredValue, useRef, useState } from 'react';
+import { Keyboard, StyleSheet, View, type TextInput } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { useAppDispatch, useAppSelector } from '@/core/store/hooks';
 import { AppSurface, AppText, fontScaleLimits, spacing } from '@/design-system';
+import { useNavigationLockout } from '@/features/navigation/use-navigation-lockout';
 import { ProductListView } from '@/features/product/list/ProductListView';
 import { normalizeSearchText } from '@/features/product/logic/product-query';
 
@@ -42,6 +43,12 @@ import {
  * tapping a result. Typing alone never writes the history (a half-typed "vit" is not a search).
  * The search key sends the text of the submit EVENT, never the one of the last render (S-2).
  *
+ * Responsiveness: the field commits first, the results view in a second render (`useDeferredValue`).
+ * Android draws the hint of the field itself (S-7), so it only leaves the screen when React commits
+ * the new text; with one render for field + results view that took ~300 ms on the Samsung and the
+ * typed text showed over the hint. Compose: `TextField` state hoisted and the list collected with
+ * `collectLatest`; SwiftUI: `@State` for the field and `.task(id:)` / a lower-priority update.
+ *
  * Keyboard rule (S-3): every action that EXECUTES a search closes the keyboard (the search key,
  * running a history entry), because the user now wants to read results; every action that EMPTIES
  * the field ("Borrar texto", "Limpiar búsqueda") leaves the field focused WITH the keyboard up,
@@ -55,14 +62,20 @@ import {
 export function SearchScreen() {
   const { t } = useTranslation();
   const router = useRouter();
+  const navigate = useNavigationLockout();
   const dispatch = useAppDispatch();
   const history = useAppSelector(selectSearchHistory);
   const inputRef = useRef<TextInput>(null);
 
   const [text, setText] = useState('');
   const [debounced, settleNow] = useDebouncedValue(text);
-  const view = resolveSearchView({ rawText: text, debouncedText: debounced });
-  const visibleText = text.trim();
+  // The field reads `text` (urgent); everything below it reads the DEFERRED pair, so the first key
+  // commits the field (and hides Android's drawn hint) before the results view is rendered. Both
+  // values are deferred together so the view never mixes a new `text` with an old `debounced`.
+  const viewText = useDeferredValue(text);
+  const viewDebounced = useDeferredValue(debounced);
+  const view = resolveSearchView({ rawText: viewText, debouncedText: viewDebounced });
+  const visibleText = viewText.trim();
 
   /** Sends a search: it enters the history, the list queries without waiting and the keyboard closes. */
   const sendSearch = (sent: string) => {
@@ -104,14 +117,13 @@ export function SearchScreen() {
     focusFieldWithKeyboard();
   };
 
+  // The list moves the screen-reader focus and announces what happened (S-6): it knows the rows.
   const removeEntry = (entry: string) => {
     dispatch(searchRemoved(entry));
-    AccessibilityInfo.announceForAccessibility(t('search.history.removed', { text: entry }));
   };
 
   const clearHistory = () => {
     dispatch(historyCleared());
-    AccessibilityInfo.announceForAccessibility(t('search.history.cleared'));
   };
 
   return (
@@ -143,6 +155,8 @@ export function SearchScreen() {
             title: t('search.empty.title', { query: visibleText }),
             message: t('search.empty.message'),
           }}
+          // "No results for «x»" already names the text: the results title would be a second heading (S-5).
+          hideHeaderWhenEmpty
           // With filters on, ONE action clears the text and the filters (plan, RF-19): leaving the
           // `history` view unmounts the list and its filters with it.
           emptyFilteredAction={{
@@ -162,13 +176,16 @@ export function SearchScreen() {
               {t('search.results.title', { query: visibleText })}
             </AppText>
           }
-          onOpenProduct={(id) => {
-            // Tapping a result also counts as having searched for that text (RF-17).
-            dispatch(searchSent(text));
-            router.push({ pathname: '/product/[id]', params: { id } });
-          }}
+          onOpenProduct={(id) =>
+            // A double tap on a result opens ONE product and records the search once.
+            navigate(() => {
+              // Tapping a result also counts as having searched for that text (RF-17).
+              dispatch(searchSent(text));
+              router.push({ pathname: '/product/[id]', params: { id } });
+            })
+          }
           paused={view.kind === 'pending'}
-          scope={{ search: debounced }}
+          scope={{ search: viewDebounced }}
         />
       )}
     </AppSurface>

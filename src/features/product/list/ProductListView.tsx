@@ -1,10 +1,11 @@
 import { useRef, useState, type ReactNode } from 'react';
-import { AccessibilityInfo, Keyboard, ScrollView, StyleSheet, View } from 'react-native';
+import { Keyboard, ScrollView, StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import {
   AppButton,
   AppText,
+  fontScaleLimits,
   spacing,
   type AppBottomSheetHandle,
 } from '@/design-system';
@@ -50,6 +51,13 @@ type ProductListViewProps = {
   paused?: boolean;
   /** Title of the screen (category name, search text...): scrolls with the list. */
   header: ReactNode;
+  /**
+   * Leave the title out of the "no products" state. For a screen whose empty message already names
+   * what was looked for (the search: «Resultados para "x"» above «Sin resultados para "x"» is the
+   * same heading twice, and a screen reader lists headings as the outline of the screen, S-5).
+   * The loading, offline and error states keep the title: they say something else about it.
+   */
+  hideHeaderWhenEmpty?: boolean;
   /** What the "no products" state offers. */
   emptyAction?: EmptyAction;
   /**
@@ -97,6 +105,7 @@ export function ProductListView({
   scope,
   paused = false,
   header,
+  hideHeaderWhenEmpty = false,
   emptyAction,
   emptyFilteredAction,
   emptyCopy,
@@ -107,6 +116,10 @@ export function ProductListView({
   const [params, setParams] = useState<ListParams>(DEFAULT_LIST_PARAMS);
   const sortSheetRef = useRef<AppBottomSheetHandle>(null);
   const advancedSheetRef = useRef<AppBottomSheetHandle>(null);
+  // The buttons that open the sheets: when a sheet closes, the screen-reader focus goes back to its
+  // own button (G-3), whose label already says the new state ("Sort: Price", "Filters (2)").
+  const sortButtonRef = useRef<View>(null);
+  const advancedButtonRef = useRef<View>(null);
   const {
     state,
     identity,
@@ -131,18 +144,15 @@ export function ProductListView({
   // Only brands and subcategories: what the sheet edits. The four chips show their own state.
   const advancedCount = countAdvancedFilters(params);
 
+  // No announcement: the sheet gives the focus back to the button, whose new label ("Sort: Price",
+  // "Filters, 1 active") is spoken by the focus move itself (G-2, G-3). An announcement made next to
+  // a focus move is cut off by it.
   const handleSelectSort = (sort: ProductSort) => {
     applyParams(setSort(params, sort));
-    // The sheet closes and the button label changes; neither is announced by itself.
-    AccessibilityInfo.announceForAccessibility(
-      t('productList.sort.applied', { option: t(sortLabelKeys[sort]) }),
-    );
   };
 
   const handleApplyAdvanced = (draft: AdvancedFiltersDraft) => {
     applyParams(applyAdvancedFilters(params, draft));
-    // The sheet closes and the counter on the button changes; neither is announced by itself.
-    AccessibilityInfo.announceForAccessibility(t('productList.advanced.applied'));
   };
 
   // When filters caused the emptiness the action is about them ("Clear filters", or the screen's
@@ -170,8 +180,10 @@ export function ProductListView({
               key: 'sort',
               node: (
                 <AppButton
+                  ref={sortButtonRef}
                   accessibilityHint={t('productList.sort.buttonHint')}
                   label={t('productList.sort.button', { option: sortLabel })}
+                  maxFontSizeMultiplier={fontScaleLimits.filterBar}
                   onPress={() => presentSheet(sortSheetRef.current)}
                 />
               ),
@@ -180,6 +192,7 @@ export function ProductListView({
               key: 'advanced',
               node: (
                 <AppButton
+                  ref={advancedButtonRef}
                   // The count is in the drawn text too, so it does not depend on color alone.
                   accessibilityHint={t('productList.advanced.buttonHint')}
                   accessibilityLabel={
@@ -192,6 +205,7 @@ export function ProductListView({
                       ? t('productList.advanced.button')
                       : t('productList.advanced.buttonCount', { count: advancedCount })
                   }
+                  maxFontSizeMultiplier={fontScaleLimits.filterBar}
                   onPress={() => presentSheet(advancedSheetRef.current)}
                   variant={advancedCount === 0 ? 'default' : 'primary'}
                 />
@@ -236,7 +250,9 @@ export function ProductListView({
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled">
-          <View style={styles.header}>{header}</View>
+          {state.status === 'empty' && hideHeaderWhenEmpty ? null : (
+            <View style={styles.header}>{header}</View>
+          )}
           {state.status === 'loading' ? (
             <ProductGridSkeleton />
           ) : (
@@ -250,12 +266,18 @@ export function ProductListView({
           )}
         </ScrollView>
       )}
-      <SortSheet ref={sortSheetRef} onSelect={handleSelectSort} sort={params.sort} />
+      <SortSheet
+        ref={sortSheetRef}
+        onSelect={handleSelectSort}
+        returnFocusTo={sortButtonRef}
+        sort={params.sort}
+      />
       <AdvancedFiltersSheet
         ref={advancedSheetRef}
         applied={params}
         category={scope.category}
         onApply={handleApplyAdvanced}
+        returnFocusTo={advancedButtonRef}
       />
     </View>
   );

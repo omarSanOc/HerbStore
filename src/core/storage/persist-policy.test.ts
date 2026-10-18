@@ -17,6 +17,8 @@ import {
 import { EMPTY_CART, type CartLine } from '../../features/cart/logic/cart.ts';
 import { cartReducer, productAdded } from '../../features/cart/store/cart-slice.ts';
 import { addSearch, EMPTY_SEARCH_HISTORY } from '../../features/search/logic/search-history.ts';
+import { DEFAULT_PREFERENCES } from '../../features/preferences/logic/preferences.ts';
+import { currencyChanged, languageChanged, preferencesReducer, themeChanged } from '../../features/preferences/store/preferences-slice.ts';
 import {
   createPersistConfig,
   migratePersistedState,
@@ -34,6 +36,7 @@ const EMPTY_SLICES = {
   cart: { lines: EMPTY_CART },
   checkoutAttempt: initialAttempt,
   orderHistory: { orders: [], notifications: { records: {} } },
+  preferences: DEFAULT_PREFERENCES,
 };
 
 function cartLine(overrides: Partial<CartLine> = {}): CartLine {
@@ -55,24 +58,24 @@ function storedState(slices: Record<string, unknown>, version: unknown = PERSIST
 }
 
 describe('PERSISTED_KEYS (explicit whitelist)', () => {
-  it('contains the four explicitly persisted client slices', () => {
-    assert.deepEqual(PERSISTED_KEYS, ['searchHistory', 'cart', 'checkoutAttempt', 'orderHistory']);
+  it('contains the five explicitly persisted client slices', () => {
+    assert.deepEqual(PERSISTED_KEYS, ['searchHistory', 'cart', 'checkoutAttempt', 'orderHistory', 'preferences']);
   });
 
-  it('bumps the schema version when notification marks change shape (v2: marks, v3: unusable reason)', () => {
-    assert.equal(PERSIST_VERSION, 3);
+  it('bumps the schema version when a persisted slice changes shape (v2: marks, v3: unusable reason, v4: preferences)', () => {
+    assert.equal(PERSIST_VERSION, 4);
   });
 
-  it('never contains the RTK Query cache (api) nor the in-memory preferences', () => {
+  it('persists the preferences but never the RTK Query cache (api)', () => {
     const keys: readonly string[] = PERSISTED_KEYS;
     assert.equal(keys.includes('api'), false);
-    assert.equal(keys.includes('preferences'), false);
+    assert.equal(keys.includes('preferences'), true);
   });
 
   it('is the whitelist of the redux-persist config, with the schema version', () => {
     const config = createPersistConfig(createSafeStorage(() => memoryBackend()));
 
-    assert.deepEqual(config.whitelist, ['searchHistory', 'cart', 'checkoutAttempt', 'orderHistory']);
+    assert.deepEqual(config.whitelist, ['searchHistory', 'cart', 'checkoutAttempt', 'orderHistory', 'preferences']);
     assert.equal(config.version, PERSIST_VERSION);
     assert.equal(config.key, PERSIST_KEY);
     assert.equal(config.blacklist, undefined);
@@ -114,12 +117,12 @@ describe('sanitizePersistedState', () => {
     const stored = storedState({
       searchHistory: { entries: ['zinc'] },
       api: { queries: { 'getProducts(undefined)': {} } },
-      preferences: { currency: 'USD' },
+      form: { fullName: 'Fictitious Person' },
       unknown: 1,
     });
 
     const sanitized = sanitizePersistedState(stored);
-    assert.deepEqual(Object.keys(sanitized ?? {}), ['searchHistory', 'cart', 'checkoutAttempt', 'orderHistory']);
+    assert.deepEqual(Object.keys(sanitized ?? {}), ['searchHistory', 'cart', 'checkoutAttempt', 'orderHistory', 'preferences']);
   });
 
   for (const [label, slice] of [
@@ -255,7 +258,7 @@ function historyReducer(state = { entries: EMPTY_SEARCH_HISTORY }, action: Unkno
 const rootReducer = combineReducers({
   api: (state: { queries: Record<string, unknown> } = { queries: { cached: { data: [1, 2, 3] } } }) =>
     state,
-  preferences: (state: { currency: 'MXN' | 'USD' } = { currency: 'USD' }) => state,
+  preferences: preferencesReducer,
   searchHistory: historyReducer,
   cart: cartReducer,
 });
@@ -294,16 +297,15 @@ function readStorage(backend: { values: Map<string, string> }): Record<string, u
 }
 
 describe('redux-persist pipeline with the policy', () => {
-  it('writes only the whitelisted slices (and _persist): never api nor preferences', async () => {
+  it('writes only the whitelisted slices (and _persist): never api', async () => {
     const backend = memoryBackend();
     const { store, persistor } = await startApp(backend);
 
     store.dispatch({ type: 'searchHistory/searchSent', payload: 'Vitamina C' });
     await persistor.flush();
 
-    assert.deepEqual(Object.keys(readStorage(backend)).sort(), ['_persist', 'cart', 'searchHistory']);
+    assert.deepEqual(Object.keys(readStorage(backend)).sort(), ['_persist', 'cart', 'preferences', 'searchHistory']);
     assert.equal(backend.values.get(STORAGE_KEY)?.includes('cached'), false);
-    assert.equal(backend.values.get(STORAGE_KEY)?.includes('USD'), false);
     persistor.pause();
   });
 
@@ -452,7 +454,7 @@ describe('redux-persist pipeline with the policy', () => {
     });
   }
 
-  it('the cart is saved as soon as it changes: no preferences, no api, no form data next to it', async () => {
+  it('the cart is saved as soon as it changes: no api, no form data next to it', async () => {
     const backend = memoryBackend();
     const { store, persistor } = await startApp(backend);
 
@@ -464,7 +466,7 @@ describe('redux-persist pipeline with the policy', () => {
     );
     await persistor.flush();
 
-    assert.deepEqual(Object.keys(readStorage(backend)).sort(), ['_persist', 'cart', 'searchHistory']);
+    assert.deepEqual(Object.keys(readStorage(backend)).sort(), ['_persist', 'cart', 'preferences', 'searchHistory']);
     persistor.pause();
   });
 
@@ -515,6 +517,7 @@ describe('upgrading from schema version 1 (the Day 4 build) to the current one',
       cart: { lines: [cartLine()] },
       checkoutAttempt: { key: 'k', fingerprint: 'f', status: 'unresolved' },
       orderHistory: { orders: [order], notifications: { records: {} } },
+      preferences: DEFAULT_PREFERENCES,
     });
   });
 
@@ -538,7 +541,7 @@ describe('upgrading from schema version 1 (the Day 4 build) to the current one',
 // (the Day 5 T8 build) must keep cart, search, attempt and orders; its unusable records had no
 // reason and are restored as `blocked`, the conservative text that build was already showing.
 // ---------------------------------------------------------------------------------------------
-describe('upgrading from schema version 2 (the T8 build) to version 3', () => {
+describe('upgrading from schema version 2 (the T8 build) to the current one', () => {
   const order = (id: string) => ({
     id,
     items: [{ productId: 'product-261009-002', quantity: 1, unitPrice: 10, lineTotal: 10 }],
@@ -583,23 +586,24 @@ describe('upgrading from schema version 2 (the T8 build) to version 3', () => {
           },
         },
       },
+      preferences: DEFAULT_PREFERENCES,
     });
   });
 
-  it('the migrate hook resolves a v2 state stamped with version 3', async () => {
+  it('the migrate hook resolves a v2 state stamped with the current version', async () => {
     const migrated = await migratePersistedState(v2State(), PERSIST_VERSION);
 
-    assert.deepEqual(migrated?._persist, { version: 3, rehydrated: false });
+    assert.deepEqual(migrated?._persist, { version: PERSIST_VERSION, rehydrated: false });
     assert.deepEqual(migrated?.cart, { lines: [cartLine()] });
     assert.deepEqual(migrated?.searchHistory, { entries: ['zinc', 'Vitamina C'] });
     assert.equal(migrated?.orderHistory.orders.length, 3);
   });
 
-  it('a v1 state is still readable by version 3', async () => {
+  it('a v1 state is still readable by the current version', async () => {
     const v1 = storedState({ cart: { lines: [cartLine()] }, orderHistory: { orders: [order('o1')] } }, 1);
     const migrated = await migratePersistedState(v1, PERSIST_VERSION);
 
-    assert.deepEqual(migrated?._persist, { version: 3, rehydrated: false });
+    assert.deepEqual(migrated?._persist, { version: PERSIST_VERSION, rehydrated: false });
     assert.deepEqual(migrated?.cart, { lines: [cartLine()] });
     assert.deepEqual(migrated?.orderHistory, { orders: [order('o1')], notifications: { records: {} } });
   });
@@ -617,5 +621,148 @@ describe('upgrading from schema version 2 (the T8 build) to version 3', () => {
 
   it('an injected schema version never reads the real previous versions', () => {
     assert.deepEqual(sanitizePersistedState(v2State(), 9), EMPTY_SLICES);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Day 6 T4a raised PERSIST_VERSION to 4: `preferences` (language, currency, theme) joined the
+// whitelist. No older build ever wrote it, so v1-v3 states carry no `preferences` key: the upgrade
+// must keep cart, history, checkout attempt (the idempotency key of an unresolved order) and
+// orders untouched, and start the preferences from their defaults.
+// ---------------------------------------------------------------------------------------------
+describe('upgrading from schema versions 1-3 to version 4 (preferences join the whitelist)', () => {
+  const order = {
+    id: 'order-1',
+    items: [{ productId: 'product-261009-002', quantity: 1, unitPrice: 10, lineTotal: 10 }],
+    currency: 'MXN',
+    subtotal: 10,
+    shipping: 0,
+    total: 10,
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const keptSlices = () => ({
+    searchHistory: { entries: ['zinc', 'Vitamina C'] },
+    cart: { lines: [cartLine()] },
+    checkoutAttempt: { key: 'k', fingerprint: 'f', status: 'unresolved', remoteStatus: 'pending' },
+    orderHistory: { orders: [order], notifications: { records: {} } },
+  });
+
+  for (const version of [1, 2, 3]) {
+    it(`a v${version} state keeps the cart, the history, the attempt and the orders and starts the preferences from their defaults`, async () => {
+      const migrated = await migratePersistedState(storedState(keptSlices(), version), PERSIST_VERSION);
+
+      assert.deepEqual(migrated, { ...keptSlices(), preferences: DEFAULT_PREFERENCES, _persist: { version: 4, rehydrated: false } });
+    });
+  }
+
+  it('a v3 state whose preferences key was somehow written still goes through the restorer, field by field', () => {
+    const sanitized = sanitizePersistedState(storedState({ ...keptSlices(), preferences: { language: 'fr', currency: 'USD', theme: 'dark', extra: 1 } }, 3));
+
+    assert.deepEqual(sanitized?.preferences, { currency: 'USD', theme: 'dark' });
+    assert.deepEqual(sanitized?.cart, { lines: [cartLine()] });
+  });
+
+  it('a v4 state restores the stored preferences', () => {
+    const preferences = { language: 'en', currency: 'USD', theme: 'dark' };
+
+    assert.deepEqual(sanitizePersistedState(storedState({ preferences }))?.preferences, preferences);
+  });
+
+  for (const [label, preferences] of [
+    ['missing', undefined],
+    ['null', null],
+    ['not an object', 'dark'],
+    ['an array', ['en', 'USD', 'dark']],
+  ] as const) {
+    it(`a preferences slice that is ${label} falls back to the defaults and takes no other slice with it`, () => {
+      const sanitized = sanitizePersistedState(storedState({ ...keptSlices(), preferences }));
+
+      assert.deepEqual(sanitized?.preferences, DEFAULT_PREFERENCES);
+      assert.deepEqual(sanitized?.cart, { lines: [cartLine()] });
+      assert.deepEqual(sanitized?.searchHistory, { entries: ['zinc', 'Vitamina C'] });
+    });
+  }
+
+  it('an invalid field falls back alone', () => {
+    const sanitized = sanitizePersistedState(storedState({ preferences: { language: 'en', currency: 'EUR', theme: 'sepia' } }));
+
+    assert.deepEqual(sanitized?.preferences, { language: 'en', currency: 'MXN', theme: 'system' });
+  });
+
+  it('an unknown version still resets everything, preferences included', () => {
+    const stored = storedState({ ...keptSlices(), preferences: { language: 'en', currency: 'USD', theme: 'dark' } }, PERSIST_VERSION + 1);
+
+    assert.deepEqual(sanitizePersistedState(stored), EMPTY_SLICES);
+  });
+
+  it('an injected schema version never reads the real previous versions', () => {
+    assert.deepEqual(sanitizePersistedState(storedState(keptSlices(), 3), 9), EMPTY_SLICES);
+  });
+
+  it('never carries personal data next to the preferences', () => {
+    const stored = storedState({ preferences: { language: 'en', currency: 'USD', theme: 'dark', email: 'person@example.test', fullName: 'Fictitious Person' } });
+
+    assert.equal(JSON.stringify(sanitizePersistedState(stored)).includes('Fictitious'), false);
+    assert.equal(JSON.stringify(sanitizePersistedState(stored)).includes('person@example.test'), false);
+  });
+});
+
+describe('preferences through the real redux-persist pipeline', () => {
+  it('a restart restores the language, currency and theme the user chose', async () => {
+    const backend = memoryBackend();
+    const first = await startApp(backend);
+    first.store.dispatch(languageChanged('en'));
+    first.store.dispatch(currencyChanged('USD'));
+    first.store.dispatch(themeChanged('dark'));
+    await first.persistor.flush();
+    first.persistor.pause();
+
+    const second = await startApp(backend);
+
+    assert.deepEqual(second.store.getState().preferences, { language: 'en', currency: 'USD', theme: 'dark' });
+    second.persistor.pause();
+  });
+
+  it('a language that was never chosen is never written: the stored slice has no language key', async () => {
+    const backend = memoryBackend();
+    const { store, persistor } = await startApp(backend);
+    store.dispatch(currencyChanged('USD'));
+    await persistor.flush();
+
+    const stored = JSON.parse(String(readStorage(backend).preferences)) as Record<string, unknown>;
+    assert.deepEqual(stored, { currency: 'USD', theme: 'system' });
+    assert.equal('language' in stored, false);
+    persistor.pause();
+  });
+
+  it('a v3 state on disk is upgraded in place: the cart survives and the next write is stamped v4', async () => {
+    const raw = JSON.stringify({
+      searchHistory: JSON.stringify({ entries: ['zinc'] }),
+      cart: JSON.stringify({ lines: [cartLine()] }),
+      _persist: JSON.stringify({ version: 3, rehydrated: true }),
+    });
+    const backend = memoryBackend({ [STORAGE_KEY]: raw });
+    const { store, persistor } = await startApp(backend);
+
+    assert.deepEqual(store.getState().cart.lines, [cartLine()]);
+    assert.deepEqual(store.getState().searchHistory.entries, ['zinc']);
+    assert.deepEqual(store.getState().preferences, DEFAULT_PREFERENCES);
+
+    store.dispatch(themeChanged('light'));
+    await persistor.flush();
+    assert.deepEqual(JSON.parse(String(readStorage(backend)._persist)), { version: 4, rehydrated: true });
+    assert.deepEqual(JSON.parse(String(readStorage(backend).preferences)), { currency: 'MXN', theme: 'light' });
+    persistor.pause();
+  });
+
+  it('a stored preferences slice with invalid fields restores the valid ones', async () => {
+    const raw = JSON.stringify({
+      preferences: JSON.stringify({ language: 'fr', currency: 'USD', theme: 'dark' }),
+      _persist: JSON.stringify({ version: PERSIST_VERSION, rehydrated: true }),
+    });
+    const { store, persistor } = await startApp(memoryBackend({ [STORAGE_KEY]: raw }));
+
+    assert.deepEqual(store.getState().preferences, { currency: 'USD', theme: 'dark' });
+    persistor.pause();
   });
 });

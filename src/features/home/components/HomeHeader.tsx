@@ -1,3 +1,4 @@
+import type { Ref } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
@@ -15,6 +16,8 @@ import {
 type HomeHeaderProps = {
   onSearchPress: () => void;
   onScanPress: () => void;
+  /** The scan button's view: when the scanner (a modal) closes, the screen reader goes back to it. */
+  scanButtonRef?: Ref<View>;
 };
 
 /**
@@ -23,7 +26,7 @@ type HomeHeaderProps = {
  * label wraps when the system font grows, with a cap so a long word is not split in the middle
  * (`fontScaleLimits.searchField`).
  */
-export function HomeHeader({ onSearchPress, onScanPress }: Readonly<HomeHeaderProps>) {
+export function HomeHeader({ onSearchPress, onScanPress, scanButtonRef }: Readonly<HomeHeaderProps>) {
   const { t } = useTranslation();
   const { colors } = useAppTheme();
   const reduceMotion = useReducedMotionPreference();
@@ -37,7 +40,7 @@ export function HomeHeader({ onSearchPress, onScanPress }: Readonly<HomeHeaderPr
         onPress={onSearchPress}
         style={({ pressed }) => [
           styles.search,
-          { backgroundColor: colors.surface, borderColor: colors.border },
+          { backgroundColor: colors.surface, borderColor: colors.controlBorder },
           pressed && !reduceMotion ? styles.pressed : null,
         ]}>
         <AppIcon
@@ -53,6 +56,7 @@ export function HomeHeader({ onSearchPress, onScanPress }: Readonly<HomeHeaderPr
         </AppText>
       </Pressable>
       <Pressable
+        ref={scanButtonRef}
         accessibilityHint={t('home.header.scanHint')}
         accessibilityLabel={t('home.header.scanLabel')}
         accessibilityRole="button"

@@ -29,7 +29,7 @@ const fields: readonly Readonly<{ name: keyof AddressFormValues; label: string; 
 
 export function AddressForm({ control, errors, handleSubmit, onSubmit }: AddressFormProps) {
   const { t } = useTranslation();
-  const { colors } = useAppTheme();
+  const { colors, scheme } = useAppTheme();
   const errorMessages = fields.map(({ name }) => errors[name]?.message).filter((message): message is string => typeof message === 'string');
   const summaryText = buildValidationSummary(t('checkout.validationSummary', { count: errorMessages.length }), errorMessages.map((message) => t(message)));
 
@@ -43,7 +43,7 @@ export function AddressForm({ control, errors, handleSubmit, onSubmit }: Address
   return (
     <View style={styles.form}>
       {errorMessages.length > 0 && (
-        <View style={[styles.summary, { borderColor: ERROR_COLOR }]}> 
+        <View style={[styles.summary, { borderColor: colors.error }]}>
           <AppText accessible accessibilityRole="alert" accessibilityLiveRegion="polite" accessibilityLabel={summaryText} variant="label">{summaryText}</AppText>
         </View>
       )}
@@ -57,22 +57,29 @@ export function AddressForm({ control, errors, handleSubmit, onSubmit }: Address
             const inputId = `checkout-${name}`;
             return (
               <View style={styles.field}>
-                <AppText nativeID={`${inputId}-label`} variant="label">{t(`checkout.fields.${label}`)}</AppText>
+                {/* H-N5: the TextInput already speaks this text (accessibilityLabel). `aria-hidden` keeps the label
+                    on screen for sighted users but out of the accessibility tree, so it is not a second stop that
+                    repeats the field name. RN maps it to `accessibilityElementsHidden` (iOS) and
+                    `importantForAccessibility="no-hide-descendants"` (Android). */}
+                <AppText aria-hidden nativeID={`${inputId}-label`} variant="label">{t(`checkout.fields.${label}`)}</AppText>
                 <TextInput
                   accessibilityLabel={t(`checkout.fields.${label}`)}
                   accessibilityHint={t(`checkout.hints.${label}`)}
                   aria-errormessage={error ? `${inputId}-error` : undefined}
                   aria-labelledby={`${inputId}-label`}
                   autoCapitalize={name === 'fullName' || name === 'city' || name === 'state' ? 'words' : 'none'}
+                  // The keyboard follows the theme the user chose (it can differ from the system's).
+                  keyboardAppearance={scheme === 'dark' ? 'dark' : 'light'}
                   keyboardType={keyboardType}
                   onBlur={field.onBlur}
                   onChangeText={field.onChange}
                   placeholder={t(`checkout.placeholders.${label}`)}
                   ref={field.ref}
-                  style={[styles.input, { borderColor: error ? ERROR_COLOR : colors.border, color: colors.text }]}
+                  style={[styles.input, { borderColor: error ? colors.error : colors.controlBorder, color: colors.text }]}
+                  testID={inputId}
                   value={field.value ?? ''}
                 />
-                {error && <AppText accessibilityLiveRegion="polite" nativeID={`${inputId}-error`} style={{ color: ERROR_COLOR }}>{t(error)}</AppText>}
+                {error && <AppText accessibilityLiveRegion="polite" nativeID={`${inputId}-error`} style={{ color: colors.error }}>{t(error)}</AppText>}
               </View>
             );
           }}
@@ -92,5 +99,3 @@ const styles = StyleSheet.create({
   summary: { borderWidth: 1, borderRadius: 8, padding: spacing.md },
   submit: { minHeight: sizes.minimumTouchTarget, borderRadius: 999, alignItems: 'center', justifyContent: 'center', padding: spacing.md },
 });
-
-const ERROR_COLOR = '#B42318';

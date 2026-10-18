@@ -23,6 +23,9 @@ export function useScannerController() {
   const requestEpoch = useRef(0);
   const activeQuery = useRef<{ abort(): void } | null>(null);
   const readBarrier = useRef(createScannerReadBarrier());
+  // How many times the device came back online while this scanner was mounted. A lookup remembers
+  // the count when it STARTS; see `runQuery`.
+  const reconnections = useRef(0);
   const wasFocused = useRef(focused);
   const [trigger] = useLazyGetProductByBarcodeQuery();
 
@@ -75,6 +78,7 @@ export function useScannerController() {
 
   const runQuery = useCallback((code: string, epoch: number) => {
     const query = trigger(code);
+    const reconnectionsAtStart = reconnections.current;
     activeQuery.current = query;
     void query
       .unwrap()
@@ -83,7 +87,11 @@ export function useScannerController() {
       })
       .catch((error: unknown) => {
         if (!mounted.current || activeQuery.current !== query) return;
-        if (toApiError(error)?.kind === 'network') setIsOnline(false);
+        // "No answer" is only evidence of being offline if the device did not report coming back
+        // while the 3 attempts of this lookup were running; otherwise this failure is partly older
+        // than the reconnection and must not undo it (nothing would ever set it back: the next
+        // reconnection event may never come).
+        if (toApiError(error)?.kind === 'network' && reconnections.current === reconnectionsAtStart) setIsOnline(false);
         dispatch({ type: 'queryFinished', epoch, error: toApiError(error) ?? { kind: 'invalid' } });
       })
       .finally(() => {
@@ -120,7 +128,14 @@ export function useScannerController() {
     };
   }, [invalidateQuery]);
 
-  useEffect(() => onReconnect(() => setIsOnline(true)), []);
+  useEffect(
+    () =>
+      onReconnect(() => {
+        reconnections.current += 1;
+        setIsOnline(true);
+      }),
+    [],
+  );
 
   useEffect(() => {
     if (focused && !wasFocused.current && state.kind === 'ready') readBarrier.current.rearm();
@@ -139,12 +154,14 @@ export function useScannerController() {
   }, [checkAccess, state.kind]);
 
   const retry = useCallback(() => {
-    if (state.kind === 'offline' && !isOnline) return;
+    // Always allowed: a lookup is a plain GET and repeating it is safe. "Offline" also covers a
+    // server that is down while the system reports a connection, and no reconnection event comes
+    // then, so waiting for one would trap the user (RF-17).
     dispatch({ type: 'retry' });
     if (state.kind === 'offline' || state.kind === 'timeout' || state.kind === 'temporary-error' || state.kind === 'invalid-data') {
       runQuery(state.code, state.epoch + 1);
     }
-  }, [isOnline, runQuery, state]);
+  }, [runQuery, state]);
 
   const mountError = useCallback((reason: string) => {
     readBarrier.current.block();

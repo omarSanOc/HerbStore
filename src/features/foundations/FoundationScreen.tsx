@@ -4,7 +4,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
+import { useAppDispatch } from '@/core/store/hooks';
 import { AppButton, AppSurface, AppText, sizes, spacing, useAppTheme } from '@/design-system';
+import { languageChanged } from '@/features/preferences/store/preferences-slice';
 import { ConceptCard } from '@/features/foundations/components/ConceptCard';
 import {
   FlexLayoutDemo,
@@ -22,6 +24,7 @@ const RenderErrorDemo = __DEV__
 export function FoundationScreen() {
   const reduceMotionEnabled = useReducedMotionPreference();
   const { i18n, t } = useTranslation();
+  const dispatch = useAppDispatch();
   const { scheme } = useAppTheme();
   const scrollViewRef = useRef<ScrollView>(null);
   const [flexDirection, setFlexDirection] = useState<FlexDirectionOption>('row');
@@ -51,13 +54,13 @@ export function FoundationScreen() {
               <AppButton
                 accessibilityHint={t('foundations.selectSpanishHint')}
                 label={t('foundations.spanish')}
-                onPress={() => void i18n.changeLanguage('es')}
+                onPress={() => dispatch(languageChanged('es'))}
                 selected={language === 'es'}
               />
               <AppButton
                 accessibilityHint={t('foundations.selectEnglishHint')}
                 label={t('foundations.english')}
-                onPress={() => void i18n.changeLanguage('en')}
+                onPress={() => dispatch(languageChanged('en'))}
                 selected={language === 'en'}
               />
             </View>

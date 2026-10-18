@@ -1,0 +1,6 @@
+# Maestro workspace config. `maestro test .maestro` runs ONLY the flows listed here:
+# `reset-state.yaml` and everything under `subflows/` are building blocks (runFlow), not tests.
+# The extras (`product-404.yaml`, `deep-link-a-b.yaml`) are optional, short and NOT in the default run
+# (they would lengthen it and are not part of RF-6): run them by path, see README.
+flows:
+  - checkout.yaml

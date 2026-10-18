@@ -1,0 +1,101 @@
+appId: com.herbstore.mobile
+name: Extra - swipe a cart line, tap the revealed Delete, only that line goes
+tags:
+  - extra
+# Optional (RF-31, spec 006; not part of RF-6, not run by default):
+#   maestro --device <id> test .maestro/cart-swipe-delete.yaml
+# Needs the mock server and Metro up, but NOT a fresh mock: it never creates an order. Starts from
+# `clearState`, so the cart is exactly what this flow puts in it: two lines, A above B.
+#
+# THE ONLY COORDINATES IN THESE FLOWS (decision of T6e, plan.md "Decisiones de T6e y T6f"):
+# the revealed "Delete" is hidden from the accessibility tree on purpose (RF-28: a screen reader finds
+# ONE delete action per line, the visible button), and Maestro reads that same tree on iOS (XCTest)
+# and Android (UI Automator). There is no selector for it, so it is reached by a point of the screen.
+# Everything else (seeding, assertions) uses text. Why these percentages: the first line occupies
+# ~20-43 % of the height on the iPhone 17 Pro and ~16-40 % on the Samsung SM-A037M at default text
+# size, so y = 28 % is inside it on both; the open action is ~70-96 % of the width, so x = 83 %.
+# The swipe is 90 % -> 40 % of the width = 50 % (201 pt iPhone, 192 dp Samsung), far above the 80 dp/pt
+# of RF-24 and the release threshold, and it lasts 600 ms because RNGH adds velocity to the distance
+# when it decides on release (`translationX + 0.05 * velocityX`). Maestro's `swipe` takes literal
+# points and a literal duration (an `env` variable is a parse error there), so they are written in
+# the step. A control tap on the CLOSED row comes first: it proves the swipe is what opens the action.
+env:
+  METRO_URL: http://localhost:8081
+  PRODUCT_A_ID: product-261009-062
+  PRODUCT_A_NAME: Evening Magnesium Powder
+  PRODUCT_B_ID: product-261009-063
+  PRODUCT_B_NAME: Garden Protein Capsules
+  # Fictional prices of the mock seed: 450.90 and 285.90 MXN; default currency MXN, English.
+  SUBTOTAL_BOTH: "Cart subtotal: MX$736.80"
+  SUBTOTAL_B_ONLY: "Cart subtotal: MX$285.90"
+  ACTION_POINT: "83%,28%"
+---
+- runFlow:
+    file: subflows/fresh-app.yaml
+    env:
+      METRO_URL: ${METRO_URL}
+
+# --- Seed: two different products through their links (a deep link replaces the open product) ---
+- openLink: "herbstore://product/${PRODUCT_A_ID}"
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn:
+          text: "Open"
+          optional: true
+- extendedWaitUntil:
+    visible: "Add to cart"
+    timeout: 20000
+- tapOn: "Add to cart"
+- extendedWaitUntil:
+    visible: "Cart, 1 item"
+    timeout: 10000
+
+- openLink: "herbstore://product/${PRODUCT_B_ID}"
+- runFlow:
+    when:
+      platform: iOS
+    commands:
+      - tapOn:
+          text: "Open"
+          optional: true
+- extendedWaitUntil:
+    visible: "Add to cart"
+    timeout: 20000
+- tapOn: "Add to cart"
+- extendedWaitUntil:
+    visible: "Cart, 2 items"
+    timeout: 10000
+
+- tapOn: "Cart, 2 items"
+- extendedWaitUntil:
+    visible: "2 products in your cart"
+    timeout: 10000
+- assertVisible: "Delete ${PRODUCT_A_NAME}"
+- assertVisible: "Delete ${PRODUCT_B_NAME}"
+- assertVisible: ${SUBTOTAL_BOTH}
+
+# --- Control: the same point on a CLOSED row deletes nothing, so the swipe is what opens the action --
+- tapOn:
+    point: ${ACTION_POINT}
+- assertVisible: "2 products in your cart"
+- assertVisible: "Delete ${PRODUCT_A_NAME}"
+- assertVisible: ${SUBTOTAL_BOTH}
+
+# --- Swipe line A left and tap the revealed action -------------------------------------------
+- swipe:
+    start: "90%,28%"
+    end: "40%,28%"
+    duration: 600
+- tapOn:
+    point: ${ACTION_POINT}
+
+# --- Only A disappeared, B kept, and the subtotal is B's alone ---------------------------------
+- extendedWaitUntil:
+    visible: "1 product in your cart"
+    timeout: 10000
+- assertNotVisible: "Delete ${PRODUCT_A_NAME}"
+- assertVisible: "Delete ${PRODUCT_B_NAME}"
+- assertVisible: ${SUBTOTAL_B_ONLY}
+- assertNotVisible: ${SUBTOTAL_BOTH}

@@ -10,10 +10,16 @@ type NotFoundScreenProps = {
   /** Defaults to the generic copy; a feature passes its own wording. */
   title?: string;
   message?: string;
+  /**
+   * What "Go to Home" does. The default (`dismissTo('/')`) is right for a 404 INSIDE a tab stack
+   * (product, category). A screen of the root Stack above `(tabs)` (`+not-found`) passes its own
+   * action, because from there `dismissTo` creates a second Home over the stacked detail.
+   */
+  onGoHome?: () => void;
 };
 
 /** Shared "not found" destination with two exits: back, or straight to Home. */
-export function NotFoundScreen({ title, message }: Readonly<NotFoundScreenProps>) {
+export function NotFoundScreen({ title, message, onGoHome }: Readonly<NotFoundScreenProps>) {
   const { t } = useTranslation();
   const router = useRouter();
 
@@ -32,7 +38,7 @@ export function NotFoundScreen({ title, message }: Readonly<NotFoundScreenProps>
       <AppButton
         accessibilityHint={t('notFound.goHomeHint')}
         label={t('notFound.goHome')}
-        onPress={() => router.dismissTo('/')}
+        onPress={onGoHome ?? (() => router.dismissTo('/'))}
       />
     </MessageScreen>
   );

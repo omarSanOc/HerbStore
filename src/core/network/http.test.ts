@@ -321,4 +321,179 @@ describe('fetchJson', () => {
       assert.deepEqual(aborted, { kind: 'aborted' });
     });
   });
+
+  // M-5 (T2). The response head arrives, then the body stalls or breaks. The request timer and the
+  // caller's signal must still decide the outcome, because real runtimes reject the body read with
+  // whatever error they like (expo/fetch: `FetchError extends Error`; Hermes polyfill: `TypeError`).
+  // Android/OkHttp: `SocketTimeoutException` while reading the body; iOS: `URLError.timedOut`
+  // from `URLSession` after the headers. Time is controlled (`mock.timers`): no real waiting.
+  describe('cancellation while reading the body (M-5)', () => {
+    class FetchError extends Error {}
+
+    /** A response whose head is fine and whose body only ends when the request is aborted. */
+    function stalledBody(status: number, rejectWith: () => unknown, reads: { count: number }): FetchImpl {
+      return async (_url, init) =>
+        ({
+          ok: status >= 200 && status < 300,
+          status,
+          json: () => {
+            reads.count += 1;
+            return new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener('abort', () => reject(rejectWith()));
+            });
+          },
+        }) as unknown as Response;
+    }
+
+    // Different ways a runtime may reject an aborted body read. None of them may read as `network`.
+    const rejections: readonly (readonly [string, () => unknown])[] = [
+      ['AbortError', () => new DOMException('The operation was aborted.', 'AbortError')],
+      ['expo/fetch FetchError', () => new FetchError('fetch failed: request aborted')],
+      ['TypeError', () => new TypeError('Network request failed')],
+      ['a string', () => 'aborted'],
+    ];
+
+    // Lets the awaited `fetchImpl` and the `json()` call run before the clock moves.
+    const settleMicrotasks = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    for (const [label, rejectWith] of rejections) {
+      it(`2xx: a body that stalls until the timeout is timeout, not invalid or network (${label})`, async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout'] });
+        const reads = { count: 0 };
+        const pending = fetchJson('http://x.test/a', {
+          parse: parseName,
+          fetchImpl: stalledBody(200, rejectWith, reads),
+          timeoutMs: 8_000,
+        });
+
+        await settleMicrotasks();
+        t.mock.timers.tick(7_999);
+        await settleMicrotasks();
+        assert.equal(reads.count, 1, 'the body is being read and has not been given up yet');
+
+        t.mock.timers.tick(1);
+        assert.deepEqual(await pending, { kind: 'timeout' });
+      });
+
+      it(`2xx: the caller's own abort during the body read is aborted, never timeout or network (${label})`, async (t) => {
+        t.mock.timers.enable({ apis: ['setTimeout'] });
+        const controller = new AbortController();
+        const reads = { count: 0 };
+        const pending = fetchJson('http://x.test/a', {
+          parse: parseName,
+          fetchImpl: stalledBody(200, rejectWith, reads),
+          signal: controller.signal,
+          timeoutMs: 8_000,
+        });
+
+        await settleMicrotasks();
+        controller.abort();
+
+        assert.deepEqual(await pending, { kind: 'aborted' });
+      });
+    }
+
+    it('2xx: a body that fails with no cancellation involved stays invalid (the answer is unusable)', async () => {
+      const reads = { count: 0 };
+      const broken: FetchImpl = async () =>
+        ({
+          ok: true,
+          status: 200,
+          json: () => {
+            reads.count += 1;
+            return Promise.reject(new FetchError('fetch failed: connection reset'));
+          },
+        }) as unknown as Response;
+
+      assert.deepEqual(await fetchJson('http://x.test/a', { parse: parseName, fetchImpl: broken }), { kind: 'invalid' });
+      assert.equal(reads.count, 1);
+    });
+
+    describe('non-2xx with parseErrorBody (the order protocol reads 4xx bodies)', () => {
+      const parseErrorBody = (status: number, payload: unknown) => ({ status, payload });
+
+      for (const [label, rejectWith] of rejections) {
+        it(`a stalled error body that hits the timeout is timeout, like on a 2xx (${label})`, async (t) => {
+          t.mock.timers.enable({ apis: ['setTimeout'] });
+          const reads = { count: 0 };
+          const pending = fetchJson('http://x.test/orders', {
+            parse: parseName,
+            parseErrorBody,
+            fetchImpl: stalledBody(503, rejectWith, reads),
+            timeoutMs: 8_000,
+          });
+
+          await settleMicrotasks();
+          t.mock.timers.tick(8_000);
+
+          assert.deepEqual(await pending, { kind: 'timeout' });
+          assert.equal(reads.count, 1);
+        });
+
+        it(`a stalled error body cancelled by the caller is aborted (${label})`, async (t) => {
+          t.mock.timers.enable({ apis: ['setTimeout'] });
+          const controller = new AbortController();
+          const reads = { count: 0 };
+          const pending = fetchJson('http://x.test/orders', {
+            parse: parseName,
+            parseErrorBody,
+            fetchImpl: stalledBody(409, rejectWith, reads),
+            signal: controller.signal,
+            timeoutMs: 8_000,
+          });
+
+          await settleMicrotasks();
+          controller.abort();
+
+          assert.deepEqual(await pending, { kind: 'aborted' });
+        });
+      }
+
+      it('without parseErrorBody the body is never read, so a stalled one cannot delay the status', async () => {
+        const reads = { count: 0 };
+        const outcome = await fetchJson('http://x.test/a', {
+          parse: parseName,
+          fetchImpl: stalledBody(503, () => new Error('never'), reads),
+          timeoutMs: 8_000,
+        });
+
+        assert.deepEqual(outcome, { kind: 'http', status: 503 });
+        assert.equal(reads.count, 0);
+      });
+
+      it('a readable error body is attached; an unreadable one (no cancellation) keeps only the status', async () => {
+        const readable = await fetchJson('http://x.test/orders', {
+          parse: parseName,
+          parseErrorBody,
+          fetchImpl: async () => jsonResponse({ error: { code: 'OUT_OF_STOCK' } }, 409),
+        });
+        const notJson = await fetchJson('http://x.test/orders', {
+          parse: parseName,
+          parseErrorBody,
+          fetchImpl: async () => new Response('<html>bad gateway</html>', { status: 502 }),
+        });
+        const parserThrows = await fetchJson('http://x.test/orders', {
+          parse: parseName,
+          parseErrorBody: () => {
+            throw new Error('parser bug');
+          },
+          fetchImpl: async () => jsonResponse({}, 500),
+        });
+        const parserDeclines = await fetchJson('http://x.test/orders', {
+          parse: parseName,
+          parseErrorBody: () => undefined,
+          fetchImpl: async () => jsonResponse({}, 404),
+        });
+
+        assert.deepEqual(readable, {
+          kind: 'http',
+          status: 409,
+          body: { status: 409, payload: { error: { code: 'OUT_OF_STOCK' } } },
+        });
+        assert.deepEqual(notJson, { kind: 'http', status: 502 });
+        assert.deepEqual(parserThrows, { kind: 'http', status: 500 });
+        assert.deepEqual(parserDeclines, { kind: 'http', status: 404 });
+      });
+    });
+  });
 });

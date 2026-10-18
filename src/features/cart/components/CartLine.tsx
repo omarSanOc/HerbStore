@@ -91,7 +91,7 @@ export function CartLine({
           accessibilityValue={{ min: 1, max: line.stock, now: line.quantity, text: String(line.quantity) }}
           accessible
           onAccessibilityAction={onAccessibilityAction}
-          style={[styles.quantity, { borderColor: colors.border }]}>
+          style={[styles.quantity, { borderColor: colors.controlBorder }]}>
           <AppText maxFontSizeMultiplier={fontScaleLimits.actionLabel} variant="label">
             {line.quantity}
           </AppText>

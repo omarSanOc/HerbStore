@@ -100,7 +100,10 @@ export async function fetchJson<T>(
           ? { kind: 'http', status: response.status }
           : { kind: 'http', status: response.status, body };
       } catch {
-        return { kind: 'http', status: response.status };
+        // The head said "failed" and the body stalled or broke. Our own timeout/abort still wins
+        // (same rule as the 2xx branch: a 5xx that was retried after 8 s of silence would break
+        // the "timeouts are not retried" policy); otherwise the status is all the answer we have.
+        return cancelled() ?? { kind: 'http', status: response.status };
       }
     }
 

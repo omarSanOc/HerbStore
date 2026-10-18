@@ -119,3 +119,67 @@ describe('formatMoney (Intl.NumberFormat is the last step)', () => {
     assert.equal(plain(formatMoney(1, 'USD', 'en')), '$0.01');
   });
 });
+
+// T2 (RF-3). Zero, tiny and awkward decimal amounts, as a table: input -> canonical MXN cents.
+describe('zero and decimal amounts (table)', () => {
+  const cases: readonly (readonly [amount: number, currency: 'MXN' | 'USD', mxnCents: number])[] = [
+    [0, 'MXN', 0],
+    [0, 'USD', 0],
+    [0.01, 'MXN', 1],
+    [0.01, 'USD', 18],
+    [0.1, 'MXN', 10],
+    [0.29, 'MXN', 29], // 0.29 * 100 = 28.999999999999996
+    [19.99, 'USD', 35_982],
+    [799.99, 'MXN', 79_999],
+    [800, 'MXN', 80_000],
+    [800.01, 'MXN', 80_001],
+    [44.44, 'USD', 79_992],
+    [44.45, 'USD', 80_010],
+    [1234.56, 'MXN', 123_456],
+  ];
+
+  for (const [amount, currency, expected] of cases) {
+    it(`${amount} ${currency} is ${expected} canonical MXN cents`, () => {
+      const actual = toMxnCents(amount, currency);
+      assert.equal(actual, expected);
+      assert.equal(Number.isInteger(actual), true);
+    });
+  }
+
+  it('zero is zero in every view and format', () => {
+    for (const view of ['MXN', 'USD'] as const) {
+      assert.equal(fromMxnCents(0, view), 0);
+      for (const language of ['es', 'en']) assert.match(plain(formatMoney(0, view, language)), /0\.00$/);
+    }
+  });
+});
+
+// T2 (RF-3, RF-8 groundwork). Language and currency are independent axes: changing both at once
+// changes only the TEXT of an amount; the canonical value and the view cents do not depend on the
+// language. 2 x 2 matrix over one canonical amount.
+describe('language x currency (simultaneous change)', () => {
+  const canonical = 123_456; // 1,234.56 MXN
+
+  const expected: Readonly<Record<string, string>> = {
+    'es MXN': '$1,234.56',
+    'en MXN': 'MX$1,234.56',
+    'es USD': 'USD 68.59', // 123456 / 18 = 6858.67 -> 6859 cents
+    'en USD': '$68.59',
+  };
+
+  for (const language of ['es', 'en']) {
+    for (const currency of ['MXN', 'USD'] as const) {
+      it(`${language} + ${currency}: ${expected[`${language} ${currency}`]}`, () => {
+        const cents = fromMxnCents(canonical, currency);
+        assert.equal(plain(formatMoney(cents, currency, language)), expected[`${language} ${currency}`]);
+      });
+    }
+  }
+
+  it('the view cents depend only on the currency; the language never changes the number', () => {
+    for (const currency of ['MXN', 'USD'] as const) {
+      const digits = ['es', 'en'].map((language) => plain(formatMoney(fromMxnCents(canonical, currency), currency, language)).replace(/[^\d.]/g, ''));
+      assert.equal(digits[0], digits[1], currency);
+    }
+  });
+});

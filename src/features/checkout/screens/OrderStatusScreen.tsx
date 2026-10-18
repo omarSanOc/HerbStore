@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { ScrollView, StyleSheet, type Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useTranslation } from 'react-i18next';
 import { AppButton, AppSurface, AppText, spacing } from '@/design-system';
+import { useFocusOnMount } from '@/core/accessibility/use-focus-on-mount';
 import { useAppDispatch, useAppSelector, useAppStore } from '@/core/store/hooks';
 import type { AttemptOutcome } from '../logic/attempt-machine';
 import { initialRedirectPhase, nextRedirect, type RedirectPhase, type RedirectTarget } from '../logic/order-status-redirect';
@@ -25,6 +26,8 @@ export function OrderStatusScreen() {
   const router = useRouter();
   const dispatch = useAppDispatch();
   const store = useAppStore();
+  // The screen replaces the checkout, whose focused button is gone: say where the reader goes.
+  const titleRef = useFocusOnMount<Text>();
   const attempt = useAppSelector((state) => state.checkoutAttempt);
   const [remaining, setRemaining] = useState(() => attempt.remoteStatus === 'pending' ? 1 : 0);
   const [busy, setBusy] = useState(false);
@@ -86,14 +89,17 @@ export function OrderStatusScreen() {
   };
   return (
     <AppSurface level="page" style={styles.page}>
-      <View style={styles.content} accessibilityLiveRegion="polite">
-        <AppText accessibilityRole="header" variant="subheading">{t('checkout.status.title')}</AppText>
+      {/* Scrollable (RF-15): with a large font the text and the two buttons are taller than the screen. */}
+      <ScrollView testID="order-status-scroll" contentContainerStyle={styles.content}>
+      <View accessibilityLiveRegion="polite" style={styles.live}>
+        <AppText ref={titleRef} accessibilityRole="header" variant="subheading">{t('checkout.status.title')}</AppText>
         <AppText>{attempt.remoteStatus === 'pending' ? t('checkout.status.pending') : t('checkout.status.unresolved')}</AppText>
-        {remaining > 0 && <AppText>{t('checkout.status.wait', { seconds: remaining })}</AppText>}
+        {remaining > 0 && <AppText>{t('checkout.status.wait', { count: remaining })}</AppText>}
         <AppButton accessibilityHint={t('checkout.status.consultHint')} disabled={remaining > 0 || busy} label={busy ? t('checkout.status.consulting') : t('checkout.status.consult')} onPress={() => void consult()} variant="primary" />
         <AppButton accessibilityHint={t('checkout.status.cancelHint')} label={t('checkout.status.cancel')} onPress={cancel} />
       </View>
+      </ScrollView>
     </AppSurface>
   );
 }
-const styles = StyleSheet.create({ page: { flex: 1 }, content: { padding: spacing.md, gap: spacing.md } });
+const styles = StyleSheet.create({ page: { flex: 1 }, content: { padding: spacing.md }, live: { gap: spacing.md } });

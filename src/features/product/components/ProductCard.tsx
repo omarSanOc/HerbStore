@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
 import { useAppSelector } from '@/core/store/hooks';
-import { AppText, RemoteImage, radii, spacing, useAppTheme } from '@/design-system';
+import { AppText, RemoteImage, fontScaleLimits, radii, spacing, useAppTheme } from '@/design-system';
 import { selectPreferredCurrency } from '@/features/preferences/store/preferences-slice';
 
 import type { CatalogProduct } from '../contracts/catalog-product';
@@ -95,20 +95,21 @@ export function ProductCard({ product, onPress, width }: Readonly<ProductCardPro
         )}
       </View>
       <View style={styles.body}>
-        <AppText variant="label">{model.name}</AppText>
+        {/* The card keeps its own width, so its texts scale only up to `cardText` (a word is never split). */}
+        <AppText maxFontSizeMultiplier={fontScaleLimits.cardText} variant="label">{model.name}</AppText>
         <View style={styles.prices}>
-          <AppText variant="label">{model.price}</AppText>
+          <AppText maxFontSizeMultiplier={fontScaleLimits.cardText} variant="label">{model.price}</AppText>
           {model.listPrice === undefined ? null : (
-            <AppText style={styles.listPrice} tone="muted">
+            <AppText maxFontSizeMultiplier={fontScaleLimits.cardText} style={styles.listPrice} tone="muted">
               {model.listPrice}
             </AppText>
           )}
         </View>
-        <AppText style={styles.rating} tone="muted">
+        <AppText maxFontSizeMultiplier={fontScaleLimits.cardText} style={styles.rating} tone="muted">
           {rating === undefined ? t('productCard.noReviews') : `★ ${rating.value} (${rating.countText})`}
         </AppText>
         {model.inStock ? null : (
-          <AppText style={styles.stock} variant="label">
+          <AppText maxFontSizeMultiplier={fontScaleLimits.cardText} style={styles.stock} variant="label">
             {t('productCard.outOfStock')}
           </AppText>
         )}

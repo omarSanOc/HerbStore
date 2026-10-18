@@ -14,6 +14,7 @@ import {
   useState,
   type ReactNode,
   type Ref,
+  type RefObject,
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AccessibilityInfo, BackHandler, StyleSheet, Text, View } from 'react-native';
@@ -22,6 +23,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
 import { modalSheetRegistry } from '@/core/accessibility/modal-sheet-registry';
+import {
+  moveScreenReaderFocus,
+  type ScreenReaderFocusTarget,
+} from '@/core/accessibility/screen-reader-focus';
 import { AppButton } from '@/design-system/components/AppButton';
 import { AppText } from '@/design-system/components/AppText';
 import { radii, spacing } from '@/design-system/tokens';
@@ -32,6 +37,15 @@ export type AppBottomSheetHandle = {
   present: () => void;
   dismiss: () => void;
 };
+
+/**
+ * Pause between the sheet being gone and the screen-reader focus going back to its opener. The
+ * app behind a sheet is exposed to the reader again as soon as the sheet STARTS to close
+ * (`handleAnimate`), so by `onDismiss` the opener is already reachable; this only lets the
+ * sheet's own nodes finish leaving the tree, so the reader has no focus of its own to replace ours.
+ * Measured on TalkBack: 60 ms lost the race (focus ended on the Back arrow), 120 ms won it.
+ */
+const FOCUS_RETURN_DELAY_MS = 120;
 
 /** Height of a `fixed` sheet, as a share of the space under the status bar. */
 const FIXED_SNAP_POINTS = ['90%'];
@@ -64,6 +78,12 @@ type AppBottomSheetProps = {
   children: ReactNode;
   /** After the sheet is fully closed and unmounted (any way of closing). */
   onDismiss?: () => void;
+  /**
+   * The control that opened the sheet. When the sheet closes (any way of closing) the screen-reader
+   * focus goes back to it, as the spec asks (RF-14). Without it the platform decides where the
+   * focus lands, and on TalkBack that was the Back arrow of the screen, or nowhere.
+   */
+  returnFocusTo?: RefObject<ScreenReaderFocusTarget | null>;
 };
 
 type AppBottomSheetControls = { dismiss: () => void };
@@ -148,7 +168,10 @@ function SheetBackdrop(props: Readonly<BottomSheetBackdropProps>) {
  *   "Bottom Sheet"), which on iOS would swallow every button inside it; `accessible={false}`
  *   undoes that. The background, handle and backdrop are replaced (above). The app behind is
  *   hidden from screen readers through the registry. Focus moves to the title when the sheet
- *   settles, and the iOS "escape" gesture (two-finger Z) closes it.
+ *   settles and, when it closes, back to `returnFocusTo` (the opener), whose label already says what
+ *   changed ("Sort: Price", "Filters, 2 active"): the focus speech IS the confirmation, so nothing
+ *   is announced on top of it (an announcement made next to a focus move is cut off by it). The iOS
+ *   "escape" gesture (two-finger Z) closes it.
  *
  * Compose: `ModalBottomSheet(onDismissRequest, sheetState)` (a separate window, so accessibility
  * and Back are handled by the platform). SwiftUI: `.sheet(isPresented:)` with
@@ -163,6 +186,7 @@ export function AppBottomSheet({
   layout = 'content',
   children,
   onDismiss,
+  returnFocusTo,
 }: Readonly<AppBottomSheetProps>) {
   const modalRef = useRef<BottomSheetModal>(null);
   const titleRef = useRef<Text>(null);
@@ -170,44 +194,101 @@ export function AppBottomSheet({
   const insets = useSafeAreaInsets();
   // True from `present()` until the sheet has unmounted: Back is ours during all of it.
   const [isOpen, setIsOpen] = useState(false);
+  // The pending "focus back to the opener" (see `FOCUS_RETURN_DELAY_MS`).
+  const focusReturnTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Android Back while the sheet is open (see the doc above). A ref, registered inside `open()`
+  // itself and not in an effect: the effect only runs after React commits, and a Back pressed in
+  // that gap went to the screen under the sheet (F-3).
+  const backSubscription = useRef<{ remove: () => void } | undefined>(undefined);
+  // `present()` takes effect a frame later, and the library IGNORES a `dismiss()` that comes before
+  // the sheet is mounted (the sheet then opened anyway: a lost Back, F-3). Until the sheet has
+  // settled a close request is remembered and carried out the moment it has.
+  const isSettled = useRef(false);
+  const closeWhenSettled = useRef(false);
 
-  const open = () => {
-    setIsOpen(true);
-    modalRef.current?.present();
+  const removeBackListener = () => {
+    backSubscription.current?.remove();
+    backSubscription.current = undefined;
   };
 
   const close = () => {
+    if (!isSettled.current) {
+      closeWhenSettled.current = true;
+      return;
+    }
     modalRef.current?.dismiss();
+  };
+
+  const open = () => {
+    // Opened again before the focus went back: the old move is stale.
+    clearTimeout(focusReturnTimer.current);
+    isSettled.current = false;
+    closeWhenSettled.current = false;
+    setIsOpen(true);
+    modalRef.current?.present();
+    removeBackListener();
+    backSubscription.current = BackHandler.addEventListener('hardwareBackPress', () => {
+      close();
+      return true;
+    });
   };
 
   useImperativeHandle(ref, () => ({ present: open, dismiss: close }));
 
-  // While open: Android Back closes the sheet (see the doc above) and the app behind is hidden
-  // from screen readers. Both are an external system, hence an effect with its own cleanup (which
-  // also runs if the screen unmounts with the sheet open).
+  // A screen that goes away with the focus move still pending must not make it, nor keep Back.
+  useEffect(
+    () => () => {
+      clearTimeout(focusReturnTimer.current);
+      removeBackListener();
+    },
+    [],
+  );
+
+  // While open the app behind is hidden from screen readers. An external system, hence an effect
+  // with its own cleanup (which also runs if the screen unmounts with the sheet open).
   useEffect(() => {
     if (!isOpen) {
       return;
     }
 
     modalSheetRegistry.setOpen(name, true);
-    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      modalRef.current?.dismiss();
-      return true;
-    });
-
     return () => {
-      subscription.remove();
       modalSheetRegistry.setOpen(name, false);
     };
   }, [isOpen, name]);
 
   const handleDismissed = () => {
+    isSettled.current = false;
+    closeWhenSettled.current = false;
+    removeBackListener();
     setIsOpen(false);
     onDismiss?.();
+
+    // Focus back to the opener (see `FOCUS_RETURN_DELAY_MS`).
+    clearTimeout(focusReturnTimer.current);
+    focusReturnTimer.current = setTimeout(() => {
+      moveScreenReaderFocus(returnFocusTo?.current);
+    }, FOCUS_RETURN_DELAY_MS);
+  };
+
+  // The sheet is about to move: toward closed (`toIndex < 0`) the app behind becomes readable again
+  // NOW, not when the animation ends, so that the focus move after `onDismiss` reaches a node the
+  // reader already exposes (a node still hidden when the event arrives never takes the focus).
+  const handleAnimate = (_fromIndex: number, toIndex: number) => {
+    modalSheetRegistry.setOpen(name, toIndex >= 0);
   };
 
   const handleChange = (index: number) => {
+    if (index >= 0) {
+      isSettled.current = true;
+      if (closeWhenSettled.current) {
+        // Back (or Close) came before the sheet was there: it was asked to leave, so it does.
+        closeWhenSettled.current = false;
+        modalRef.current?.dismiss();
+        return;
+      }
+    }
+
     if (index >= 0 && titleRef.current !== null) {
       // Screen-reader focus on the title, once the sheet is in place (not trapped: Close, Back,
       // the escape gesture and a drag all leave).
@@ -241,6 +322,7 @@ export function AppBottomSheet({
       enablePanDownToClose
       handleComponent={SheetHandle}
       name={name}
+      onAnimate={handleAnimate}
       onChange={handleChange}
       onDismiss={handleDismissed}
       overrideReduceMotion={reduceMotion ? ReduceMotion.Always : ReduceMotion.System}

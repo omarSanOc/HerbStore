@@ -1,7 +1,8 @@
-import type { Ref } from 'react';
+import type { Ref, RefObject } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
+import type { ScreenReaderFocusTarget } from '@/core/accessibility/screen-reader-focus';
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
 import {
   AppBottomSheet,
@@ -23,6 +24,8 @@ type SortSheetProps = {
   sort: ProductSort;
   /** Called with the chosen sort; the sheet closes itself right after. */
   onSelect: (sort: ProductSort) => void;
+  /** The button that opens this sheet: the screen-reader focus goes back to it on close. */
+  returnFocusTo?: RefObject<ScreenReaderFocusTarget | null>;
 };
 
 /** Translation key of each sort option (the values are exactly the five of RF-15). */
@@ -43,7 +46,7 @@ export const sortLabelKeys = {
  * Compose: `ModalBottomSheet` with a column of `Row(Modifier.selectable(role = Role.RadioButton))`.
  * SwiftUI: `.sheet` with `.presentationDetents([.medium])` and a `Picker` or a list of buttons.
  */
-export function SortSheet({ ref, sort, onSelect }: Readonly<SortSheetProps>) {
+export function SortSheet({ ref, sort, onSelect, returnFocusTo }: Readonly<SortSheetProps>) {
   const { t } = useTranslation();
 
   return (
@@ -52,6 +55,7 @@ export function SortSheet({ ref, sort, onSelect }: Readonly<SortSheetProps>) {
       closeHint={t('productList.sort.closeHint')}
       closeLabel={t('productList.sort.close')}
       name="sort"
+      returnFocusTo={returnFocusTo}
       title={t('productList.sort.title')}>
       <View accessibilityRole="radiogroup" style={styles.options}>
         {PRODUCT_SORTS.map((option) => (
@@ -91,14 +95,15 @@ function SortOption({ label, selected, onPress }: Readonly<SortOptionProps>) {
       accessibilityRole="radio"
       accessibilityState={{ checked: selected }}
       onPress={() => {
-        // Apply first, then close: the list already shows the new order when the sheet leaves.
+        // Apply first, then close: the list already shows the new order when the sheet leaves. The
+        // focus goes back to the sort button, whose label now names the new order.
         onPress();
         dismiss();
       }}
       style={({ pressed }) => [
         styles.option,
         {
-          borderColor: selected ? colors.primary : colors.border,
+          borderColor: selected ? colors.primary : colors.controlBorder,
           // A border of constant width, so selecting does not move the text.
           borderWidth: selected ? 2 : 1,
         },

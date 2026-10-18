@@ -64,7 +64,7 @@ npx tsc --noEmit                 # TypeScript strict
 npx expo-doctor@latest           # Diagnóstico Expo
 npm --prefix mock-server run dev # Servidor mock, cuando esté creado
 ```
-- Usa Jest/RNTL para unitarios y componentes, y Maestro para E2E cuando esa infraestructura esté disponible.
+- Tests: `npm test` ejecuta ambos runners; `npm run test:logic` (`node:test`, `*.test.ts`) y `npm run test:jest` (Jest + RNTL, `*.test.tsx`). La extensión decide el runner. Maestro para E2E cuando esa infraestructura esté disponible.
 - No ejecutes `npm audit fix --force`; puede sustituir versiones coordinadas por Expo.
 
 ## Memoria
@@ -85,5 +85,5 @@ npm --prefix mock-server run dev # Servidor mock, cuando esté creado
 - Cambios JS/TS: `npx expo lint` y `npx tsc --noEmit`.
 - Dependencias/configuración: añade `npx expo install --check` y `npx expo-doctor@latest`.
 - Código nativo: recompila y prueba el Development Build en Android e iOS.
-- Lógica: tests Jest; componentes: React Native Testing Library; flujos críticos: Maestro.
+- Lógica: `node:test` (`*.test.ts`); componentes: Jest + React Native Testing Library (`*.test.tsx`); flujos críticos: Maestro.
 - Interfaz: revisa estados loading/error/empty/offline, accesibilidad, tema claro/oscuro y texto escalado.

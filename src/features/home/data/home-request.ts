@@ -1,6 +1,6 @@
 import type { HomeData } from '../contracts/home.ts';
 import { parseHomePayload } from '../contracts/parse-home.ts';
-import { applyHomeFixture, type HomeFixture } from './home-fixtures.ts';
+import type { HomeFixture } from './home-fixtures.ts';
 
 /**
  * What the `getHome` endpoint asks the base query for: a path and the validator of its payload.
@@ -19,14 +19,24 @@ export type HomeRequest = {
  * - `server-fail` asks the real server for its simulated 500 (`?fail=true`).
  * - the data fixtures transform an already valid payload, so a real failure is never hidden.
  *
+ * `applyFixture` is INJECTED instead of imported: a static `import` of `home-fixtures.ts` would put
+ * the fixtures in the release bundle even though `fixture` is always `undefined` there (Metro
+ * bundles what is imported, not what runs). `home-api.ts` supplies it only under `__DEV__`
+ * (see `src/test/production-bundle-audit.test.ts`).
+ *
  * Timeout (8 s), retries and the error taxonomy are the base query's job, not this file's.
  */
-export function buildHomeRequest(fixture: HomeFixture | undefined): HomeRequest {
+export function buildHomeRequest(
+  fixture: HomeFixture | undefined,
+  applyFixture?: (fixture: HomeFixture, data: HomeData) => HomeData,
+): HomeRequest {
   return {
     path: fixture === 'server-fail' ? '/home?fail=true' : '/home',
     parse: (payload) => {
       const data = parseHomePayload(payload);
-      return data !== undefined && fixture !== undefined ? applyHomeFixture(fixture, data) : data;
+      return data !== undefined && fixture !== undefined && applyFixture !== undefined
+        ? applyFixture(fixture, data)
+        : data;
     },
   };
 }

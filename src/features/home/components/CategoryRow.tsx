@@ -1,8 +1,8 @@
-import { FlatList, Pressable, StyleSheet, View } from 'react-native';
+import { FlatList, Pressable, StyleSheet, useWindowDimensions, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
-import { AppText, RemoteImage, sizes, spacing, useAppTheme } from '@/design-system';
+import { AppText, RemoteImage, scaleWithFont, sizes, spacing, useAppTheme } from '@/design-system';
 import { categoryInitial, categoryLabelKey } from '@/features/categories/category-labels';
 
 import type { HomeCategory } from '../contracts/home';
@@ -18,6 +18,7 @@ type CategoryRowProps = {
 /** Titled horizontal row of circular categories. Each one is a button; its image is decorative. */
 export function CategoryRow({ categories, onOpenCategory }: Readonly<CategoryRowProps>) {
   const { t } = useTranslation();
+  const { fontScale } = useWindowDimensions();
 
   return (
     <View style={styles.section}>
@@ -25,7 +26,9 @@ export function CategoryRow({ categories, onOpenCategory }: Readonly<CategoryRow
         {t('home.rows.categories')}
       </AppText>
       <FlatList
-        contentContainerStyle={styles.content}
+        testID="category-row"
+        // The gap grows with the font: a constant 8 dp left large labels almost touching (H-7).
+        contentContainerStyle={[styles.content, { gap: scaleWithFont(spacing.sm, fontScale) }]}
         data={categories}
         horizontal
         keyExtractor={keyExtractor}
@@ -76,7 +79,6 @@ const styles = StyleSheet.create({
     marginHorizontal: -HOME_GUTTER,
   },
   content: {
-    gap: spacing.sm,
     paddingHorizontal: HOME_GUTTER,
   },
   item: {

@@ -13,7 +13,7 @@ import {
   orderHistoryReducer,
   orderRecorded,
 } from '../../features/orders/store/order-history-slice.ts';
-import { createPersistConfig, PERSIST_KEY } from './persist-policy.ts';
+import { createPersistConfig, PERSIST_KEY, PERSIST_VERSION } from './persist-policy.ts';
 import { createSafeStorage, type KeyValueBackend } from './persist-storage.ts';
 
 // The REAL redux-persist pipeline (reducer, persistoid, rehydration, `migrate`) over an in-memory
@@ -173,7 +173,7 @@ describe('order notification marks through the real persistence pipeline', () =>
     await first.settle();
     await first.persistor.flush();
     assert.equal(storedOrderHistory(backend).notifications.records.o1?.unusableReason, 'denied-recoverable');
-    assert.equal((JSON.parse(JSON.parse(backend.values.get(STORAGE_KEY) ?? '{}')._persist) as { version: number }).version, 3);
+    assert.equal((JSON.parse(JSON.parse(backend.values.get(STORAGE_KEY) ?? '{}')._persist) as { version: number }).version, PERSIST_VERSION);
     first.persistor.pause();
 
     const second = await startApp(backend, () => Promise.resolve<OrderNotificationScheduleResult>({ kind: 'unusable', canOpenSettings: true, reason: 'blocked' }));

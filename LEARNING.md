@@ -2900,3 +2900,297 @@ Se marca solo lo que está respaldado por evidencia registrada. Las casillas sin
 Qué prueba y qué no el build remoto: prueba que el servicio instala las dependencias, aplica los config plugins, genera `ios/`/`android/` con CNG y compila el módulo Kotlin/Swift con el perfil indicado, y que su huella coincide con la local. **No** prueba que la app cargue el catálogo (`EXPO_PUBLIC_API_ORIGIN` es el placeholder público `https://api.example.test`, y los artefactos no se instalaron) ni sustituye la validación en dispositivo. `EXPO_PUBLIC_API_ORIGIN` se declara en `env` de cada perfil de `eas.json` (público, no secreto, reproducible desde Git); la alternativa, una variable hospedada en EAS con visibilidad «Plain text», es la que se usaría con una URL real distinta por entorno. Detalle, comandos, límites y seguimientos del Día 6 en `docs/evidence/day-5-platform.md`.
 
 Los builds de esta vuelta reemplazan a los del mediodía (`a13ab87a…`, `08cf7ee7…`, `c66441e0…`), hechos antes de los parches. La huella cambió (Android `a6659518…` → `13218f3f…`, iOS `27b01168…` → `156ff282…`) porque `expo`, `@expo/ui` y `expo-router` son fuentes de la huella: subir un parche de una dependencia nativa pide un binario nuevo, igual que en Android con una subida de versión de Gradle o en iOS con `pod update`. La huella local y la remota coinciden. El commit de cierre es `feat: complete day 5 native platform features` (se consulta con `git log --grep "day 5"`); los builds de EAS muestran el `gitCommitHash` `4e95c67` porque se lanzaron antes de ese commit.
+
+## Día 6 — Calidad y preparación de entrevista (T1–T8; pendiente de validación y commit)
+
+Estado (2026-10-17): T1–T8 hechas en código, pruebas y evidencia; **el commit final lo lanza el coordinador tras la validación RF por RF del reviewer y la confirmación manual del usuario** (AGENTS.md: commit solo al completar y validar el día). La spec 006 sigue `aprobada`; «validada»/`implementada` lo decide el reviewer.
+
+Spec: `specs/006-dia-6-calidad-entrevista` (RF-1 a RF-32, con el cambio de requisitos del gesto de eliminar, aprobado el 2026-10-17). Evidencia fechada: `docs/evidence/day-6-{e2e,accessibility,text-targets,contrast-motion,performance,cart-swipe}.md` (la del gesto: [`docs/evidence/day-6-cart-swipe.md`](docs/evidence/day-6-cart-swipe.md)). Banco final de 30 preguntas: material de preparación privado, no versionado. Quince tareas (T1–T8 con T3, T4 y T6 divididas): excepción documentada y aceptada por el usuario (2026-10-15 las 13 primeras; 2026-10-17 las 15 con T6e y T6f separadas).
+
+### Teoría del día (cada bloque ≤ 10 min, RF-1 y RF-2)
+
+Lectura total ≈ 10 min. Cada bloque va antes de su trabajo y solo resume lo practicado hoy; el detalle con datos está en las secciones siguientes y en `docs/evidence/day-6-*.md`.
+
+**Bloque A — Pirámide de pruebas por riesgo: `node:test`, Jest + RNTL y Maestro.**
+Se elige la herramienta por el riesgo y por dónde es más barato que algo falle, no por un porcentaje de cobertura.
+
+| Capa | Qué cubre aquí | Kotlin / Compose (Android) | Swift / SwiftUI (iOS) | Límite |
+|---|---|---|---|---|
+| `node:test` (`*.test.ts`) | Lógica pura: reducers, selectores, validación, máquinas de estado, formateo | JUnit sobre Kotlin puro | XCTest / Swift Testing sobre lógica sin UIKit | Muy rápido, sin entorno; no ve UI |
+| Jest + RNTL (`*.test.tsx`) | Lo que se ve y se oye en un componente: rol, texto, estado, foco | `composeTestRule` (`onNodeWithText`, semántica) | XCTest sobre vistas / ViewInspector | Sin gestos reales ni pila nativa: comprueba cuántas veces NUESTRO código pide navegar |
+| Maestro | El flujo crítico en dispositivo (caja negra, un YAML para ambas plataformas) | Espresso / UI Automator | XCUITest | Lento en gama baja y depende de textos y de `clearState` |
+
+Un test que nunca ha fallado no prueba nada: se escribe en rojo primero y se comprueba que falla por la razón esperada (en el Día 6 se rompió a propósito el código con mutaciones para confirmarlo). El mock de `fetch` y de `expo-router` es explícito y pequeño: si el doble imita demasiado, el test comprueba el doble. Error típico al venir de nativo: llamar `fireEvent.press` sobre un elemento ya desmontado; para el «segundo toque» se pulsa el control que ocupa su lugar.
+
+**Bloque B — Accesibilidad: lector de pantalla, foco, objetivos, texto grande, movimiento reducido y contraste.**
+- Lector: TalkBack (Android) y VoiceOver (iOS) recorren el árbol de accesibilidad, no el visual. Cada control necesita nombre, rol y estado; el foco debe ir a un lugar lógico al abrir y cerrar hojas y modales, y los cambios dinámicos se anuncian con regiones vivas. En Compose son `semantics { contentDescription, role, stateDescription }` y `LiveRegionMode`; en SwiftUI, `accessibilityLabel`, traits y `AccessibilityFocusState`. En el Simulator solo hay Accessibility Inspector: **no es VoiceOver real**.
+- Objetivos táctiles: 44 pt (iOS) y 48 dp (Android) como mínimo, también con texto ampliado.
+- Texto grande: se deja crecer el contenido o se desplaza; solo se topa (`fontScaleLimits`) el cromo de caja fija. Desactivar el escalado queda descartado. Equivale a `sp` frente a `dp` en Android y Dynamic Type en iOS.
+- Movimiento reducido: la preferencia del sistema (`animator_duration_scale` en Android, Reduce Motion en iOS) apaga animaciones decorativas; la información no puede depender de ellas.
+- Contraste: WCAG pide 4,5:1 para texto normal y 3:1 para texto grande y componentes de interfaz; una función pura mide los pares de tokens en claro y oscuro, de modo que un color nuevo mal elegido hace fallar un test.
+
+**Bloque C — Localización y preferencias persistidas: i18n español/inglés, moneda y tema.**
+Idioma, moneda y tema son estado de cliente persistido (redux-persist + MMKV). El idioma del sistema nunca se guarda como elección: si no hay elección, manda el dispositivo. Cambiar `PERSIST_VERSION` es una migración (la anterior sigue siendo legible), como `Migration(n, n+1)` en Room o una migración de SwiftData. Los textos son claves con paridad es/en comprobada por tests (mismas variables y plurales según `Intl.PluralRules`); importes y fechas se formatean con `Intl`, equivalentes a `NumberFormat`/`Locale` en Android y a `FormatStyle` en iOS. El tema forzado se propaga a las partes nativas con `Appearance.setColorScheme` (`AppCompatDelegate.setDefaultNightMode` en Android, `overrideUserInterfaceStyle` en iOS). Los diálogos de permisos y el teclado los dibuja el sistema: la app no los controla.
+
+**Bloque D — Profiling: medir antes de optimizar.**
+No se memoiza por intuición. El método es baseline → cambio → after contra el mismo build: `<Profiler>` de React (número de commits y `actualDuration`, lo que muestra React DevTools) para el trabajo JS, `dumpsys gfxinfo` para el hilo de UI en Android y el hueco de `requestAnimationFrame` en el Simulator de iOS (que no tiene `gfxinfo`; Instruments quedó descartado y justificado). Un Development Build (Debug) incluye avisos, comprobaciones y un motor menos optimizado: sirve para comparar un cambio contra su baseline, no para prometer cifras de producción, por eso se repitió en Release de iOS. `memo` se conserva solo con una razón medible: `memo(CartLineRow)` bajó los renders de `CartLine` de 36 a 12 y se quedó; `memo(ProductCard)` no mejoró y se descartó. Equivale a medir con Android Studio Profiler / Layout Inspector (recomposiciones) y con Instruments, y a `@Stable`/claves estables en Compose o vistas `Equatable` en SwiftUI.
+
+### Qué se hizo en cada tarea (con decisión, trade-off y descartada)
+
+| Tarea | Qué se hizo | Decisión elegida / trade-off / descartada |
+|---|---|---|
+| T1 | Harness: Jest + `jest-expo` + RNTL 14 para `*.test.tsx`; `node:test` para `*.test.ts`; `createAppStore` (store aislado por test), `renderWithProviders`, `mock-fetch`, `engines` Node ≥ 22.18 | **Runner mixto** (decisión del usuario). Trade-off: dos runners y dos configuraciones, `npm test` los encadena. Descartado: migrar 1082 tests de lógica a Jest (coste sin riesgo nuevo) |
+| T2 | Lógica acumulada y RTK Query con respuestas controladas (éxito, vacío, 4xx, 5xx, timeout, latencia); M-5 (abort durante el cuerpo gana) | Mock de `fetch` propio. Descartado: MSW (fuera del stack aprobado). La carrera pull↔«cargar más» no tiene defecto; en iOS queda como **decisión D** (ver limitaciones) |
+| T3a | Componentes por rol/texto/estado; bloqueo de 500 ms contra el doble toque (`useNavigationLockout`) | `expo-router` simulado con un mock explícito. Descartado: `renderRouter` (monta navegadores nativos, frágil bajo Jest) |
+| T3b | Offline: «Reintentar» del escáner siempre, título tras reconectar, aviso con datos previos en el detalle, `OUT_OF_STOCK` que vacía el carrito deja el aviso en el checkout, 400 de validación | Todo con test y matriz POST manual aprobada por el usuario. Descartado: decidir con `getNetworkStateAsync` (el sistema puede decir «conectado» con el servidor caído) |
+| T4a | `preferences` persistida (`PERSIST_VERSION` 4, v1–v3 legibles), selectores en Cuenta, splash retenido ≤ 1 s | Preferencias en el store persistido + listener. Descartado: `PersistGate` global (bloquea Home) y leer MMKV fuera de redux-persist (dos fuentes de verdad) |
+| T4b | Mis pedidos (solo resúmenes confirmados, sin dirección), auditoría i18n en tres capas, «Ir a Inicio» del enlace no reconocido como plan puro | Plan RF-37 + paso raíz. Descartado: `dismissTo('/')` (creaba un Inicio nuevo sobre el detalle) y una regla de ESLint propia para i18n |
+| T5 | Maestro: `checkout.yaml` (buscar, agregar, dirección, doble toque, UNA orden) y extras `product-404`/`deep-link-a-b` | `clearState` + mock fresco, selectores por texto y `testID` solo en los 8 campos; ramas por plataforma solo donde difiere. Una mutación con las TRES defensas del doble toque rotas hizo fallar el flujo (iOS) |
+| T6a | Lector de pantalla: foco al cerrar hojas y modales, anuncios, `aria-hidden` en rótulos de campo | TalkBack real en el Samsung; iOS con Accessibility Inspector, «no VoiceOver real». Descartado: retrasar anuncios (se cortan con el foco) |
+| T6b | Texto ampliado y objetivos: topes `fontScaleLimits` solo en el cromo de caja fija, `scaleWithFont`, `useScrollReveal` | Crecer o desplazar el contenido; topar solo el cromo. Descartado: desactivar el escalado |
+| T6c | Contraste WCAG con función pura (38 pares, claro y oscuro), iconos, H-10 en iOS, movimiento reducido | Token `controlBorder`. `AppIcon` mantiene su tamaño en Android; `AppText` con `key` = factor de fuente en iOS. Descartado: `expo-navigation-bar` y `configChanges` (cambio nativo sin necesidad demostrada) |
+| T6d | Perfilado baseline/after en Development Build y Release de iOS | C-1 conservado (ver abajo). Release de Android = decisión escrita (HTTP en claro bloqueado). Descartado: cleartext condicionado (cambia la huella) |
+| T6e/T6f | Eliminar deslizando: pruebas, escenario Maestro y matriz manual de 8 casos por plataforma | Ver «El gesto de eliminar deslizando» |
+| T7 | T7: práctica privada, fuera de este repositorio | No forma parte de este registro |
+| T8 | Repaso del día; limpieza (H-4, H-5); verificación completa y este registro | Tres entregas con confirmación del usuario entre cada una |
+
+**Errores típicos al venir de nativo que aparecieron este día.**
+1. **Mutación y efectos:** un guard de «cargar más» sobre estado en lugar de una `ref`, y un valor volátil (como un interruptor de error simulado) dentro de las dependencias de un efecto: en Compose sería un `StateFlow` leído dentro de `LaunchedEffect(key)` que reinicia la corrutina.
+2. **Probar lo que ya no existe:** `fireEvent.press` sobre un elemento desmontado no hace nada; para el «segundo toque» se pulsa el control que ocupa su lugar.
+3. **Medir en Debug y concluir sobre Release:** por eso hay baseline y after contra el mismo build y una repetición en Release de iOS.
+4. **Tratar el Simulator como hardware:** VoiceOver real, Taptic y cámara óptica siguen sin acreditar.
+5. **Confiar en que Fast Refresh recompila:** retirar `expo-web-browser` (módulo nativo) obligó a recompilar ambos Development Builds.
+6. **`fetch` y los códigos 4xx/5xx; `memo` por intuición:** `memo(ProductCard)` se descartó sin mejora medible; `memo(CartLineRow)` se conservó con medida.
+
+### RF-2: Jest, RNTL y Maestro frente a Android e iOS
+
+| Herramienta | Qué cubre aquí | Equivalente Android | Equivalente iOS / SwiftUI | Elegida y trade-off | Descartada |
+|---|---|---|---|---|---|
+| `node:test` | Lógica pura (`*.test.ts`, 1453) sin RN ni `@/` | JUnit sobre Kotlin puro | XCTest / Swift Testing sobre lógica sin UIKit | Rapidísimo, sin entorno; no ve UI | Migrar a Jest |
+| Jest + RNTL 14 | Pantallas y hooks por rol, texto y estado (`*.test.tsx`, 582) | `composeTestRule` (`onNodeWithText`, semántica) / Robolectric | XCTest sobre vistas / ViewInspector; semántica de accesibilidad | Prueba lo que el usuario ve y oye sin dispositivo; no ve gestos reales ni pila nativa | Snapshots masivos; seleccionar por estructura interna |
+| Maestro | El flujo crítico y 3 extras en dispositivo real/Simulator | Espresso / UI Automator (`UiDevice`) | XCUITest | Caja negra, un solo YAML en ambas plataformas; lento en gama baja (≈5 min en el Samsung) y depende de textos y de `clearState` | Tocar por coordenadas (solo una excepción, el gesto) y pausas fijas |
+| Evidencia manual repetible | Lector, texto ampliado, contraste, movimiento, gesto | TalkBack, `font_scale`, `animator_duration_scale` | Accessibility Inspector, Texto más grande, Reduce Motion | Cubre lo que no se automatiza; depende de una persona | Declarar «cumplido» sin observarlo |
+
+Regla: se elige por riesgo y por dónde es más barato que algo falle, no por porcentaje de cobertura. Teoría y analogías completas en `plan.md`, «Bloque pedagógico».
+
+### El gesto de eliminar deslizando (RF-24 a RF-32)
+
+**Cómo funciona.** `SwipeToDelete` envuelve `ReanimatedSwipeable` (Gesture Handler 2.32): el `Pan` se activa tras 24 dp/pt de recorrido horizontal (`dragOffsetFromRightEdge`), la acción revelada mide ≥ 48 dp/44 pt y se abre cuando el recorrido supera `rightThreshold` = 56. Equivale a `SwipeToDismissBox`/`AnchoredDraggable` de Compose (umbral y estado «abierto») y a `.swipeActions`/`UISwipeActionsConfiguration` de SwiftUI/UIKit; el umbral de activación equivale al *touch slop*.
+
+**Qué se midió (T6f, Samsung SM-A037M y Simulator iPhone 17 Pro).** 80 dp/pt abre (también lento, 1,5 s) y 20 nunca; el umbral lento exacto es ≈ 75–80 dp/pt, **margen de 0–5 dp/pt sobre el requisito de 80**. **La velocidad cuenta:** al soltar, la biblioteca decide con `translationX + 0.05 × velocityX` frente al umbral, así que 60 dp/pt en 100 ms ya abre; por eso todo paso fija una duración (600 ms). Con `axe swipe` hay que usar `--delta 2` (sin él recorta el gesto en iOS).
+
+**La acción revelada está oculta al lector a propósito** (`accessibilityElementsHidden` + `importantForAccessibility="no-hide-descendants"`, RF-28): un lector encuentra una sola acción de eliminar por línea, el botón visible «Eliminar <producto>». Equivale a `Modifier.clearAndSetSemantics {}` y `.accessibilityHidden(true)`; el botón visible es la alternativa gestual (como una `CustomAccessibilityAction`). **Consecuencia:** Maestro lee el mismo árbol accesible y no puede tocarla por texto; por eso `cart-swipe-delete.yaml` desliza `90%,28%` → `40%,28%` en 600 ms y toca `83%,28%`. Es la **única excepción a «sin coordenadas»**, con un control previo (tocar ese punto con la fila cerrada no elimina nada). Descartado: quitar el ocultar o darle un `testID` (contradice RF-28).
+
+**Defectos reales, corregidos con un test que falla antes.**
+- **Doble toque (T6e).** Un doble toque (50 ms) en «Eliminar» borraba también la línea que subía a su lugar (iOS, Maestro: carrito vacío). Guardia PROPIA de 500 ms en `CartScreen.tsx` (no es `useNavigationLockout`: un `useRef` síncrono más `setTimeout` con `NAVIGATION_LOCKOUT_MS`), compartida por las filas como prop estable (no rompe el `memo`). Por qué un ref: el segundo toque puede llegar antes del commit de React, cuando la fila pulsada ya se desmonta y la siguiente sube bajo el dedo; un estado aún no habría cambiado o se perdería con la fila, mientras que el ref se lee y escribe de forma síncrona. La ventana se comparte entre «Eliminar» y «−» cuando elimina. Trade-off: dos eliminaciones deliberadas en menos de 0,5 s son una. Descartado: deshabilitar los botones 0,5 s y pedir confirmación o deshacer.
+- **D-1 `minWidth` (T6f).** «Eliminar» revelado se partía («Dele / te») con Android 2.0 / iOS AX5 por `width: 112`; ahora `minWidth: 112` (el marco crece con la etiqueta: 123,7 dp en inglés y 149,9 dp en español a 2.0). Trade-off: hasta 150 de 384 dp. Descartado: `adjustsFontSizeToFit`.
+- **D-2 guardia de «−» (T6f).** «−» sobre una línea de 1 unidad elimina y compartía la raíz del doble toque; se protege con la MISMA guardia solo cuando elimina (decisión del usuario «Confirmar y proteger «−»»); dos «−» rápidos sobre una línea de 3 siguen bajando 2 unidades. RF-25 no menciona «−» (cabe en su caso límite; la spec no se editó).
+
+**Decisión del usuario sobre el umbral.** La opción de bajar `rightThreshold` de 56 a ≈ 40 (≈ 15 dp/pt de margen, «medio camino» seguiría cerrado) se **descartó**; el margen de 0–5 dp/pt queda como limitación declarada.
+
+**Resultado.** Jest sin mock de `ReanimatedSwipeable` (la real monta; `jest.spyOn(Gesture, 'Pan')` lee `enabled` y `activeOffsetXStart`), 9 mutaciones, `SwipeToDelete.test.tsx` y `CartScreen.test.tsx` ampliado; matriz de 8 casos conformes en ambas plataformas; `cart-swipe-delete.yaml` verde 3 veces seguidas en cada una en T6e y de nuevo en el cierre (tabla final). El bloqueo con la acción abierta: `CartScreen` sustituye todo el árbol por la pantalla de bloqueo, así que no sobrevive ninguna fila. RF-24 a RF-32: **cumplidos con evidencia** en [`docs/evidence/day-6-cart-swipe.md`](docs/evidence/day-6-cart-swipe.md) (la fila de `day-6-contrast-motion.md` enlaza a ella).
+
+### C-1: `memo(CartLineRow)` con medida
+
+Renders de `CartLine`: **36 → 12** en Android y en el Release de iOS (48 → 12 en Debug iOS); Android: trabajo JS 1 770 → 811 ms, commit máximo 144 → 63 ms; Release iOS sin bloqueos ≥ 100 ms antes ni después. Se conserva (decisión por medida, `CartScreen.rerender.test.tsx`). Descartados: `memo(CartLine)` a secas (el selector crea un `item` nuevo por línea), pasar `changeLine` como prop y memoizar el selector por línea. Como `CartLineRow` envuelve al gesto, cualquier cambio de ese `memo` revalida RF-24 a RF-27 además de RF-16. En Compose sería `key` estable + `@Stable`; en SwiftUI, una vista `Equatable`.
+
+### Limpieza de T8: H-4 y H-5
+
+- **H-4 (hallazgo real).** El bundle de producción llevaba `home-fixtures.ts` y `home-fixture-env.ts` aunque `isDev` los dejaba inertes: Metro empaqueta lo que se **importa**, no lo que se ejecuta. Corregido con `require` dentro de la rama `__DEV__` y `buildHomeRequest` con el aplicador inyectado; test `src/test/production-bundle-audit.test.ts` (rojo con las importaciones antiguas, verde tras el cambio), y verificado re-exportando iOS y Android y buscando en el mapa de fuentes y en las cadenas del bytecode. Se retiró también `ScannerPlaceholderScreen.tsx`. En Compose sería código de depuración fuera del `release` (`debugImplementation`); en iOS, `#if DEBUG`.
+- **H-5.** Retiradas `expo-web-browser` (la única nativa) y `react-native-web`. **Conservadas** `@expo/ui` y `expo-glass-effect` (dependencias obligatorias de `expo-router` 57) y `react-dom` (peer no opcional de `vaul`, que trae `@expo/ui`): quitarlas del `package.json` no las quita de `node_modules` ni del binario, y npm las reinstalaría con una versión que ya no controlamos. Se recompilaron ambos Development Builds.
+- **Script `web` y clave `web`.** Por decisión del usuario («Quitar solo el script») se eliminó el script `"web"` de `package.json` (sin `react-native-web` ya no funcionaba; AGENTS.md no lo menciona). **Residuo conocido:** la clave `web` de `app.json` (`output: static`, `favicon`) se conserva porque tocar `app.json` cambia la huella del build.
+
+### Decisiones y limitaciones que deben constar
+
+- **Android: teclado y diálogo de permisos siguen al SO.** El teclado (tema, idioma, autocorrección) y los diálogos de permisos (cámara, notificaciones) los dibuja el sistema con su idioma y su tema; React Native no ofrece una API para fijarlos y la app solo controla el texto previo a la solicitud. Es lo mismo que en Kotlin con `ActivityResultContracts.RequestPermission` y en Swift con `requestAuthorization`: el diálogo no es de la app.
+- **`cameraPermission` de `app.json` en inglés.** El texto del plugin `expo-camera` («Allow $(PRODUCT_NAME) to access your camera») es el valor por defecto en inglés; en iOS se localiza al español con `locales/es.json` (`NSCameraUsageDescription`). En Android el diálogo es del sistema y no usa ese texto. No se cambió (tocar `app.json` cambia la huella).
+- **Hint de Búsqueda en Android.** En el Samsung la primera tecla del campo de búsqueda tarda ≈ 70–95 ms: es rendimiento del dispositivo (gama baja), S-7 no se toca. La vista nativa de DeviceInsights no recibe pista (`deviceInsights.nativeHint` retirada por decisión del usuario).
+- **Carrera pull↔«cargar más» en iOS = decisión D.** El test con latencia controlada no encuentra defecto (T2); la evidencia en iOS se cierra con una decisión escrita porque `axe` es demasiado lento para provocarla.
+- **Audio de TalkBack no verificable.** `SamsungTTS` va cifrado en `logcat`: se observan foco, orden, nombre/rol/estado y eventos de anuncio, no el audio literal. Aceptado por el usuario.
+- **VoiceOver «no real».** En iOS se usó `axe` (API UIAccessibility) y el Accessibility Inspector sobre el Simulator, cada fila rotulada «no VoiceOver real»; los anuncios hablados, el foco real y los rasgos `tab`/`selected` no son observables.
+- **Voz en el idioma del SO (H-N1).** TalkBack habla con el idioma del SO; solo difiere si el usuario elige otro idioma en Cuenta.
+- **Gesto de eliminar:** margen de 0–5 dp/pt sobre el umbral de 80 (arriba), `rightThreshold` sin cambiar por decisión del usuario.
+- **Maestro con mutación solo comprobada en iOS.** La mutación con las tres defensas rotas hizo fallar el flujo en iOS; no se repitió en Android (comparten YAML y la defensa es JS).
+- **Maestro en el Samsung es lento y a veces inestable en el preámbulo** (`fresh-app.yaml`): ver el registro de verificación.
+
+### Fuera de alcance de 006 (decisión documentada; material para CI/CD, releases y OTA)
+
+Política de huella `--source-skips` para `version`/`versionCode`/`buildNumber`; falso negativo de `locales/` en la huella; `expo-updates`/OTA real (dependencia nueva; `runtimeVersion` con política `fingerprint` es un metadato inerte); `ITSAppUsesNonExemptEncryption` y `preview` de iOS con credenciales de Apple (publicación en tiendas); URL real del catálogo (servicio de producción: `EXPO_PUBLIC_API_ORIGIN` es el placeholder público); iPhone físico (Taptic, cámara óptica iOS); variante Android sin diálogo runtime (sin dispositivo); H-T8-9 (`openSettings()` del Simulator); cambio opcional de RF-8/RF-9 de la spec 003 (spec cerrada).
+
+### Deuda conocida (decisión D escrita; NO corregida en el Día 6)
+
+**Tipos sueltos de `RootState`/`AppDispatch` en `src/core/store/store.ts`.** Eran `any` por un círculo de tipos slice↔store; derivarlos de `createAppStore` los hace precisos y destapa ≈ 32 errores (`OrderStatusScreen`, `checkout-thunks`, tests de los Días 4–5). `store.ts` los mantiene sueltos a propósito (comentado) y `createTestStore` sí devuelve tipos precisos. Apretarlos es una tarea aparte. Equivale a un `typealias` genérico a `Any` en Kotlin (o a `AnyObject` en Swift): compila, pero pierde la ayuda del compilador.
+
+**Decisión D (usuario, 2026-10-17: «Decisión escrita (D) y tarea aparte»).**
+- **Elegida:** dejar `RootState`/`AppDispatch` con el `any` documentado en `src/core/store/store.ts` y abrir una tarea aparte. **Trade-off:** el tipado estricto destapa ≈ 32 errores en `OrderStatusScreen`, `checkout-thunks` y los tests de los Días 4–5; resolverlo dentro del Día 6 amplía el alcance de un día de calidad y entrevista y arriesga regresiones en un checkout ya validado con Maestro, a cambio de una deuda declarada: `getState()` devuelve `any` donde se usa el store global.
+- **Excepción explícita:** la spec 006 dice «sin aceptar deuda conocida de días anteriores»; esta es la única que se cierra con D y no con C o V, aprobada por el usuario. No cambia ningún RF ni el comportamiento.
+- **Descartada:** corregirla en el Día 6 con una tarea T6g (toca 3 zonas de código ya validado, fuera de los RF).
+- **Tarea futura propuesta:** «Tipar de forma estricta `RootState` y `AppDispatch`». Archivos: `store.ts` (derivarlos de `createAppStore` rompiendo el círculo con `import type` o con un `rootReducer` propio), `OrderStatusScreen.tsx`, `checkout-thunks.ts` y los tests de los Días 4–5. **Éxito:** `npx tsc --noEmit` strict en 0 errores y sin `any`/`LooseState` en esos dos tipos, lint limpio, lógica y Jest iguales (1453/582) sin cambiar el comportamiento ni un `expect`, `CartScreen.rerender.test.tsx` y `checkout.yaml` en verde.
+- **Para la entrevista:** «¿por qué `any`?» → por un círculo de tipos (los slices importan `RootState` del store, que se infiere de los slices); la solución de manual es separar `rootReducer` y derivar los tipos de él, y se aplazó por decisión consciente, no por desconocimiento.
+
+### Ejercicio adicional SIN solución: «Pedidos acotados»
+
+#### Contexto
+
+Hoy `orderHistory.orders` **no tiene tope**: `addOrderSummary` solo añade y `sanitizeOrderHistory` solo descarta lo inválido y los duplicados. Imagina que producto pide que *Mis pedidos* conserve **únicamente los 20 pedidos más recientes** y que un estado guardado dañado nunca tumbe la pantalla ni muestre datos que no debe. La spec 006 está cerrada, así que esto es **práctica en una rama o carpeta desechable**, sin cambiar el comportamiento aprobado de HerbStore.
+
+#### Enunciado
+
+1. **Tabla primero.** Antes de escribir código, redacta una tabla «estado guardado → qué se restaura» con, como mínimo: (a) 25 pedidos válidos; (b) un estado de versión 3 sin `preferences`; (c) un pedido con `createdAt` ilegible; (d) un pedido que arrastra un campo `shippingAddress`; (e) dos pedidos con el mismo `id`; (f) `orders` que no es un arreglo; (g) un slice que no es JSON; (h) una versión de persistencia desconocida (mayor que la actual).
+2. **Pruebas de lógica en rojo.** Convierte la tabla en casos de `node:test` (`*.test.ts`) y comprueba que **fallan por la razón esperada** antes de implementar nada. Sin snapshots.
+3. **Criterio de «más recientes».** Decide cómo ordenas y recortas (por `createdAt`, por orden de llegada o ambos) y qué haces con las fechas ilegibles. Justifícalo con su trade-off y di qué alternativa descartas.
+4. **Recortar y notificaciones.** Los pedidos guardan un estado de notificación por `id`. Define qué ocurre con las notificaciones de los pedidos que salen del tope y demuestra con un test que no quedan huérfanas.
+5. **Dónde se recorta.** ¿Al añadir un pedido, al restaurar el estado guardado o en ambos sitios? Explica qué cambia en cada opción (rendimiento al arrancar, estado que ya está en disco, coherencia entre ambos).
+6. **¿Hay que subir `PERSIST_VERSION`?** Razónalo por escrito: ¿cambia la **forma** del estado guardado? ¿Qué le pasa a un dispositivo que vuelve a una build anterior con lo ya recortado?
+7. **Rehidratación con RNTL.** Con un almacén en memoria cuyas lecturas puedes retener (`createMemoryStorage({ holdReads })`), comprueba en `OrderHistoryScreen` (español e inglés) que (i) antes de rehidratar **no** afirma «sin pedidos», (ii) después muestra como máximo 20 filas, la más reciente primero, y (iii) cada fila es **un solo** elemento accesible sin dirección.
+8. **Privacidad.** Inspecciona la cadena realmente escrita en el almacenamiento tras añadir un pedido que arrastra un campo extra y demuestra que no contiene dirección.
+9. **Dispositivo (opcional).** En Android e iOS, con texto grande, comprueba que una fila de 20 pedidos no se trunca y que el lector la anuncia como una frase.
+10. **Diagnóstico (sin respuestas aquí).** Explica cuántos problemas tiene este fragmento y qué cambiarías:
+
+```tsx
+function OrdersDraft() {
+  const orders = useAppSelector((state) => state.orderHistory.orders);
+  const latest = orders.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 20);
+
+  if (latest.length === 0) return <Text>Aún no tienes pedidos</Text>;
+
+  return latest.map((order) => (
+    <Text key={order.createdAt}>
+      {order.id} - {order.address.city} - {order.total}
+    </Text>
+  ));
+}
+```
+
+#### Criterios de aceptación
+
+- La tabla del punto 1 existe y **cada fila** tiene al menos un caso de prueba.
+- Todos los casos de lógica se vieron fallar antes de implementar y pasan después; ninguno depende del orden de ejecución ni de internet.
+- Con 25 pedidos válidos se restauran exactamente 20, los más recientes, sin mutar el arreglo recibido.
+- Un pedido con campo `shippingAddress` sale del saneado **sin** ese campo.
+- Una versión desconocida, un slice que no es JSON y un `orders` que no es un arreglo producen un estado válido y la pantalla no se rompe; explicas por escrito cuál de ellos vacía **todo** el estado persistido y por qué.
+- No quedan notificaciones asociadas a pedidos que ya no existen.
+- La prueba RNTL localiza elementos por rol, texto o etiqueta, no por estructura interna, y pasa en español e inglés.
+- El texto de la pantalla no promete sincronización, respaldo ni recuperación externa.
+- La explicación del punto 6 distingue «cambia la forma» de «cambia el contenido».
+- `npx expo lint` y `npx tsc --noEmit` en verde en tu rama.
+
+#### Pistas (no son la solución)
+
+- Mira cómo `sanitizeOrderHistory` ya pasa la lista de `id` válidos a `sanitizeOrderNotificationState`: es la costura por donde se mueve el punto 4.
+- Un test que recorta tiene dos formas de fallar: recortar de menos y recortar los pedidos **equivocados**. Escribe un caso para cada una.
+- Pregúntate si `Array.prototype.sort` y `reverse` mutan, y qué pasa cuando el estado de Redux está congelado.
+- `Date.parse` devuelve `NaN` ante una fecha ilegible y `NaN` no es comparable con nada: define qué ocurre antes de ordenar.
+- La política de versiones de `persist-policy.ts` distingue «legible» de «igual»; lee el comentario de `READABLE_PREVIOUS_VERSIONS` antes del punto 6.
+- Para el punto 7, el estado «aún no rehidratado» es observable en el store; no hace falta temporizadores.
+- Para el punto 8 no necesitas MMKV: el almacén en memoria del harness guarda la cadena que redux-persist escribió.
+
+#### Qué entregar
+
+El código (rama o carpeta de práctica), la tabla de casos (entrada, resultado esperado, prueba que la cubre), tu explicación en tus palabras (máximo 8 líneas) de los puntos 3, 5 y 6, y la comparación con **Room** (`Migration`, `@Query` con `LIMIT` y `ORDER BY`) y con **SwiftData** o Core Data (`SchemaMigrationPlan`, `FetchDescriptor` con `fetchLimit` y orden). Debes poder defender qué parte probarías en Node y cuál solo con un dispositivo.
+
+### Preguntas de repaso del Día 6 (respuestas cortas)
+
+**Número de preguntas de repaso: 10** (R1 a R10). Banco final de 30 preguntas: material de preparación privado, no versionado.
+
+**R1. ¿Qué cubre cada herramienta de prueba del proyecto y cómo se elige?**
+`node:test` (`*.test.ts`) para lógica pura, Jest + RNTL (`*.test.tsx`) para lo que se ve y se oye en un componente, y Maestro para el flujo crítico en dispositivo. Se elige por riesgo y por dónde es más barato que algo falle; la extensión decide el runner (al cierre del Día 6, 1453 de lógica y 582 de Jest).
+
+**R2. En RNTL, ¿cómo se prueba un «segundo toque» si el primero hace desaparecer el botón?**
+`fireEvent.press` sobre un elemento ya desmontado no hace nada, así que para simular el segundo toque se pulsa el control que ocupa su lugar (por ejemplo, el de la línea que subió). Así se comprobó que el doble toque no borraba dos líneas.
+
+**R3. ¿Qué ocurre al arrancar con idioma, moneda y tema persistidos?**
+`i18n` arranca con el idioma del dispositivo y el splash se retiene; redux-persist rehidrata y `migrate` sanea; un listener aplica idioma y tema forzado dentro del mismo `REHYDRATE`; el splash se libera al rehidratar o a 1 s como máximo. Un `language` ausente significa «nunca elegido» y sigue al dispositivo.
+
+**R4. ¿Qué muestra y qué nunca muestra «Mis pedidos»?**
+Muestra solo resúmenes confirmados de esta instalación (más reciente primero, unidades, total en la moneda preferida y fecha). Nunca muestra dirección, nombres de producto ni promete sincronización; y antes de rehidratar no afirma «sin pedidos».
+
+**R5. ¿Qué evidencia de lector de pantalla se obtuvo en cada plataforma y con qué límite?**
+Android: TalkBack real en el Samsung (orden de foco, nombre, rol y estado, eventos de anuncio, retorno de foco); el audio no es verificable. iOS: Accessibility Inspector sobre el Simulator, rotulado «no VoiceOver real», sin anuncios hablados ni foco real del lector.
+
+**R6. ¿Cómo se comporta la app con texto grande y qué objetivos táctiles se exigen?**
+Mínimos de 48 dp en Android y 44 pt en iOS; los topes de escala (`fontScaleLimits`) solo se aplican al cromo cuya caja no puede crecer, y el contenido crece o se desplaza. En Android cambiar el tamaño recrea la Activity; en iOS `AppText` vuelve a medir con una `key` igual al factor de fuente (H-10).
+
+**R7. ¿Qué umbrales de contraste se verificaron y cómo?**
+WCAG AA: 4.5:1 para texto normal y 3:1 para texto grande y componentes. Una función pura calcula el contraste y una auditoría mide 38 pares de tokens en tema claro y oscuro; destapó el rojo de error (2,46:1 en oscuro), `textMuted` y los bordes de controles (token `controlBorder`).
+
+**R8. ¿Qué garantiza «movimiento reducido»?**
+Los mismos cambios de estado con un resultado estático: los spinners de «Restaurando carrito…» y «Cargando producto…» se retiraron (queda el título) y un test de auditoría falla si aparece una animación sin decidir. Límite declarado: la pila nativa de iOS sigue deslizando.
+
+**R9. ¿Qué mide `<Profiler>` y por qué no se comparan cifras de Debug con las de Release?**
+Mide commits y `actualDuration` de React por componente. Debug añade comprobaciones de desarrollo y en Release React no invoca `<Profiler>`, así que solo se compara cada build contra su propio baseline y se conserva un cambio únicamente si mejora una medida sin empeorar otra (p. ej. renders de `CartLine` de 36 a 12).
+
+**R10. ¿Qué umbrales tiene eliminar deslizando y qué defectos reales aparecieron?**
+El gesto se activa a 24 dp/pt; abre con 80 y no con 20 o menos, y la velocidad cuenta. La acción revelada se oculta al lector y el botón visible es la alternativa. Defectos corregidos con test: el doble toque en «Eliminar» borraba también la línea siguiente (guardia de 500 ms, extendida a «−» sobre una unidad) y «Eliminar» se partía a Android 2.0 o iOS AX5 (`minWidth` en lugar de `width`).
+
+### Checklist oral
+
+Marca solo lo que puedas explicar **de memoria y sin mirar**, en unos 60 segundos por punto. Las casillas son para que las practiques en voz alta; no son evidencia del proyecto.
+
+**Decisiones y trade-offs**
+- [ ] Por qué hay dos runners (`node:test` y Jest) más Maestro, y qué riesgo cubre cada uno.
+- [ ] Lista blanca de persistencia, `PERSIST_VERSION` 4, qué pasa con una versión desconocida y por qué la caché de la API nunca se guarda.
+- [ ] Las tres defensas contra la orden duplicada y la mutación que demostró que hacen falta las tres.
+- [ ] El orden de arranque con preferencias persistidas (idioma, moneda y tema) y por qué no se usó `PersistGate`.
+- [ ] RTK Query como única fuente remota: frescura 60 s, dos reintentos solo en `GET`, `currentData` frente a `data`.
+- [ ] Cuándo se memoiza y cuándo no (React Compiler, `memo` de `CartLineRow` frente a `memo(ProductCard)`), con la medida que lo decide.
+- [ ] «Ir a Inicio» como plan puro de acciones y por qué `dismissTo('/')` fallaba.
+
+**Cifras del proyecto**
+- [ ] 300 productos (60 por categoría), umbral de envío gratis de 800 MXN y tasa fija de 18.
+- [ ] 1453 tests de lógica y 582 de Jest al cierre del Día 6 (81 en el mock); Expo Doctor 21/21.
+- [ ] 48 dp / 44 pt de objetivo táctil; 4.5:1 y 3:1 de contraste; 38 pares auditados.
+- [ ] Gesto de eliminar: activa a 24, abre con 80, no abre con 20; guardia de 500 ms.
+- [ ] Debounce de 400 ms, timeout de 8 s, 2 reintentos (500 y 1000 ms), 60 s de frescura.
+- [ ] Renders de `CartLine` 36 a 12; 3 builds remotos de EAS.
+
+**Limitaciones honestas (no las escondas)**
+- [ ] No hay CI/CD real, ni OTA real (`expo-updates` no está instalado), ni publicación en tiendas, ni autenticación: son «qué haría» y «qué decidimos no hacer».
+- [ ] No hay Release de Android medible (HTTP en claro bloqueado, decisión escrita) y `preview` de iOS en dispositivo exige credenciales de Apple.
+- [ ] Nunca se probó VoiceOver real ni se oyó el audio de TalkBack; el iPhone solo se vio con el Accessibility Inspector.
+- [ ] La reconexión real de `expo-network` en iOS no tiene evidencia (el Simulator comparte la red del Mac).
+- [ ] Deuda conocida (decisión D): `RootState` y `AppDispatch` tipados sueltos a propósito en `store.ts`; sabes explicar el círculo de tipos, el trade-off y la tarea de arreglo propuesta.
+
+**Errores típicos al venir de nativo**
+- [ ] Mutar el estado (`push`, `sort`) en lugar de crear uno nuevo.
+- [ ] Efectos con dependencias mal declaradas, sin limpieza o con `setState` síncrono dentro.
+- [ ] Renders innecesarios y `useMemo`/`useCallback` por intuición.
+- [ ] Trabajo pesado en el hilo de JS (no hay `ViewModel` ni hilo secundario por defecto).
+- [ ] Creer que `fetch` rechaza ante un 4xx o 5xx; guard de «cargar más» sobre estado en lugar de una ref.
+- [ ] Creer que `useEffect` es `onResume`, que Fast Refresh recompila código nativo o que una prueba en Debug demuestra el Release.
+
+**Cómo hablar de un defecto propio**
+- [ ] Contarlo en cuatro pasos: qué viste, causa, test que lo fija y decisión (corregir o cerrar con decisión escrita), sin defender lo indefendible.
+
+### Registro de verificación del Día 6 (T8, entrega 3, 2026-10-17; RNF-2)
+
+Salidas reales, en este orden. Entorno: Expo SDK 57 (`expo` ~57.0.30), RN 0.86.3, Node 24.14, Maestro 2.11.0 (Java 25), Samsung SM-A037M (Android 13, USB, `adb reverse` 8081/3001) y Simulator iPhone 17 Pro (iOS 26.5).
+
+| Comprobación | Resultado |
+|---|---|
+| `npx expo lint` / `npx tsc --noEmit` | salida limpia, código 0 / 0 |
+| `npm run test:logic` | **1453/1453**, 0 fallos (233 suites) |
+| `npm run test:jest` | **582/582** en 51 suites |
+| `npm test` | 1453 + 582, código 0 |
+| `npm --prefix mock-server test` | **81/81** |
+| `npx expo install --check` / `npx expo-doctor@latest` | «Dependencies are up to date» / **21/21** |
+| `git diff --check`; `grep -rn "TEMP-" src` | sin salida; 0 coincidencias |
+| `git status` | `ios/` y `android/` ignorados |
+| Maestro `checkout.yaml` iOS (desde `clearState`, mock fresco `ORDER_POST_DELAY_MS=1500`) | **VERDE**, código 0, 88 s, stock de `product-261009-062` 99 → 98 (una orden) y una fila en «My orders» |
+| Maestro `checkout.yaml` Samsung (ídem) | **VERDE**, código 0, 317 s, stock 99 → 98 y una fila. El paso «Tap on English» de `fresh-app.yaml` falló una vez dentro de su `retry` y se recuperó (ya documentado en la entrega 2) |
+| `product-404.yaml` iOS / Samsung | VERDE (32 s) / **1 ROJO y 2 VERDES** (74 y 82 s): la primera ejecución falló en el preámbulo `fresh-app.yaml` («Search products» no visible) con el launcher del Samsung en primer plano tras cerrar el Dev Menu; no se pudo diagnosticar (el buffer de `logcat` ya se había renovado) y las dos siguientes pasaron sin cambios. **Observación abierta, no ajustada para que pase** |
+| `deep-link-a-b.yaml` iOS / Samsung | VERDE (42 s) / VERDE (82 s) |
+| `cart-swipe-delete.yaml` iOS / Samsung | VERDE (47 s) / VERDE (106 s) |
+
+**Reinicio real (RF-8, RF-9, RF-10, RF-11; criterio de finalización).** Antes no había evidencia de un cierre de proceso en `docs/evidence/` de T4a/T4b, así que se ejecutó: tras `checkout.yaml` (idioma inglés, MXN, tema Sistema, 1 pedido) se eligió **Español + Dólares (USD) + Oscuro** en Cuenta; luego iOS `simctl terminate` (+ comprobación de que el proceso no figura) y Android `am force-stop` (`pidof` vacío; después PID nuevo) y se abrió el dev client otra vez. Resultado en ambas plataformas: Cuenta muestra «Español», «Dólares (USD)» y «Oscuro» seleccionados con el tema oscuro aplicado, e Inicio sale en español; «Mis pedidos» muestra el pedido confirmado en español con el total en USD (USD 30.55) y sin dirección. Capturas en el scratchpad de la sesión, no en el repo. En Android la primera captura tras el arranque en frío salió en blanco (velo del launcher) y se repitió, como ya se sabía.
+
+**Estado final de dispositivos y servicios.** Tras los extras (`clearState`) ambos quedaron en inglés + MXN + Sistema, sin pedidos ni carrito (comprobado en la app). Samsung: `stay_on_while_plugged_in` 0, `font_scale` 1.0, `animator/transition/window_animation_scale` 1.0, TalkBack apagado. Simulator: `content_size` large, apariencia light, Reduce Motion 0, `AccessibilityEnabled`/`ApplicationAccessibilityEnabled` 0, `AutomaticMinimizationEnabled` 1. Mock reiniciado con `MOCK_LATENCY_MS=150 ORDER_POST_DELAY_MS=1500` (stock 99); Metro (8081) sin tocar.
+
+**Comprobaciones en dispositivo de la ronda 2 del reviewer (2026-10-17; sin cambios de código).** Samsung SM-A037M e iPhone 17 Pro (Simulator), detalle en `docs/evidence/day-6-t4-device-checks.md`, `day-6-cart-swipe.md` §T6f.6 y `day-6-contrast-motion.md` §9:
+- **«Ir a Inicio» del enlace no reconocido (T4b, puntos 2 a 5):** conforme en ambas, desde Inicio y desde la pestaña Carrito, y los 404 de producto y categoría. Android: `uiautomator`/`A11y` y `dumpsys window` (Atrás → launcher); iOS: `axe` y gesto de borde. Comparación: los intent filters de Android entregan el enlace a la Activity viva (`onNewIntent`) y el stack de tareas decide qué hay «detrás»; en iOS el enlace llega por `application(_:open:options:)` / Universal Links y `UINavigationController` conserva su pila: en ambos, expo-router traduce el enlace a una acción de navegación, y `+not-found` debe construir su propia salida a la raíz.
+- **Tema «Sistema» en caliente:** conforme en 6 superficies por plataforma. Android `cmd uimode night yes|no` (equivale a `AppCompatDelegate.setDefaultNightMode`, que recrea/actualiza la configuración `uiMode`) e iOS `simctl ui appearance` (equivale a cambiar `UITraitCollection.userInterfaceStyle`, o a forzarlo con `overrideUserInterfaceStyle`); en RN, `useColorScheme()` emite el cambio y la UI de JS se vuelve a renderizar. El Samsung tarda ≲ 6 s. La barra de navegación de tres botones del Samsung sigue clara en oscuro (decisión D de T4a).
+- **Caso límite del gesto (acción abierta + otra línea):** conforme en ambas; la fila abierta sobrevive a «+», «−» y al borrado de otra línea y solo se elimina al tocar su acción.
+- **Iconos de la barra (1.5 y 2.0) y texto en caliente en iOS:** observados sin recortes; pendientes de confirmación visual del usuario. S-RF24 **no** comprobado (inconcluso): sigue como paso manual.
+- Dispositivos restaurados: `font_scale` 1.0, animaciones 1.0, TalkBack apagado, `cmd uimode night no`, `stay_on_while_plugged_in` 0; Simulator `large`, `light`, Reduce Motion 0; ambos en inglés + MXN + Sistema, carritos y «Mis pedidos» vacíos.
+
+**Qué prueba y qué no.** Prueba que las pruebas, tipos, dependencias y el flujo crítico en dos plataformas pasan sobre el mismo árbol. **No** prueba: Release de Android, VoiceOver real, audio de TalkBack, iPhone físico, ni la mutación de las tres defensas en Android (limitaciones arriba). Lo pendiente de validación manual del usuario consta en el informe de la entrega 3 y en `tasks.md`. El commit de cierre aún **no existe**: lo lanza el coordinador tras la validación.

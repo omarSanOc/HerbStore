@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 
 import { createFetchJsonBaseQuery } from '../../../core/api/fetch-json-base-query.ts';
 import { wirePayload } from '../testing/home-test-data.ts';
+import { applyHomeFixture } from './home-fixtures.ts';
 import { buildHomeRequest } from './home-request.ts';
 
 type FetchImpl = NonNullable<Parameters<typeof createFetchJsonBaseQuery>[0]['fetchImpl']>;
@@ -129,7 +130,7 @@ describe('buildHomeRequest outcomes through the base query', () => {
 describe('buildHomeRequest fixtures', () => {
   it('server-fail asks the real server for its simulated failure', async () => {
     const urls: string[] = [];
-    const request = buildHomeRequest('server-fail');
+    const request = buildHomeRequest('server-fail', applyHomeFixture);
     const result = await run(request, async (url) => {
       urls.push(String(url));
       return jsonResponse({ error: { code: 'SIMULATED_FAILURE', message: 'x' } }, 500);
@@ -142,7 +143,7 @@ describe('buildHomeRequest fixtures', () => {
 
   it('data fixtures transform the validated payload and keep the plain path', async () => {
     const urls: string[] = [];
-    const request = buildHomeRequest('zero-banners');
+    const request = buildHomeRequest('zero-banners', applyHomeFixture);
     const result = await run(request, async (url) => {
       urls.push(String(url));
       return jsonResponse(wirePayload());
@@ -155,10 +156,10 @@ describe('buildHomeRequest fixtures', () => {
   });
 
   it('every data fixture keeps working on a valid payload', () => {
-    const empty = buildHomeRequest('all-empty').parse(wirePayload());
-    const oneBanner = buildHomeRequest('one-banner').parse(wirePayload());
-    const emptySection = buildHomeRequest('empty-section').parse(wirePayload());
-    const broken = buildHomeRequest('broken-image').parse(wirePayload());
+    const empty = buildHomeRequest('all-empty', applyHomeFixture).parse(wirePayload());
+    const oneBanner = buildHomeRequest('one-banner', applyHomeFixture).parse(wirePayload());
+    const emptySection = buildHomeRequest('empty-section', applyHomeFixture).parse(wirePayload());
+    const broken = buildHomeRequest('broken-image', applyHomeFixture).parse(wirePayload());
 
     assert.deepEqual(empty, { banners: [], categories: [], sections: [] });
     assert.equal(oneBanner?.banners.length, 1);
@@ -167,12 +168,19 @@ describe('buildHomeRequest fixtures', () => {
   });
 
   it('a fixture never hides a real failure', async () => {
-    const network = await run(buildHomeRequest('all-empty'), async () => {
+    const network = await run(buildHomeRequest('all-empty', applyHomeFixture), async () => {
       throw new FetchError('Network request failed');
     });
-    const invalid = await run(buildHomeRequest('all-empty'), async () => jsonResponse({ banners: 1 }));
+    const invalid = await run(buildHomeRequest('all-empty', applyHomeFixture), async () => jsonResponse({ banners: 1 }));
 
     assert.deepEqual(network.error, { kind: 'network' });
     assert.deepEqual(invalid.error, { kind: 'invalid' });
+  });
+
+  it('does not transform the payload when no fixture module is supplied (release builds)', () => {
+    const plain = buildHomeRequest('zero-banners').parse(wirePayload());
+
+    assert.equal(plain?.banners.length, 2);
+    assert.equal(buildHomeRequest('server-fail').path, '/home?fail=true');
   });
 });

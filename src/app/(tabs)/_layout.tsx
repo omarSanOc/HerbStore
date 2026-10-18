@@ -7,7 +7,7 @@ import { getCartBadge } from '@/features/cart/format-cart-badge';
 import { selectCartUnits } from '@/features/cart/logic/cart-selectors';
 import { TabBarLabel } from '@/features/navigation/components/TabBarLabel';
 import { TabBarSymbol } from '@/features/navigation/components/TabBarSymbol';
-import { tabBarBadgeStyle } from '@/features/navigation/tab-bar-badge';
+import { getTabBarBadgeStyle } from '@/features/navigation/tab-bar-badge';
 
 // Any deep link into a tab starts from Home, the first tab, instead of an arbitrary one.
 export const unstable_settings = {
@@ -33,7 +33,7 @@ export default function TabsLayout() {
         // Only the badge reads this: the custom label above ignores it. The built-in badge sits in a
         // fixed-height pill and cannot cap its scale, so it keeps its size (see `tab-bar-badge.ts`).
         tabBarAllowFontScaling: false,
-        tabBarBadgeStyle,
+        tabBarBadgeStyle: getTabBarBadgeStyle(colors),
       }}>
       <Tabs.Screen
         name="(home)"

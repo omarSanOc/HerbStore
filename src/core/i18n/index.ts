@@ -2,14 +2,19 @@ import { getLocales } from 'expo-localization';
 import { createInstance } from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
+import { resolveDeviceLanguage, supportedLanguages } from './languages';
 import { en } from './resources/en';
 import { es } from './resources/es';
 
-export const supportedLanguages = ['es', 'en'] as const;
-export type SupportedLanguage = (typeof supportedLanguages)[number];
+export { supportedLanguages, type SupportedLanguage } from './languages';
 
-const deviceLanguage = getLocales()[0]?.languageCode;
-const initialLanguage: SupportedLanguage = deviceLanguage === 'en' ? 'en' : 'es';
+/**
+ * The language of the device. It is the language the app STARTS in, synchronously, so the first
+ * frame is never blank and never needs a language to arrive. A language the user chose is applied
+ * after the persisted preferences are rehydrated (`preferences-listeners.ts`); `i18n.changeLanguage`
+ * is called there and nowhere else.
+ */
+export const deviceLanguage = resolveDeviceLanguage(getLocales()[0]?.languageCode);
 const i18n = createInstance();
 
 void i18n.use(initReactI18next).init({
@@ -19,7 +24,7 @@ void i18n.use(initReactI18next).init({
   interpolation: {
     escapeValue: false,
   },
-  lng: initialLanguage,
+  lng: deviceLanguage,
   resources: { en, es },
   supportedLngs: supportedLanguages,
 });

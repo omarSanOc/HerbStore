@@ -106,16 +106,28 @@ describe('classifyProductLookup: data already known', () => {
     assert.deepEqual(classifyProductLookup(fetching(product)), { status: 'found', product });
   });
 
-  it('keeps the product when a revalidation fails for network, 5xx, timeout or invalid', () => {
-    for (const error of [
-      NETWORK,
-      { kind: 'http', status: 503 },
-      { kind: 'timeout' },
-      { kind: 'invalid' },
-    ] satisfies ApiError[]) {
-      assert.deepEqual(classifyProductLookup(settled(product, error)), { status: 'found', product });
-      assert.deepEqual(classifyProductLookup(fetching(product, error)), { status: 'found', product });
+  it('keeps the product WITH a notice when a revalidation fails: offline for network, update-failed otherwise', () => {
+    for (const [error, notice] of [
+      [NETWORK, 'offline'],
+      [{ kind: 'http', status: 503 }, 'update-failed'],
+      [{ kind: 'timeout' }, 'update-failed'],
+      [{ kind: 'invalid' }, 'update-failed'],
+    ] as const satisfies readonly (readonly [ApiError, string])[]) {
+      assert.deepEqual(classifyProductLookup(settled(product, error)), {
+        status: 'found',
+        product,
+        notice,
+      });
     }
+  });
+
+  it('keeps the notice while a retry is in flight (RTK keeps the error); a success clears it', () => {
+    assert.deepEqual(classifyProductLookup(fetching(product, NETWORK)), {
+      status: 'found',
+      product,
+      notice: 'offline',
+    });
+    assert.deepEqual(classifyProductLookup(settled(product)), { status: 'found', product });
   });
 
   it('is not-found when a revalidation says the product no longer exists', () => {

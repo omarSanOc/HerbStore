@@ -1,7 +1,8 @@
-import { useState, type Ref } from 'react';
+import { useState, type Ref, type RefObject } from 'react';
 import { Pressable, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
+import type { ScreenReaderFocusTarget } from '@/core/accessibility/screen-reader-focus';
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
 import {
   AppBottomSheet,
@@ -39,6 +40,8 @@ type AdvancedFiltersSheetProps = {
   category?: string;
   /** Called with the final draft when the user presses Apply. Cancelling never calls it. */
   onApply: (draft: AdvancedFiltersDraft) => void;
+  /** The button that opens this sheet: the screen-reader focus goes back to it on close. */
+  returnFocusTo?: RefObject<ScreenReaderFocusTarget | null>;
 };
 
 /**
@@ -65,6 +68,7 @@ export function AdvancedFiltersSheet({
   applied,
   category,
   onApply,
+  returnFocusTo,
 }: Readonly<AdvancedFiltersSheetProps>) {
   const { t } = useTranslation();
 
@@ -75,6 +79,7 @@ export function AdvancedFiltersSheet({
       closeLabel={t('productList.advanced.close')}
       layout="fixed"
       name="advanced-filters"
+      returnFocusTo={returnFocusTo}
       title={t('productList.advanced.title')}>
       <AdvancedFiltersForm applied={applied} category={category} onApply={onApply} />
     </AppBottomSheet>
@@ -119,7 +124,8 @@ function AdvancedFiltersForm({
       : selectSubcategoryOptions(categoriesQuery.data, category);
 
   const handleApply = () => {
-    // Apply first, then close: the list already queries the new filters when the sheet leaves.
+    // Apply first, then close: the list already queries the new filters when the sheet leaves. The
+    // focus goes back to the Filters button, whose label now says how many are active.
     onApply(draft);
     dismiss();
   };
@@ -280,7 +286,7 @@ function FacetOption({ label, selected, onPress }: Readonly<FacetOptionProps>) {
       style={({ pressed }) => [
         styles.option,
         {
-          borderColor: selected ? colors.primary : colors.border,
+          borderColor: selected ? colors.primary : colors.controlBorder,
           // A border of constant width, so selecting does not move the text.
           borderWidth: selected ? 2 : 1,
         },
