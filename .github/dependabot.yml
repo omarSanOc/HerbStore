@@ -1,0 +1,116 @@
+# Dependabot configuration for HerbStore.
+# Reference: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
+#
+# Design in one line: the Expo app is updated by SDK, the mock server and the
+# GitHub Actions workflow are updated by Dependabot version updates.
+#
+# Security updates are a separate mechanism from this file. They are enabled in
+# the repository settings (Settings > Advanced Security > Dependabot alerts and
+# Dependabot security updates) and use their own fixed limit of 10 open PRs,
+# which `open-pull-requests-limit` does not control.
+
+version: 2
+
+updates:
+  # ---------------------------------------------------------------------------
+  # 1. Expo app (repository root): security updates only, no version updates.
+  # ---------------------------------------------------------------------------
+  # Chosen: `open-pull-requests-limit: 0` disables version-update PRs here.
+  # Why: Expo, React Native, React, expo-*, react-native-reanimated,
+  # react-native-worklets, react-native-gesture-handler, @shopify/flash-list,
+  # react-native-screens, react-native-safe-area-context, and similar packages
+  # are pinned or ranged to versions coordinated with Expo SDK 57. Bumping them
+  # one by one (as Dependabot would) breaks `npx expo install --check` and can
+  # break the Development Build. Version bumps are done on purpose, together,
+  # with `npx expo install --fix` / `npx expo install --check` when the SDK
+  # changes.
+  # Trade-off: no automatic PRs for non-security bumps of unrelated libraries
+  # (zod, i18next, react-hook-form, redux-persist, eslint...). They are updated
+  # by hand, during an SDK upgrade or a dedicated maintenance pass.
+  # Discarded: weekly grouped version updates plus a long `ignore` list of
+  # everything coordinated with Expo. It means more noise, an `ignore` list that
+  # must be kept in sync with the SDK, and a real risk of an incompatible PR.
+  # Development tooling (typescript, @types/*, jest, jest-expo, eslint,
+  # eslint-config-expo) follows the SDK template and Expo's own tooling, so it is
+  # not enabled here either. Candidate for a future opt-in group once an SDK
+  # upgrade confirms they are independent: @testing-library/react-native.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Monterrey"
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+
+  # ---------------------------------------------------------------------------
+  # 2. Mock server (/mock-server): weekly grouped version updates.
+  # ---------------------------------------------------------------------------
+  # Chosen: express and @faker-js/faker are independent of Expo, so normal
+  # Dependabot version updates are safe. Patch and minor updates arrive in one
+  # grouped PR; major updates are not part of the group, so each one gets its own
+  # PR to review on its own.
+  # Trade-off: one grouped PR can hide which package caused a failure; the CI
+  # job `mock-server test` tells us, and the PR can be split by hand.
+  # Discarded: one PR per dependency (more PRs for only two direct dependencies)
+  # and a single group that also includes majors (a major bump should never be
+  # merged together with routine bumps).
+  #
+  # WARNING about @faker-js/faker: the catalog uses a fixed seed
+  # (CATALOG_SEED = 20261009), and Faker does not guarantee that the same seed
+  # produces the same values across versions. A bump can change the generated
+  # catalog and break the deterministic tests (or the data the app shows).
+  # Decision: ignore major and minor bumps of @faker-js/faker and only accept
+  # patch bumps. Even a patch bump must be reviewed: check that the mock-server
+  # tests still pass and that the catalog output did not change. To upgrade
+  # Faker on purpose, do it by hand and update the catalog tests/snapshots in
+  # the same change.
+  - package-ecosystem: "npm"
+    directory: "/mock-server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Monterrey"
+    open-pull-requests-limit: 5
+    groups:
+      mock-server-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "@faker-js/faker"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+
+  # ---------------------------------------------------------------------------
+  # 3. GitHub Actions (.github/workflows): weekly, all actions in one group.
+  # ---------------------------------------------------------------------------
+  # Chosen: a single grouped PR per week keeps the workflow current
+  # (actions/checkout, actions/setup-node) with low noise.
+  # Trade-off: a major bump of an action (for example a new Node runtime)
+  # arrives in the same PR as the rest; CI on the PR validates it before merge.
+  # Discarded: one PR per action (noisy for a workflow with two actions).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Monterrey"
+    open-pull-requests-limit: 3
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(deps)"
