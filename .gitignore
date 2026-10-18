@@ -17,11 +17,18 @@ expo-env.d.ts
 *.p12
 *.key
 *.mobileprovision
+*.keystore
+*.apk
+*.ipa
+*.aab
+google-services.json
+GoogleService-Info.plist
 
 # Metro
 .metro-health-check*
 
-# debug
+# logs and debug
+*.log
 npm-debug.*
 yarn-debug.*
 yarn-error.*
@@ -30,13 +37,14 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# local env files (only the documented example is versioned)
+.env
+.env.*
+!.env.example
 .env*.local
 
 # typescript
 *.tsbuildinfo
-
-example
 
 # generated native folders
 /ios
@@ -44,3 +52,8 @@ example
 
 # Generated Gradle output of the versioned local Expo module
 /modules/device-insights/android/build/
+
+# Local agent state and private study material (not published)
+.claude/settings.local.json
+MEMORY.md
+docs/interview/

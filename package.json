@@ -2,6 +2,17 @@
   "name": "herbstore",
   "main": "expo-router/entry",
   "version": "1.0.0",
+  "description": "Teaching e-commerce app (fictional supplements store) built with Expo and React Native to practice mobile engineering.",
+  "license": "MIT",
+  "author": "omarSanOc",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/omarSanOc/HerbStore.git"
+  },
+  "homepage": "https://github.com/omarSanOc/HerbStore#readme",
+  "bugs": {
+    "url": "https://github.com/omarSanOc/HerbStore/issues"
+  },
   "engines": {
     "node": ">=22.18"
   },

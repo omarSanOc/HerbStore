@@ -1,7 +1,7 @@
 {
   "name": "mock-server",
   "version": "1.0.0",
-  "description": "Deterministic HTTP API for the HerbStore learning app",
+  "description": "Deterministic HTTP API (Express and seeded Faker data) for the fictional HerbStore learning app",
   "private": true,
   "main": "src/server.js",
   "scripts": {
@@ -10,8 +10,8 @@
     "test": "node --test"
   },
   "keywords": [],
-  "author": "",
-  "license": "UNLICENSED",
+  "author": "omarSanOc",
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "@faker-js/faker": "^10.6.0",
