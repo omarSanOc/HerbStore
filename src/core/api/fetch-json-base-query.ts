@@ -1,7 +1,9 @@
 import type { BaseQueryApi, BaseQueryFn } from '@reduxjs/toolkit/query';
 
+import type { SupportedLanguage } from '../i18n/languages.ts';
 import { fetchJson, type FetchJsonOutcome, type HttpMethod } from '../network/http.ts';
 import { toBaseQueryResult, type ApiError, type ApiResult } from './api-error.ts';
+import { redactSettledPath } from './redact-settled-path.ts';
 
 /** What every endpoint's `query` returns: the request plus the validator of its payload. */
 export type FetchJsonArgs = {
@@ -10,6 +12,8 @@ export type FetchJsonArgs = {
   method?: HttpMethod;
   body?: unknown;
   headers?: Readonly<Record<string, string>>;
+  /** Marks localized reads so HTTP sends and validates the language contract. */
+  language?: SupportedLanguage;
   /** Validates the decoded JSON against the contract; `undefined` means invalid. */
   parse: (payload: unknown, status: number) => unknown;
   parseErrorBody?: (status: number, payload: unknown) => unknown;
@@ -56,8 +60,9 @@ export function createFetchJsonBaseQuery({
       method,
       body: args.body,
       headers: args.headers,
-       parse: args.parse,
-       parseErrorBody: args.parseErrorBody,
+      language: args.language,
+      parse: args.parse,
+      parseErrorBody: args.parseErrorBody,
       signal: api.signal,
       timeoutMs,
       fetchImpl,
@@ -73,11 +78,4 @@ export function createFetchJsonBaseQuery({
     const result: ApiResult<unknown> = toBaseQueryResult(outcome);
     return result;
   };
-}
-
-function redactSettledPath(path: string): string {
-  const match = /^\/orders\/status\/(.+)$/.exec(path);
-  if (!match) return path;
-  const key = decodeURIComponent(match[1] ?? '');
-  return `/orders/status/${key.length > 4 ? `…${key.slice(-4)}` : '…'}`;
 }

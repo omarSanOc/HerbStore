@@ -26,6 +26,8 @@ type Language = 'es' | 'en';
 const TEXT = {
   es: {
     title: 'Vitaminas',
+    genericTitle: 'Categoría',
+    remoteTitle: 'Vitaminas del sol',
     offlineTitle: 'Sin conexión con el servidor',
     errorTitle: 'No se pudieron cargar los productos',
     retry: 'Reintentar',
@@ -35,6 +37,8 @@ const TEXT = {
   },
   en: {
     title: 'Vitamins',
+    genericTitle: 'Category',
+    remoteTitle: 'Sunshine vitamins',
     offlineTitle: 'No connection to the server',
     errorTitle: "Products couldn't be loaded",
     retry: 'Try again',
@@ -59,8 +63,6 @@ describe('CategoryProductsScreen offline', () => {
     setAppForeground();
     mock = createMockFetch();
     mock.install();
-    mock.always('GET /brands', reply.success(wireBrands()));
-    mock.always('GET /categories', reply.success(wireCategories()));
   });
 
   afterEach(() => {
@@ -70,12 +72,25 @@ describe('CategoryProductsScreen offline', () => {
 
   const productRequests = () => mock.calls.filter(({ path }) => path === '/products');
 
+  /**
+   * `renderWithProviders` plus the answers the advanced-filters sheet needs: the sheet is mounted
+   * (closed) with the screen and reads its options in the language of THAT render, which only the
+   * render arguments know, so the permanent replies are set here and not in `beforeEach`.
+   */
+  type RenderArgs = Parameters<typeof renderWithProviders>;
+  const render = (ui: RenderArgs[0], options: NonNullable<RenderArgs[1]> = {}) => {
+    const language = options.language ?? 'es';
+    mock.always('GET /brands', reply.localized(wireBrands(), language));
+    mock.always('GET /categories', reply.localized(wireCategories(language), language));
+    return renderWithProviders(ui, options);
+  };
+
   describe.each<Language>(['es', 'en'])('in %s', (language) => {
     const text = TEXT[language];
 
     it('NO DATA: the category title stays, the screen says "no connection" and "retry" recovers', async () => {
       mock.enqueue('GET /products', reply.networkError(), reply.networkError(), reply.networkError());
-      await renderWithProviders(<CategoryProductsScreen rawId="vitamins" />, { language });
+      await render(<CategoryProductsScreen rawId="vitamins" />, { language });
       await advance(1_510);
 
       expect(screen.getByRole('header', { name: text.title })).toBeOnTheScreen();
@@ -83,7 +98,7 @@ describe('CategoryProductsScreen offline', () => {
       expect(screen.queryByText(text.errorTitle)).not.toBeOnTheScreen();
       expect(productRequests()).toHaveLength(3);
 
-      mock.enqueue('GET /products', reply.success(wireProductPage(2)));
+      mock.enqueue('GET /products', reply.localized(wireProductPage(2), language));
       await fireEvent.press(screen.getByRole('button', { name: text.retry }));
       await advance(10);
 
@@ -94,7 +109,7 @@ describe('CategoryProductsScreen offline', () => {
 
     it('SERVER ERROR is a different message from "no connection", with the same retry', async () => {
       mock.enqueue('GET /products', reply.serverError(), reply.serverError(), reply.serverError());
-      await renderWithProviders(<CategoryProductsScreen rawId="vitamins" />, { language });
+      await render(<CategoryProductsScreen rawId="vitamins" />, { language });
       await advance(1_510);
 
       expect(screen.getByRole('header', { name: text.errorTitle })).toBeOnTheScreen();
@@ -103,8 +118,8 @@ describe('CategoryProductsScreen offline', () => {
     });
 
     it('PREVIOUS PRODUCTS: a failed revalidation keeps them, the title and a notice', async () => {
-      mock.enqueue('GET /products', reply.success(wireProductPage(2)));
-      await renderWithProviders(<CategoryProductsScreen rawId="vitamins" />, { language });
+      mock.enqueue('GET /products', reply.localized(wireProductPage(2), language));
+      await render(<CategoryProductsScreen rawId="vitamins" />, { language });
       await advance(10);
       await advance(61_000);
       mock.enqueue('GET /products', reply.networkError(), reply.networkError(), reply.networkError());
@@ -121,8 +136,42 @@ describe('CategoryProductsScreen offline', () => {
     });
   });
 
+  // RF-9, RF-22, RF-35 (spec 007, T3). The header is copy OF THE CATALOG: the name that comes in
+  // the localized category tree. The app used to translate five known ids itself, so the header
+  // could disagree with the API; a name it does not know must appear exactly as sent, and while
+  // the tree is still in flight the header is the generic chrome (i18n owns only that fallback).
+  //
+  // Android: `string.xml` per category id drifts from the backend; SwiftUI: a `Localizable` entry
+  // per server id has the same problem. The response owns the name.
+  describe.each<Language>(['es', 'en'])('TITLE from the API, in %s', (language) => {
+    const text = TEXT[language];
+
+    it('RF-9: shows the name of the localized tree, and the generic chrome until it arrives', async () => {
+      mock.always('GET /products', reply.localized(wireProductPage(1), language));
+      mock.enqueue(
+        'GET /categories',
+        reply.localized(
+          [{ id: 'vitamins', name: text.remoteTitle, productCount: 12, subcategories: [] }],
+          language,
+          { delayMs: 1_000 },
+        ),
+      );
+
+      await render(<CategoryProductsScreen rawId="vitamins" />, { language });
+
+      // The tree is still in flight: the header is the generic chrome, not a local translation.
+      expect(screen.getByRole('header', { name: text.genericTitle })).toBeOnTheScreen();
+      expect(screen.queryByRole('header', { name: text.title })).not.toBeOnTheScreen();
+
+      await advance(1_010);
+
+      expect(screen.getByRole('header', { name: text.remoteTitle })).toBeOnTheScreen();
+      expect(screen.queryByRole('header', { name: text.genericTitle })).not.toBeOnTheScreen();
+    });
+  });
+
   it('a link that is not a category never asks the server', async () => {
-    await renderWithProviders(<CategoryProductsScreen rawId="../etc" />);
+    await render(<CategoryProductsScreen rawId="../etc" />);
     await advance(2_000);
 
     expect(screen.getByText(TEXT.es.invalidTitle)).toBeOnTheScreen();

@@ -4,13 +4,14 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
 import { toApiError } from '@/core/api/api-error';
+import { useCurrentLanguage } from '@/core/i18n/use-current-language';
 import { onReconnect } from '@/core/network/reconnection';
 import { useLazyGetProductByBarcodeQuery } from '@/features/product/data/products-api';
 
-import { isValidEan13 } from '../logic/ean13';
 import { resolveCameraAccess } from '../logic/camera-access';
 import { initialScannerState, scannerReducer } from '../logic/scanner-machine';
 import { createScannerReadBarrier } from '../logic/scanner-read-barrier';
+import { normalizeScannerInput, type ScannerInput } from '../logic/scanner-input';
 import { isCameraAvailableBeforeMount } from '../native/camera-availability';
 
 /** Camera access is deliberately an imperative action, never a hook at preview mount time. */
@@ -28,6 +29,10 @@ export function useScannerController() {
   const reconnections = useRef(0);
   const wasFocused = useRef(focused);
   const [trigger] = useLazyGetProductByBarcodeQuery();
+  // The language of the lookup: part of the argument, so `es` and `en` are separate cache entries
+  // and a late answer of the old language cannot land on the current scan (RF-22, RF-24). The
+  // EAN-13 guard runs BEFORE this value is ever used: an invalid code builds no argument (RF-40).
+  const language = useCurrentLanguage();
 
   const invalidateQuery = useCallback(() => {
     const query = activeQuery.current;
@@ -77,7 +82,7 @@ export function useScannerController() {
   }, [checkAccess]);
 
   const runQuery = useCallback((code: string, epoch: number) => {
-    const query = trigger(code);
+    const query = trigger({ code, language });
     const reconnectionsAtStart = reconnections.current;
     activeQuery.current = query;
     void query
@@ -97,17 +102,21 @@ export function useScannerController() {
       .finally(() => {
         if (activeQuery.current === query) activeQuery.current = null;
       });
-  }, [trigger]);
+  }, [language, trigger]);
 
-  const readCode = useCallback((code: string) => {
+  const readCode = useCallback((input: ScannerInput) => {
     const before = state;
     if (before.kind !== 'ready') return;
     // Native callbacks can arrive twice before React commits the reducer update. Claiming the
     // current rearm synchronously makes that stale `ready` snapshot single-use.
     if (readBarrier.current.claim() === undefined) return;
-    dispatch({ type: 'codeRead', code });
-    if (!isValidEan13(code)) return;
-    runQuery(code, before.epoch + 1);
+    const normalized = normalizeScannerInput(input);
+    if (normalized.kind === 'invalid') {
+      dispatch({ type: 'invalidRead' });
+      return;
+    }
+    dispatch({ type: 'codeRead', code: normalized.code });
+    runQuery(normalized.code, before.epoch + 1);
   }, [runQuery, state]);
 
   const cancel = useCallback(() => {

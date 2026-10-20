@@ -16,6 +16,7 @@ import { currencyChanged } from '@/features/preferences/store/preferences-slice'
 import { orderRecorded } from '@/features/orders/store/order-history-slice';
 import { createMemoryStorage, createTestStore, startPersistence } from '@/test/fixtures';
 import { TABS_STATE, resetRouterMock, router, tabsNavigation } from '@/test/mock-expo-router';
+import { createMockFetch, reply } from '@/test/mock-fetch';
 import { renderWithProviders } from '@/test/render-with-providers';
 
 import { OrderHistoryScreen } from './OrderHistoryScreen';
@@ -166,6 +167,25 @@ describe.each<Language>(['es', 'en'])('OrderHistoryScreen in %s', (language) => 
 
       for (const secret of SECRETS) expect(allText()).not.toContain(secret);
       expect(JSON.stringify(store.getState().orderHistory)).not.toMatch(/shippingAddress|Ana Perez|5512345678|Avenida Central/);
+    });
+
+    // RF-39 (T4): a confirmed order is a LOCAL summary (id, date, units, total) recorded at
+    // confirmation time. The screen never asks the catalog, so a product that disappeared from the
+    // API (detail 404) cannot hide the order, alter its amounts or empty the list.
+    it('keeps the local summary of an order whose product no longer exists in the API (detail 404)', async () => {
+      const mock = createMockFetch();
+      mock.install();
+      try {
+        mock.always('GET /products/product-261009-001', reply.clientError(404, { error: { code: 'PRODUCT_NOT_FOUND' } }));
+        const store = await readyStore(NEW);
+        await renderWithProviders(<OrderHistoryScreen />, { store, language });
+
+        expect(rowLabels()[0]).toContain('order-0003');
+        expect(rowLabels()[0]).toMatch(/299\.00/);
+        expect(mock.calls).toHaveLength(0); // the catalog is never consulted
+      } finally {
+        mock.uninstall();
+      }
     });
 
     it('lets the text grow: nothing is cut to a line count or ellipsized, and nothing disables font scaling', async () => {

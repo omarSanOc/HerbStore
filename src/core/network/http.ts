@@ -1,3 +1,5 @@
+import { isSupportedLanguage, type SupportedLanguage } from '../i18n/languages.ts';
+
 export const DEFAULT_TIMEOUT_MS = 8_000;
 
 /**
@@ -27,6 +29,8 @@ export type FetchJsonOptions<T> = {
   body?: unknown;
   /** Extra request headers (e.g. `Idempotency-Key`); they are added on top of `Accept`. */
   headers?: Readonly<Record<string, string>>;
+  /** Opt-in for localized reads: sends and requires this exact supported language. */
+  language?: SupportedLanguage;
   /** Validates the decoded JSON; return `undefined` when it does not have the expected shape. */
   parse: (payload: unknown, status: number) => T | undefined;
   /** Opt-in parser for non-2xx JSON bodies. The returned value is attached to `http.body`. */
@@ -44,6 +48,7 @@ export async function fetchJson<T>(
     method = 'GET',
     body,
     headers,
+    language,
     parse,
     parseErrorBody,
     signal,
@@ -82,6 +87,7 @@ export async function fetchJson<T>(
           // Only a request that carries a body declares its content type.
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
           ...headers,
+          ...(language === undefined ? {} : { 'Accept-Language': language }),
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal,
@@ -104,6 +110,13 @@ export async function fetchJson<T>(
         // (same rule as the 2xx branch: a 5xx that was retried after 8 s of silence would break
         // the "timeouts are not retried" policy); otherwise the status is all the answer we have.
         return cancelled() ?? { kind: 'http', status: response.status };
+      }
+    }
+
+    if (language !== undefined) {
+      const contentLanguage = response.headers.get('Content-Language');
+      if (!isSupportedLanguage(contentLanguage) || contentLanguage !== language) {
+        return { kind: 'invalid' };
       }
     }
 

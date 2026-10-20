@@ -35,7 +35,7 @@ describe('ProductDetailScreen loading and reduced motion', () => {
     setAppForeground();
     mock = createMockFetch();
     mock.install();
-    mock.enqueue(`GET /products/${ID}`, reply.success(wireProduct(1, { stock: 5, inStock: true })));
+    mock.enqueue(`GET /products/${ID}`, reply.localized(wireProduct(1, { stock: 5, inStock: true }), 'es'));
   });
 
   afterEach(async () => {

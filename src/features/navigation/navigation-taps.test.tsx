@@ -104,7 +104,7 @@ describe('double tap navigates once', () => {
 
   describe('buttons whose route is singular', () => {
     it('Home: the search field opens Search once', async () => {
-      mock.always('GET /home', reply.success(wirePayload()));
+      mock.always('GET /home', reply.localized(wirePayload('es'), 'es'));
       await renderWithProviders(<HomeScreen />);
 
       await doubleTap(screen.getByRole('button', { name: 'Buscar productos' }));
@@ -114,7 +114,7 @@ describe('double tap navigates once', () => {
     });
 
     it('Home: the scan button opens the scanner once', async () => {
-      mock.always('GET /home', reply.success(wirePayload()));
+      mock.always('GET /home', reply.localized(wirePayload('es'), 'es'));
       await renderWithProviders(<HomeScreen />);
 
       await doubleTap(screen.getByRole('button', { name: 'Escanear un producto' }));
@@ -124,7 +124,7 @@ describe('double tap navigates once', () => {
     });
 
     it('Home: two taps on category chips open ONE category', async () => {
-      mock.always('GET /home', reply.success(wirePayload()));
+      mock.always('GET /home', reply.localized(wirePayload('es'), 'es'));
       await renderWithProviders(<HomeScreen />);
       await advance(10);
 
@@ -138,7 +138,7 @@ describe('double tap navigates once', () => {
     });
 
     it('Search: a double tap on a result opens ONE product', async () => {
-      mock.always('GET /products', reply.success(wireProductPage(3)));
+      mock.always('GET /products', reply.localized(wireProductPage(3), 'es'));
       await renderWithProviders(<SearchScreen />);
       await fireEvent.changeText(screen.getByLabelText('Buscar productos'), 'powder');
       await advance(450); // the 400 ms debounce, then the response
@@ -152,7 +152,7 @@ describe('double tap navigates once', () => {
     });
 
     it('Category: a double tap on a product opens ONE product', async () => {
-      mock.always('GET /products', reply.success(wireProductPage(3)));
+      mock.always('GET /products', reply.localized(wireProductPage(3), 'es'));
       await renderWithProviders(<CategoryProductsScreen rawId="vitamins" />);
       await advance(10);
 
@@ -182,7 +182,7 @@ describe('double tap navigates once', () => {
     });
 
     it('is not a permanent lock: after the window the same button navigates again', async () => {
-      mock.always('GET /home', reply.success(wirePayload()));
+      mock.always('GET /home', reply.localized(wirePayload('es'), 'es'));
       await renderWithProviders(<HomeScreen />);
       const search = screen.getByRole('button', { name: 'Buscar productos' });
 

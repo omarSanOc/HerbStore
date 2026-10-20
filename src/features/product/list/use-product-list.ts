@@ -37,12 +37,13 @@ export type ProductListViewModel = {
  * revalidation, behind one state the screens only read.
  *
  * - `args` arrive canonical (`toProductQueryArgs` -> `buildProductQueryArgs`), so two equivalent
- *   lists share one cache entry and one in-flight request. Changing a filter or the sort changes
- *   the args, so RTK Query opens another entry: page 1, and the grid (keyed by identity) on top.
+ *   lists share one cache entry and one in-flight request. Changing a filter, the sort OR the
+ *   language changes the args, so RTK Query opens another entry: page 1, and the grid (keyed by
+ *   identity) on top. The language in the args is what makes `es` and `en` separate caches (RF-24).
  * - `useGetProductsInfiniteQuery` owns the requests: cache, retries (2 on network/5xx) and abort.
  * - It reads `currentData`, never `data`. RTK keeps `data` from the previous args while new ones
- *   load, which would paint another list's products under the new title; `currentData` is
- *   `undefined` until the entry of the CURRENT args has a page (RF-11).
+ *   load, which would paint another list's products (or another LANGUAGE's) under the new title;
+ *   `currentData` is `undefined` until the entry of the CURRENT args has a page (RF-11, RF-24).
  * - `classifyProductListState` (pure) turns the snapshot into the screen state.
  *
  * Load more (RF-10). The grid reports which items are visible; `shouldLoadNextPage` (pure) decides

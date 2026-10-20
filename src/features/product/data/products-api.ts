@@ -1,4 +1,5 @@
 import { baseApi } from '@/core/api/base-api';
+import type { SupportedLanguage } from '@/core/i18n/languages';
 
 import type {
   BrandOption,
@@ -34,7 +35,8 @@ export const productsApi = baseApi.injectEndpoints({
   endpoints: (build) => ({
     /**
      * `GET /products?...`: ONE cache entry per list identity (`ProductQueryArgs`, no page), whose
-     * value holds every loaded page. The page is the `pageParam`, not part of the identity.
+     * value holds every loaded page. The page is the `pageParam`, not part of the identity, and
+     * the language IS part of the identity (it is in `queryArg`, never in the query string).
      */
     getProducts: build.infiniteQuery<ProductPage, ProductQueryArgs, number>({
       infiniteQueryOptions: {
@@ -51,6 +53,7 @@ export const productsApi = baseApi.injectEndpoints({
         return {
           path: `/products?${toProductQueryString(queryArg, pageParam)}`,
           parse: parseProductPage,
+          language: queryArg.language,
         };
       },
       transformResponse: (response) => response as ProductPage,
@@ -58,37 +61,42 @@ export const productsApi = baseApi.injectEndpoints({
     }),
 
     /**
-     * `GET /products/:id`. `id` must come from `parseProductId`. The answer is the detail: the
-     * catalog product plus `description`, `servingInfo` and the live `stock` (see `ProductDetail`).
+     * `GET /products/:id`. `id` must come from `parseProductId` (a malformed id never reaches the
+     * request: RF-40). The language travels in the ARGUMENT, so the detail of `es` and of `en` are
+     * two entries and a late answer of the old language cannot replace the current one (RF-24).
+     * The answer is the detail: the catalog product plus `description`, `servingInfo` and the live
+     * `stock` (see `ProductDetail`).
      */
-    getProduct: build.query<ProductDetail, string>({
-      query: (id) => ({
+    getProduct: build.query<ProductDetail, { id: string; language: SupportedLanguage }>({
+      query: ({ id, language }) => ({
         path: `/products/${encodeURIComponent(id)}`,
         parse: parseProductDetail,
+        language,
       }),
       transformResponse: (response) => response as ProductDetail,
-      providesTags: (_data, _error, id) => [productTag(id)],
+      providesTags: (_data, _error, { id }) => [productTag(id)],
     }),
 
     /** `GET /products/barcode/:code`: the scanner uses the same detail contract and GET policy. */
-    getProductByBarcode: build.query<ProductDetail, string>({
-      query: (code) => ({
+    getProductByBarcode: build.query<ProductDetail, { code: string; language: SupportedLanguage }>({
+      query: ({ code, language }) => ({
         path: `/products/barcode/${encodeURIComponent(code)}`,
         parse: parseProductDetail,
+        language,
       }),
       transformResponse: (response) => response as ProductDetail,
       providesTags: (data) => (data === undefined ? [] : [productTag(data.id)]),
     }),
 
-    /** `GET /brands`. Facet options: not tied to any product, so no tags. */
-    getBrands: build.query<BrandOption[], void>({
-      query: () => ({ path: '/brands', parse: parseBrandOptions }),
+    /** `GET /brands`. Facet options: not tied to any product, so no tags. Localized (RF-9). */
+    getBrands: build.query<BrandOption[], SupportedLanguage>({
+      query: (language) => ({ path: '/brands', parse: parseBrandOptions, language }),
       transformResponse: (response) => response as BrandOption[],
     }),
 
-    /** `GET /categories`. Category tree with subcategories: no tags either. */
-    getCategories: build.query<CategoryNode[], void>({
-      query: () => ({ path: '/categories', parse: parseCategoryTree }),
+    /** `GET /categories`. Category tree with subcategories: no tags either. Localized (RF-9). */
+    getCategories: build.query<CategoryNode[], SupportedLanguage>({
+      query: (language) => ({ path: '/categories', parse: parseCategoryTree, language }),
       transformResponse: (response) => response as CategoryNode[],
     }),
   }),

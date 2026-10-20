@@ -3,7 +3,7 @@ name: Extra - a second product link REPLACES the first (singular route), it does
 tags:
   - extra
 # Optional (not part of RF-6, not run by default): `maestro test .maestro/deep-link-a-b.yaml`.
-# Needs the mock server running, but NOT a fresh one: it never creates an order.
+# Needs the persistent API running, but it never creates an order, so it needs NO exclusive window.
 env:
   METRO_URL: http://localhost:8081
   PRODUCT_A_ID: product-261009-062

@@ -1,6 +1,7 @@
 import { toApiError } from '@/core/api/api-error';
 import { usePullToRefresh } from '@/core/api/use-pull-to-refresh';
 import { useRevalidateWhenStale } from '@/core/api/use-revalidate-when-stale';
+import { useCurrentLanguage } from '@/core/i18n/use-current-language';
 
 import { useGetHomeQuery } from '../data/home-api';
 import { classifyHomeResult, type HomeScreenState } from '../logic/classify-home-result';
@@ -21,6 +22,11 @@ export type HomeViewModel = {
  * - `useGetHomeQuery` owns the request: caching, the single in-flight request per query, retries
  *   and cancellation. Opening Home refetches only if its data is 60 s old or more
  *   (`refetchOnMountOrArgChange: 60` in `baseApi`).
+ * - The CURRENT language is part of the argument (`useCurrentLanguage`), so switching `es` ↔ `en`
+ *   opens the entry of the new language and asks for it. `currentData` (never `data`) is what gets
+ *   classified: while the new language loads, `currentData` is `undefined`, so the payload of the
+ *   previous language is not drawn under the new chrome, and a late answer of the old language
+ *   writes only its own entry (RF-24, RNF-3).
  * - `useRevalidateWhenStale` revalidates once, in the background and without a spinner, when Home
  *   regains focus, the app returns to the foreground or the network comes back, but only if the
  *   data is 60 s old or more (RF-5). It replaces the Day 2 refetch policy.
@@ -33,7 +39,10 @@ export type HomeViewModel = {
  * properties.
  */
 export function useHome(): HomeViewModel {
-  const { data, error, isFetching, fulfilledTimeStamp, refetch } = useGetHomeQuery();
+  const language = useCurrentLanguage();
+  // `currentData`, NOT `data`: `data` keeps the payload of the previous ARGS (the previous
+  // language) while the new ones load, which would draw Spanish content under English chrome.
+  const { currentData, error, isFetching, fulfilledTimeStamp, refetch } = useGetHomeQuery(language);
 
   const { isRefreshing, onRefresh } = usePullToRefresh(() => {
     if (__DEV__) {
@@ -53,7 +62,7 @@ export function useHome(): HomeViewModel {
     },
   });
 
-  const state = classifyHomeResult({ data, error: toApiError(error), isFetching });
+  const state = classifyHomeResult({ data: currentData, error: toApiError(error), isFetching });
 
   return {
     state,

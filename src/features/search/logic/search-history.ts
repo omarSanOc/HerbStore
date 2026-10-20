@@ -2,7 +2,7 @@
 //
 // The history is the list of searches the user sent, newest first, at most 10 (spec 003, RF-17,
 // RF-18). Its identity rule is the NORMALIZED form of the text (`normalizeSearchText`: trim, one
-// space between words, lowercase, no diacritics), the same definition the mock server and the
+// space between words, lowercase, no diacritics), the same definition the API search and the
 // query identity use, so "Vitamina C" and "vitamina  c" are one entry. The entry keeps the HUMAN
 // text of the most recent variant: the normalized form is only the key, never what is shown.
 //

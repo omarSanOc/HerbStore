@@ -1,4 +1,3 @@
-import type { TFunction } from 'i18next';
 import { useReducer, useState } from 'react';
 import {
   FlatList,
@@ -23,7 +22,6 @@ import { useBannerAutoplay } from '../carousel/use-banner-autoplay';
 import { useBannerPager } from '../carousel/use-banner-pager';
 import type { HomeBanner } from '../contracts/home';
 import { BANNER_ASPECT_RATIO } from '../home-layout';
-import { bannerCopyKeys } from '../logic/banner-copy';
 
 // Module-level and closure-free. The key is the banner id, never the position.
 const keyExtractor = (banner: HomeBanner) => banner.id;
@@ -57,15 +55,6 @@ export function BannerCarousel({ banners, ...handlers }: Readonly<BannerCarousel
   }
 }
 
-/** Title and subtitle by banner id (es/en); the server text only for ids we do not know. */
-function getBannerText(t: TFunction, banner: HomeBanner) {
-  const keys = bannerCopyKeys(banner.id);
-
-  return keys === undefined
-    ? { title: banner.title, subtitle: banner.subtitle }
-    : { title: t(keys.title), subtitle: t(keys.subtitle) };
-}
-
 function PagedBanners({ banners, onOpenCategory, isRowVisible }: Readonly<BannerCarouselProps>) {
   const { t } = useTranslation();
   const { colors } = useAppTheme();
@@ -97,7 +86,10 @@ function PagedBanners({ banners, onOpenCategory, isRowVisible }: Readonly<Banner
   });
 
   const current = banners[index];
-  const { title, subtitle } = getBannerText(t, current);
+  // RF-8, RF-22: the title and the subtitle are copy OF THE CATALOG. They are shown exactly as the
+  // localized response sent them; the app never replaces them by id (the tables it used to keep
+  // mixed two sources and hid the contract). Only the chrome around them comes from i18n.
+  const { title, subtitle } = current;
   const currentCategoryId = parseCategoryId(current.categoryId);
 
   const onLayout = (event: LayoutChangeEvent) => setPageWidth(event.nativeEvent.layout.width);
@@ -223,7 +215,7 @@ type BannerSlideProps = {
 function BannerSlide({ banner, onOpenCategory, grouped = false, width }: Readonly<BannerSlideProps>) {
   const { t } = useTranslation();
   const reduceMotion = useReducedMotionPreference();
-  const { title, subtitle } = getBannerText(t, banner);
+  const { title, subtitle } = banner;
   // The destination validates again; here an id that cannot be a category makes the banner inert.
   const categoryId = parseCategoryId(banner.categoryId);
 

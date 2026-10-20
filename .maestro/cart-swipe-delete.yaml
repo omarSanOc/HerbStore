@@ -4,8 +4,8 @@ tags:
   - extra
 # Optional (RF-31, spec 006; not part of RF-6, not run by default):
 #   maestro --device <id> test .maestro/cart-swipe-delete.yaml
-# Needs the mock server and Metro up, but NOT a fresh mock: it never creates an order. Starts from
-# `clearState`, so the cart is exactly what this flow puts in it: two lines, A above B.
+# Needs the persistent API and Metro up, but it never creates an order, so it needs NO exclusive
+# window. Starts from `clearState`, so the cart is exactly what this flow puts in it: two lines, A above B.
 #
 # THE ONLY COORDINATES IN THESE FLOWS (decision of T6e, plan.md "Decisiones de T6e y T6f"):
 # the revealed "Delete" is hidden from the accessibility tree on purpose (RF-28: a screen reader finds
@@ -25,7 +25,7 @@ env:
   PRODUCT_A_NAME: Evening Magnesium Powder
   PRODUCT_B_ID: product-261009-063
   PRODUCT_B_NAME: Garden Protein Capsules
-  # Fictional prices of the mock seed: 450.90 and 285.90 MXN; default currency MXN, English.
+  # Fictional prices from the catalog seed: 450.90 and 285.90 MXN; default currency MXN, English.
   SUBTOTAL_BOTH: "Cart subtotal: MX$736.80"
   SUBTOTAL_B_ONLY: "Cart subtotal: MX$285.90"
   ACTION_POINT: "83%,28%"

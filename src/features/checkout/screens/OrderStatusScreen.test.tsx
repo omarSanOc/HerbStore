@@ -35,6 +35,10 @@ const TEXT = {
     wait: (seconds: number) => `Puedes consultar en ${seconds} ${seconds === 1 ? 'segundo' : 'segundos'}.`,
     consult: 'Consultar estado',
     consulting: 'Consultando…',
+    consultHint: 'Consulta el estado sin reenviar la dirección.',
+    loading: 'Consultando el estado del pedido…',
+    offline: 'Sin conexión: no hubo respuesta. Tu pedido sigue protegido.',
+    error: 'El servidor no devolvió un estado válido. Tu pedido sigue protegido.',
     cancel: 'Cancelar espera',
   },
   en: {
@@ -44,6 +48,10 @@ const TEXT = {
     wait: (seconds: number) => `You can check again in ${seconds} ${seconds === 1 ? 'second' : 'seconds'}.`,
     consult: 'Check order status',
     consulting: 'Checking…',
+    consultHint: 'Checks status without resending the address.',
+    loading: 'Checking the order status…',
+    offline: 'No connection: there was no answer. Your order stays protected.',
+    error: 'The server did not return a valid status. Your order stays protected.',
     cancel: 'Cancel waiting',
   },
 } as const;
@@ -350,6 +358,101 @@ describe('OrderStatusScreen (order with no confirmed answer)', () => {
       expect(restarted.getState().cart.lines).toEqual([]);
       expect(restarted.getState().orderHistory.orders.map(({ id }) => id)).toEqual(['order-0001']);
       expect(restarted.getState().checkoutAttempt).toEqual({ status: 'idle' });
+    });
+  });
+
+  // RF-33, RF-34 (T4): what each CONSULT leaves on screen, in both languages. The line is
+  // EPHEMERAL — it lives in component state, never in the store (nothing new is persisted, and
+  // nothing persisted or painted ever contains the key: RF-38). The local `unresolved` belief
+  // stays underneath: a failed read changes the message, never the lock.
+  //
+  // Compose: `when (state) { is Loading -> ... }`. SwiftUI: one `switch` over the view state with
+  // `.accessibilityAddTraits(.updatesFrequently)`/announcements per case.
+  describe.each<Language>(['es', 'en'])('after a consult, in %s', (language) => {
+    const text = TEXT[language];
+
+    it('LOADING: announces the consult politely while it runs, and the line leaves with the answer', async () => {
+      openAttempt('unresolved');
+      mock.enqueue(STATUS_ROUTE, reply.success(CONFIRMED_BODY, { delayMs: 1_000 }));
+      await renderWithProviders(<OrderStatusScreen />, { store, language });
+
+      await fireEvent.press(consultButton(language));
+      await advance(10);
+
+      expect(screen.getByText(text.loading)).toHaveProp('accessibilityLiveRegion', 'polite');
+      expect(screen.getByRole('button', { name: text.consulting })).toBeDisabled();
+
+      await advance(1_000);
+
+      // The message never outlives the consult that produced it (it holds no order data at all).
+      expect(screen.queryByText(text.loading)).not.toBeOnTheScreen();
+      expect(router.replace).toHaveBeenCalledWith(CONFIRMATION);
+    });
+
+    it('OFFLINE: transport with no answer says so assertively, keeps the lock and never prints the key', async () => {
+      openAttempt('unresolved');
+      mock.always(STATUS_ROUTE, reply.networkError());
+      await renderWithProviders(<OrderStatusScreen />, { store, language });
+
+      await fireEvent.press(consultButton(language));
+      await advance(1_510); // the two GET retries
+
+      expect(screen.getByText(text.offline)).toHaveProp('accessibilityLiveRegion', 'assertive');
+      expect(screen.getByText(text.unresolved)).toBeOnTheScreen(); // the local belief stays
+      expect(consultButton(language)).toBeEnabled(); // the accessible retry
+      expect(consultButton(language)).toHaveProp('accessibilityHint', text.consultHint);
+      expect(store.getState().checkoutAttempt).toMatchObject({ status: 'unresolved', key: KEY });
+      const tree = JSON.stringify(screen.toJSON());
+      expect(tree).not.toContain(KEY);
+      expect(tree).not.toContain('fingerprint');
+      expect(router.replace).not.toHaveBeenCalled();
+    });
+
+    it('ERROR (422): one request only, a safe assertive line, the unresolved lock kept, nothing echoed', async () => {
+      openAttempt('unresolved');
+      mock.always(STATUS_ROUTE, reply.clientError(422, { error: { code: 'UNPROCESSABLE_ENTITY' } }));
+      await renderWithProviders(<OrderStatusScreen />, { store, language });
+
+      await fireEvent.press(consultButton(language));
+      await advance(10);
+
+      expect(screen.getByText(text.error)).toHaveProp('accessibilityLiveRegion', 'assertive');
+      expect(statusCalls()).toHaveLength(1); // a 4xx is never replayed blindly (RF-34)
+      expect(screen.getByText(text.unresolved)).toBeOnTheScreen();
+      expect(consultButton(language)).toBeEnabled();
+      expect(store.getState().checkoutAttempt).toMatchObject({ status: 'unresolved', key: KEY });
+      const tree = JSON.stringify(screen.toJSON());
+      expect(tree).not.toContain(KEY);
+      expect(tree).not.toContain('UNPROCESSABLE'); // the rejected input/code is never reflected
+      expect(router.replace).not.toHaveBeenCalled();
+    });
+
+    // The rest of RF-33's matrix: the failures that DO get their own line, and the contract
+    // answers that get NO extra line (they belong to RF-17–RF-19, not to copy).
+    it.each([
+      { label: '5xx', failure: reply.serverError(503), wait: 1_510, line: 'error' as const },
+      { label: 'timeout', failure: reply.timeout(), wait: 8_000 + 1_500, line: 'error' as const },
+      { label: '200 with a body that breaks the contract', failure: reply.success({ status: 'confirmed' }), wait: 10, line: 'error' as const },
+      { label: '409 key reused (a contract answer)', failure: reply.clientError(409, { error: { code: 'IDEMPOTENCY_KEY_REUSED' }, links: { status: `/orders/status/${KEY}` } }), wait: 10, line: undefined },
+    ])('$label -> ${line ?? "no extra line"}, base message and lock untouched', async ({ failure, wait, line }) => {
+      openAttempt('unresolved');
+      mock.always(STATUS_ROUTE, failure);
+      await renderWithProviders(<OrderStatusScreen />, { store, language });
+
+      await fireEvent.press(consultButton(language));
+      await advance(wait);
+
+      expect(screen.getByText(text.unresolved)).toBeOnTheScreen();
+      if (line === undefined) {
+        expect(screen.queryByText(text.error)).not.toBeOnTheScreen();
+        expect(screen.queryByText(text.offline)).not.toBeOnTheScreen();
+      } else {
+        expect(screen.getByText(text[line])).toHaveProp('accessibilityLiveRegion', 'assertive');
+      }
+      expect(consultButton(language)).toBeEnabled();
+      expect(store.getState().checkoutAttempt).toMatchObject({ status: 'unresolved', key: KEY });
+      expect(JSON.stringify(screen.toJSON())).not.toContain(KEY);
+      expect(router.replace).not.toHaveBeenCalled();
     });
   });
 });

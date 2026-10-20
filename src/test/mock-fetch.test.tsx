@@ -1,6 +1,9 @@
 /// <reference types="jest" />
 // The extension (`.tsx`) only selects the runner (Jest); this file has no JSX. It proves the
 // controlled fetch on the real stack: `fetchJson` first, then a real RTK Query endpoint.
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { fetchJson } from '@/core/network/http';
 import { productsApi } from '@/features/product/data/products-api';
 import { parseBrandOptions, parseProductPage } from '@/features/product/contracts/parse-catalog-product';
@@ -23,6 +26,41 @@ describe('createMockFetch with fetchJson', () => {
 
   const getPage = (timeoutMs?: number) =>
     fetchJson(`${ORIGIN}/products?page=1`, { parse: parseProductPage, timeoutMs });
+
+  it('does not add Content-Language to ordinary success replies', async () => {
+    mock.enqueue('/products', reply.success(wireProductPage(1)));
+
+    const response = await mock.fetch(`${ORIGIN}/products`);
+
+    expect(response.headers.get('Content-Language')).toBeNull();
+  });
+
+  it('models response headers and localized replies explicitly', async () => {
+    mock.enqueue(
+      '/products',
+      reply.success(wireProductPage(1), { headers: { 'X-Test-Response': 'present' } }),
+      reply.localized(wireProductPage(1), 'en'),
+    );
+
+    const responseWithCustomHeader = await mock.fetch(`${ORIGIN}/products`);
+    const localizedResponse = await mock.fetch(`${ORIGIN}/products`);
+
+    expect(responseWithCustomHeader.headers.get('X-Test-Response')).toBe('present');
+    expect(responseWithCustomHeader.headers.get('Content-Language')).toBeNull();
+    expect(localizedResponse.headers.get('Content-Language')).toBe('en');
+  });
+
+  it('supports the localized fetchJson contract end to end', async () => {
+    mock.enqueue('/products', reply.localized(wireProductPage(1), 'es'));
+
+    const outcome = await fetchJson(`${ORIGIN}/products`, {
+      language: 'es',
+      parse: parseProductPage,
+    });
+
+    expect(outcome.kind).toBe('ok');
+    expect(mock.calls[0]?.headers['accept-language']).toBe('es');
+  });
 
   it('success: answers 200 with the body', async () => {
     mock.enqueue('GET /products', reply.success(wireProductPage(2)));
@@ -118,10 +156,10 @@ describe('createMockFetch with a real RTK Query endpoint', () => {
     jest.useFakeTimers();
     const mock = createMockFetch();
     mock.install();
-    mock.enqueue('GET /brands', reply.serverError(503), reply.serverError(503), reply.success(wireBrands()));
+    mock.enqueue('GET /brands', reply.serverError(503), reply.serverError(503), reply.localized(wireBrands(), 'es'));
     const store = createTestStore();
 
-    const request = store.dispatch(productsApi.endpoints.getBrands.initiate());
+    const request = store.dispatch(productsApi.endpoints.getBrands.initiate('es'));
     await jest.advanceTimersByTimeAsync(0);
     expect(mock.calls).toHaveLength(1);
     await jest.advanceTimersByTimeAsync(500);
@@ -142,11 +180,65 @@ describe('createMockFetch with a real RTK Query endpoint', () => {
     mock.enqueue('GET /brands', reply.clientError(404));
     const store = createTestStore();
 
-    const request = store.dispatch(productsApi.endpoints.getBrands.initiate());
+    const request = store.dispatch(productsApi.endpoints.getBrands.initiate('es'));
     const result = await request;
     expect(result.isError).toBe(true);
     expect(mock.calls).toHaveLength(1);
     request.unsubscribe();
     mock.uninstall();
+  });
+});
+
+// RF-22/RF-23 (T1/T2): every controlled 2xx reply for a localized-copy endpoint has to declare
+// `Content-Language` explicitly, so a test models the real boundary instead of leaning on a
+// lenient helper. `reply.localized` does it; a plain `reply.success`/`reply.empty` on those
+// routes without the header would silently answer something the API cannot send.
+describe('the suite declares Content-Language on localized replies (RF-22)', () => {
+  const SRC = join(process.cwd(), 'src');
+  const SELF = join(SRC, 'test', 'mock-fetch.test.tsx');
+  /** A localized-copy route (RF-22): `/images/...` and `/orders/...` are deliberately out. */
+  const LOCALIZED_ROUTE = /(^|[\s('"])\/(home|products|categories|brands)(\/|[?'\s]|$)/;
+  const NON_LOCALIZED_BUILDER = /reply\.(success|empty)\(/;
+
+  /** The arguments of every `.enqueue(`/`.always(` call, balanced by parenthesis counting. */
+  function replyBlocks(text: string): string[] {
+    const blocks: string[] = [];
+    for (const match of text.matchAll(/\.(?:enqueue|always)\(/g)) {
+      const start = match.index! + match[0].length;
+      let depth = 1;
+      let end = start;
+      for (; end < text.length && depth > 0; end += 1) {
+        if (text[end] === '(') depth += 1;
+        else if (text[end] === ')') depth -= 1;
+      }
+      blocks.push(text.slice(start, end - 1));
+    }
+    return blocks;
+  }
+
+  function testFiles(directory: string): string[] {
+    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) return testFiles(path);
+      return /\.test\.tsx?$/.test(entry.name) && path !== SELF ? [path] : [];
+    });
+  }
+
+  it('answers every localized route with an explicit Content-Language', () => {
+    const offenders = testFiles(SRC).flatMap((path) =>
+      replyBlocks(readFileSync(path, 'utf8'))
+        .filter(
+          (block) =>
+            LOCALIZED_ROUTE.test(block) && NON_LOCALIZED_BUILDER.test(block) && !block.includes('Content-Language'),
+        )
+        .map((block) => `${path}: ${block.slice(0, 90)}`),
+    );
+    expect(offenders).toEqual([]);
+  });
+
+  it('really scans the suite (the route list would pass vacuously otherwise)', () => {
+    const files = testFiles(SRC);
+    expect(files.length).toBeGreaterThan(50);
+    expect(files.some((path) => readFileSync(path, 'utf8').includes('reply.localized'))).toBe(true);
   });
 });

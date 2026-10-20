@@ -58,7 +58,8 @@ const TEXT = {
   },
 } as const;
 
-const detail = (stock = 5) => reply.success(wireProduct(1, { stock, inStock: stock > 0 }));
+const detail = (stock = 5, language: Language = 'es') =>
+  reply.localized(wireProduct(1, { stock, inStock: stock > 0 }), language);
 
 const advance = (ms: number) =>
   act(async () => {
@@ -103,7 +104,7 @@ describe('ProductDetailScreen offline', () => {
       expect(screen.getByRole('header', { name: text.offlineTitle })).toBeOnTheScreen();
       expect(screen.queryByText(text.errorTitle)).not.toBeOnTheScreen();
 
-      mock.enqueue(ROUTE, detail());
+      mock.enqueue(ROUTE, detail(5, language));
       await fireEvent.press(screen.getByRole('button', { name: text.retry }));
       await advance(10);
 
@@ -123,7 +124,7 @@ describe('ProductDetailScreen offline', () => {
     });
 
     async function loadThenGoStale() {
-      mock.enqueue(ROUTE, detail(5));
+      mock.enqueue(ROUTE, detail(5, language));
       await renderWithProviders(<ProductDetailScreen rawId={ID} />, { language, store });
       await advance(10);
       expect(productName()).toBeOnTheScreen();
@@ -184,7 +185,7 @@ describe('ProductDetailScreen offline', () => {
       await advance(1_510);
       expect(screen.getByRole('alert')).toBeOnTheScreen();
 
-      mock.enqueue(ROUTE, detail(3));
+      mock.enqueue(ROUTE, detail(3, language));
       await fireEvent.press(screen.getByRole('button', { name: text.retry }));
       await advance(10);
 
@@ -207,7 +208,7 @@ describe('ProductDetailScreen offline', () => {
       // The failed answer is stale as well (it is a "fetch" that settled now), so coming back to the
       // foreground / reconnecting asks again.
       await advance(61_000);
-      mock.enqueue(ROUTE, detail(5));
+      mock.enqueue(ROUTE, detail(5, language));
       await act(async () => {
         emitReconnect();
       });
@@ -218,7 +219,7 @@ describe('ProductDetailScreen offline', () => {
     });
 
     it('FRESH data (< 60 s) is not requested again on reconnection: nothing can fail, nothing is warned', async () => {
-      mock.enqueue(ROUTE, detail(5));
+      mock.enqueue(ROUTE, detail(5, language));
       await renderWithProviders(<ProductDetailScreen rawId={ID} />, { language, store });
       await advance(10);
 
@@ -232,7 +233,7 @@ describe('ProductDetailScreen offline', () => {
     });
 
     it('PREVIOUS DATA: a revalidation that answers 404 is final, the product is gone', async () => {
-      mock.enqueue(ROUTE, detail(5));
+      mock.enqueue(ROUTE, detail(5, language));
       await renderWithProviders(<ProductDetailScreen rawId={ID} />, { language, store });
       await advance(10);
       await advance(61_000);

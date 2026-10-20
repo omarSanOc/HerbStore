@@ -1,5 +1,5 @@
-// Category ids are lowercase kebab-case slugs (`vitamins`, `botanicals`): see
-// `mock-server/src/catalog/home-data.js`. At most 40 characters, starting with a letter.
+// Category ids are lowercase kebab-case slugs (`vitamins`, `botanicals`) as served by the
+// persistent HerbStore API. At most 40 characters, starting with a letter.
 const CATEGORY_ID_PATTERN = /^[a-z][a-z0-9-]{0,39}$/;
 
 /**

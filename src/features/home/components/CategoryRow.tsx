@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
 import { AppText, RemoteImage, scaleWithFont, sizes, spacing, useAppTheme } from '@/design-system';
-import { categoryInitial, categoryLabelKey } from '@/features/categories/category-labels';
+import { categoryInitial } from '@/features/categories/category-labels';
 
 import type { HomeCategory } from '../contracts/home';
 import { CATEGORY_IMAGE_SIZE, HOME_GUTTER } from '../home-layout';
@@ -47,9 +47,10 @@ function CategoryItem({
   const { t } = useTranslation();
   const { colors } = useAppTheme();
   const reduceMotion = useReducedMotionPreference();
-  // Our translation by id; the server text (English) is only the fallback for unknown ids.
-  const labelKey = categoryLabelKey(category.id);
-  const name = labelKey === undefined ? category.name : t(labelKey);
+  // RF-8, RF-22: the name is copy OF THE CATALOG, shown as the localized response sent it. The
+  // translation-by-id this row used to keep replaced the server text for five known ids, so the
+  // screen could disagree with the API; `categoryInitial` is the only thing derived from it.
+  const name = category.name;
 
   return (
     <Pressable

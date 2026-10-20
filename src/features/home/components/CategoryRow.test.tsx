@@ -39,12 +39,15 @@ describe('CategoryRow', () => {
     expect(rowGap()).toBe(gap);
   });
 
-  it('each category is still a button that opens it', async () => {
+  // RF-8, RF-22 (spec 007, T3). The visible name is the one the API sent in the localized payload
+  // (`Vitamins` here), even for `vitamins`, an id that used to have a Spanish translation: the app
+  // no longer substitutes copy of the catalog by id.
+  it('RF-8: each category shows the name the API sent and opens it', async () => {
     mockFontScale(2);
     const onOpenCategory = jest.fn();
     await renderWithProviders(<CategoryRow categories={categories} onOpenCategory={onOpenCategory} />);
 
-    await fireEvent.press(screen.getByRole('button', { name: 'Vitaminas' }));
+    await fireEvent.press(screen.getByRole('button', { name: 'Vitamins' }));
     expect(onOpenCategory).toHaveBeenCalledWith('vitamins');
   });
 });

@@ -2,6 +2,8 @@ import { useRef, useState, type ReactNode } from 'react';
 import { Keyboard, ScrollView, StyleSheet, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 
+import { useCurrentLanguage } from '@/core/i18n/use-current-language';
+
 import {
   AppButton,
   AppText,
@@ -114,6 +116,10 @@ export function ProductListView({
 }: Readonly<ProductListViewProps>) {
   const { t } = useTranslation();
   const [params, setParams] = useState<ListParams>(DEFAULT_LIST_PARAMS);
+  // The language of the read. It joins the identity (`toProductQueryArgs`), so switching it opens
+  // the entry of the new language: the grid (keyed by `identity`) starts over and `currentData` is
+  // `undefined` until that language answers (RF-24). The filters the user chose stay in `params`.
+  const language = useCurrentLanguage();
   const sortSheetRef = useRef<AppBottomSheetHandle>(null);
   const advancedSheetRef = useRef<AppBottomSheetHandle>(null);
   // The buttons that open the sheets: when a sheet closes, the screen-reader focus goes back to its
@@ -128,7 +134,7 @@ export function ProductListView({
     isRefreshing,
     onRefresh,
     onViewableItemsChanged,
-  } = useProductList(toProductQueryArgs(scope, params), paused);
+  } = useProductList(toProductQueryArgs(scope, params, language), paused);
 
   const applyParams = (next: ListParams) => {
     if (next === params) {

@@ -1,5 +1,5 @@
 /// <reference types="jest" />
-// RF-17, RF-5 (T2). The idempotent order protocol on the REAL stack: store + thunks + RTK Query +
+// RF-17, RF-5 (T2), RF-36, RF-38, RF-39 (T4). The idempotent order protocol on the REAL stack: store + thunks + RTK Query +
 // `fetchJson` + contract parsers, over a controlled `fetch`. The pure transition table lives in
 // `attempt-machine.test.ts` (node:test); this file proves the pieces are wired so that an order
 // that was not confirmed by the server is never shown or recorded as confirmed.
@@ -9,8 +9,12 @@
 //
 // Compose/Android: a ViewModel test with a `MockWebServer` and `runTest`. Swift: a `URLProtocol`
 // stub plus an `XCTestExpectation` per request.
+import * as Crypto from 'expo-crypto';
+
 import { PERSIST_KEY, PERSIST_VERSION } from '@/core/storage/persist-policy';
+import { selectCanCheckout } from '@/features/cart/logic/cart-selectors';
 import { cartCleared, productAdded } from '@/features/cart/store/cart-slice';
+import { languageChanged } from '@/features/preferences/store/preferences-slice';
 
 import { createMemoryStorage, createTestStore, startPersistence, wireProduct } from '@/test/fixtures';
 import { createMockFetch, reply } from '@/test/mock-fetch';
@@ -80,6 +84,9 @@ describe('idempotent checkout on the real stack', () => {
     mock = createMockFetch();
     mock.install();
     store = createTestStore();
+    // The stock refresh of an OUT_OF_STOCK reads the detail in the persisted language, falling back
+    // to the device language: pin both paths to Spanish so the localized reply below matches.
+    store.dispatch(languageChanged('es'));
     store.dispatch(productAdded({ product: PRODUCT, quantity: 2 }));
   });
 
@@ -169,7 +176,7 @@ describe('idempotent checkout on the real stack', () => {
     // runs for the outcome, whichever branch produced it.
     it('409 out of stock: refreshes the stock and clamps the cart line (RF-26)', async () => {
       mock.enqueue('POST /orders', errorBody.outOfStock);
-      mock.enqueue(`GET /products/${PRODUCT.productId}`, reply.success(wireProduct(1, { stock: 1 })));
+      mock.enqueue(`GET /products/${PRODUCT.productId}`, reply.localized(wireProduct(1, { stock: 1 }), 'es'));
 
       const result = await submit();
 
@@ -180,7 +187,7 @@ describe('idempotent checkout on the real stack', () => {
 
     it('409 out of stock for a product that sold out: the line is removed and reported as removed', async () => {
       mock.enqueue('POST /orders', errorBody.outOfStock);
-      mock.enqueue(`GET /products/${PRODUCT.productId}`, reply.success(wireProduct(1, { stock: 0, inStock: false })));
+      mock.enqueue(`GET /products/${PRODUCT.productId}`, reply.localized(wireProduct(1, { stock: 0, inStock: false }), 'es'));
 
       const result = await submit();
 
@@ -198,6 +205,26 @@ describe('idempotent checkout on the real stack', () => {
       expect(result).toMatchObject({ outcome: 'outOfStock', adjustments: [] });
       expect(store.getState().cart.lines).toMatchObject([{ quantity: 2, stock: 5 }]);
       expect(store.getState().checkoutAttempt).toEqual({ status: 'idle' });
+    });
+
+    // RF-39 (T4): a product that NO LONGER EXISTS in the API (detail 404) during the OUT_OF_STOCK
+    // refresh. The refresh reads nothing and throws nothing: the LOCAL snapshot (the line) is kept,
+    // the attempt still ends (spec 004 frees the key) and checkout re-enables so the line can be
+    // edited — the local cart never depends on the catalog still having the product.
+    it('409 out of stock with a product that disappeared (detail 404): the snapshot line is kept and stays editable', async () => {
+      await startPersistence(store).rehydrated; // selectors read the persisted `rehydrated` flag
+      mock.enqueue('POST /orders', errorBody.outOfStock);
+      mock.always(`GET /products/${PRODUCT.productId}`, reply.clientError(404, { error: { code: 'PRODUCT_NOT_FOUND' } }));
+
+      const result = await submit();
+
+      expect(result).toMatchObject({ outcome: 'outOfStock', adjustments: [] });
+      expect(store.getState().cart.lines).toMatchObject([
+        { productId: PRODUCT.productId, name: PRODUCT.name, quantity: 2, stock: 5 },
+      ]);
+      expect(store.getState().checkoutAttempt).toEqual({ status: 'idle' });
+      expect(selectCanCheckout(store.getState())).toBe(true);
+      expectNotConfirmed();
     });
 
     it('400 validation: the attempt ends and the cart is untouched', async () => {
@@ -246,6 +273,27 @@ describe('idempotent checkout on the real stack', () => {
       const [one, two] = [await first.unwrap(), await second.unwrap()];
 
       expect(posts()).toHaveLength(1);
+      expect([one.outcome, two.outcome].sort()).toEqual(['confirmed', 'uncertain']);
+      expect('ignored' in two || 'ignored' in one).toBe(true);
+      expect(store.getState().orderHistory.orders).toHaveLength(1);
+    });
+
+    // RF-37, RF-43 (T7): the deterministic replacement for the mock's ORDER_POST_DELAY_MS. The first
+    // POST is held IN FLIGHT (delayMs) and the second submit lands while it is still unanswered —
+    // the exact window Maestro exercises with two taps 50 ms apart against a slow backend. The lock
+    // is synchronous on `attemptSubmitted` (transitionAttempt never re-keys an open attempt), so the
+    // second submit is dropped before it can mint or POST: ONE request, ONE stored key.
+    it('a double tap while the first POST is in flight sends ONE request with the ONE stored key', async () => {
+      mock.enqueue('POST /orders', reply.success({ status: 'confirmed', order: SUMMARY }, { delayMs: 1_500 }));
+
+      const first = store.dispatch(submitOrder({ shippingAddress: ADDRESS }));
+      await jest.advanceTimersByTimeAsync(50); // the first POST is now in flight, unanswered
+      const second = store.dispatch(submitOrder({ shippingAddress: ADDRESS }));
+      await jest.advanceTimersByTimeAsync(2_000); // let the delayed answer settle
+      const [one, two] = [await first.unwrap(), await second.unwrap()];
+
+      expect(posts()).toHaveLength(1); // the in-flight window does not leak a second request
+      expect(posts()[0]?.headers['idempotency-key']).toBe(KEY); // the STORED key, minted once
       expect([one.outcome, two.outcome].sort()).toEqual(['confirmed', 'uncertain']);
       expect('ignored' in two || 'ignored' in one).toBe(true);
       expect(store.getState().orderHistory.orders).toHaveLength(1);
@@ -398,6 +446,86 @@ describe('idempotent checkout on the real stack', () => {
 
       expect(restarted.getState().checkoutAttempt).toEqual({ status: 'idle' });
       expect(mock.calls).toHaveLength(0);
+    });
+  });
+
+  // RF-36 (T4): ONE key per attempt, minted from entropy (`randomUUID`), stable while the attempt
+  // is open and never reused by a LATER attempt. The double tap proves the wire sees ONE POST with
+  // the STORED key — the racing mint is discarded before it can reach anything.
+  describe('RF-36: the key of an attempt', () => {
+    it('is minted from entropy once per attempt: double tap -> one POST; open -> no new mint; released -> a different key', async () => {
+      const uuid = jest.mocked(Crypto.randomUUID);
+      uuid.mockClear();
+
+      // The double tap: both submits race before the lock settles; only one of them can POST.
+      mock.enqueue('POST /orders', reply.networkError());
+      const first = store.dispatch(submitOrder({ shippingAddress: ADDRESS }));
+      const second = store.dispatch(submitOrder({ shippingAddress: ADDRESS }));
+      await jest.advanceTimersByTimeAsync(0);
+      const [one, two] = [await first.unwrap(), await second.unwrap()];
+
+      expect(posts()).toHaveLength(1);
+      expect('ignored' in one || 'ignored' in two).toBe(true);
+      expect(store.getState().checkoutAttempt).toMatchObject({ status: 'unresolved', key: KEY });
+      expect(posts()[0]?.headers['idempotency-key']).toBe(KEY); // the STORED key is the one sent
+
+      // While the attempt is open (preliminary/unresolved), another submit mints NOTHING and sends NOTHING.
+      const mints = uuid.mock.calls.length;
+      const again = await store.dispatch(submitOrder({ shippingAddress: ADDRESS })).unwrap();
+      expect('ignored' in again).toBe(true);
+      expect(uuid.mock.calls.length).toBe(mints);
+      expect(posts()).toHaveLength(1);
+      expect(store.getState().checkoutAttempt).toMatchObject({ key: KEY });
+
+      // The 404 not_created pair RELEASES the attempt (spec 004: the key is done)...
+      mock.enqueue(`GET ${statusPath()}`, errorBody.notCreated);
+      await check();
+      expect(store.getState().checkoutAttempt).toEqual({ status: 'idle' });
+
+      // ...and the next attempt mints a NEW key from fresh entropy, which is what reaches the wire.
+      mock.enqueue('POST /orders', CONFIRMED);
+      await submit();
+
+      expect(uuid.mock.calls.length).toBeGreaterThan(mints);
+      const keys = posts().map(({ headers }) => headers['idempotency-key']);
+      expect(keys).toHaveLength(2);
+      expect(keys[0]).toBe(KEY);
+      expect(keys[1]).not.toBe(KEY);
+      expect(store.getState().orderHistory.orders.map(({ id }) => id)).toEqual(['order-0001']);
+    });
+  });
+
+  // RF-38 (T4): what the dev logs are ALLOWED to contain. No address, no body and NO full
+  // idempotency key — the `[api]` line of `GET /orders/status/:key` prints the PATH, so the path
+  // itself has to be masked (`logSafePath`) or the "never contains" loop below fails.
+  describe('RF-38: the log of an attempt', () => {
+    it('never contains the full key, the address or the body — only masked, log-safe summaries', async () => {
+      const lines: string[] = [];
+      const spy = jest.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+        lines.push(args.map((part) => String(part)).join(' '));
+      });
+
+      mock.enqueue('POST /orders', PENDING); // 202: the key stays open...
+      await submit();
+      mock.enqueue(`GET ${statusPath()}`, CONFIRMED); // ...and the consult reuses it
+      await check();
+      spy.mockRestore();
+
+      expect(lines.some((line) => line.startsWith('[api]'))).toBe(true);
+      expect(lines.some((line) => line.startsWith('[orders]'))).toBe(true); // the log DID run
+      for (const line of lines) {
+        for (const secret of [
+          ADDRESS.fullName, ADDRESS.phone, ADDRESS.postalCode, ADDRESS.state, ADDRESS.city, ADDRESS.street,
+          JSON.stringify(ADDRESS), // the whole body, exterior number included
+          KEY,
+          'shippingAddress',
+        ]) {
+          expect(line).not.toContain(secret);
+        }
+      }
+      // The masked tails survive: "the 202 and the 200 were for the same attempt" stays provable.
+      expect(lines.some((line) => line.includes('key=…0001'))).toBe(true);
+      expect(lines.some((line) => line.includes('/orders/status/…0001'))).toBe(true);
     });
   });
 });

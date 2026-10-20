@@ -39,7 +39,7 @@ La spec describe el QUÉ y el POR QUÉ. Nada de stack, arquitectura ni nombres d
 Cada RF debe ser verificable: nada de "rápido", "intenso" o "bonito" sin un criterio medible.
 
 ## Plan (plan.md)
-- Archivos y responsabilidades dentro de `src/app`, `src/features`, `src/core`, `src/design-system` o `mock-server`.
+- Archivos y responsabilidades dentro de `src/app`, `src/features`, `src/core` o `src/design-system`.
 - Estado, flujo de datos, contratos API y lógica pura que pueda probarse de forma aislada.
 - Impacto en Android/iOS, CNG/config plugins y necesidad de recompilar el Development Build.
 - Estados loading/error/empty/offline, accesibilidad, i18n y rendimiento cuando apliquen.

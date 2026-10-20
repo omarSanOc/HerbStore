@@ -9,7 +9,7 @@
 // `URLProtocol` stub + an injected clock. Same idea: the server and the time are test inputs.
 import { productsApi } from '@/features/product/data/products-api';
 import { ordersApi } from '@/features/checkout/data/orders-api';
-import { buildProductQueryArgs } from '@/features/product/logic/product-query';
+import { buildProductQueryArgs, toProductQueryString } from '@/features/product/logic/product-query';
 
 import { createTestStore, wireBrands, wireProduct, wireProductPage } from '@/test/fixtures';
 import { createMockFetch, reply } from '@/test/mock-fetch';
@@ -47,12 +47,12 @@ describe('RTK Query over a controlled fetch', () => {
   });
 
   /** Starts a brands read; the caller decides how much fake time passes. */
-  const readBrands = () => store.dispatch(productsApi.endpoints.getBrands.initiate());
+  const readBrands = () => store.dispatch(productsApi.endpoints.getBrands.initiate('es'));
   const advance = (ms: number) => jest.advanceTimersByTimeAsync(ms);
 
   describe('success and empty', () => {
     it('success: one request, parsed data, no error', async () => {
-      mock.enqueue('GET /brands', reply.success(wireBrands()));
+      mock.enqueue('GET /brands', reply.localized(wireBrands(), 'es'));
 
       const request = readBrands();
       const result = await request;
@@ -67,7 +67,7 @@ describe('RTK Query over a controlled fetch', () => {
     });
 
     it('empty: a valid empty list is a success with nothing in it, not an error', async () => {
-      mock.enqueue('GET /brands', reply.success([]));
+      mock.enqueue('GET /brands', reply.localized([], 'es'));
 
       const request = readBrands();
       const result = await request;
@@ -78,9 +78,9 @@ describe('RTK Query over a controlled fetch', () => {
     });
 
     it('empty catalog page: the infinite query ends with one empty page and no next page', async () => {
-      mock.enqueue('GET /products', reply.empty());
+      mock.enqueue('GET /products', reply.empty(undefined, { headers: { 'Content-Language': 'es' } }));
 
-      const request = store.dispatch(productsApi.endpoints.getProducts.initiate(buildProductQueryArgs({ search: 'nothing' })));
+      const request = store.dispatch(productsApi.endpoints.getProducts.initiate(buildProductQueryArgs({ language: 'es', search: 'nothing' })));
       const result = await request;
 
       expect(result.isSuccess).toBe(true);
@@ -93,9 +93,9 @@ describe('RTK Query over a controlled fetch', () => {
     });
 
     it('a normal catalog page reports a next page and keeps request and pages in step', async () => {
-      mock.enqueue('GET /products', reply.success(wireProductPage(3, { totalPages: 2, total: 5 })));
+      mock.enqueue('GET /products', reply.localized(wireProductPage(3, { totalPages: 2, total: 5 }), 'es'));
 
-      const request = store.dispatch(productsApi.endpoints.getProducts.initiate(buildProductQueryArgs({})));
+      const request = store.dispatch(productsApi.endpoints.getProducts.initiate(buildProductQueryArgs({ language: 'es' })));
       const result = await request;
 
       expect(result.data?.pages[0]?.items).toHaveLength(3);
@@ -104,9 +104,9 @@ describe('RTK Query over a controlled fetch', () => {
     });
 
     it('a product detail carries the live stock', async () => {
-      mock.enqueue('GET /products/product-261009-001', reply.success(wireProduct(1, { stock: 7 })));
+      mock.enqueue('GET /products/product-261009-001', reply.localized(wireProduct(1, { stock: 7 }), 'es'));
 
-      const request = store.dispatch(productsApi.endpoints.getProduct.initiate('product-261009-001'));
+      const request = store.dispatch(productsApi.endpoints.getProduct.initiate({ id: 'product-261009-001', language: 'es' }));
       const result = await request;
 
       expect(result.data).toMatchObject({ id: 'product-261009-001', stock: 7, inStock: true });
@@ -156,7 +156,7 @@ describe('RTK Query over a controlled fetch', () => {
     });
 
     it('recovers when the server comes back after the first retry: data, no error, two requests', async () => {
-      mock.enqueue('GET /brands', reply.serverError(500), reply.success(wireBrands()));
+      mock.enqueue('GET /brands', reply.serverError(500), reply.localized(wireBrands(), 'es'));
 
       const request = readBrands();
       await advance(500);
@@ -171,7 +171,7 @@ describe('RTK Query over a controlled fetch', () => {
     it('a 5xx on a different read endpoint follows the same policy (product detail)', async () => {
       mock.always('GET /products/product-261009-001', reply.serverError(502));
 
-      const request = store.dispatch(productsApi.endpoints.getProduct.initiate('product-261009-001'));
+      const request = store.dispatch(productsApi.endpoints.getProduct.initiate({ id: 'product-261009-001', language: 'es' }));
       await advance(1_500);
       const result = await request;
 
@@ -201,7 +201,7 @@ describe('RTK Query over a controlled fetch', () => {
 
       const request = readBrands();
       await advance(7_999);
-      expect(store.getState().api.queries['getBrands(undefined)']?.status).toBe('pending');
+      expect(store.getState().api.queries['getBrands("es")']?.status).toBe('pending');
 
       await advance(1);
       const result = await request;
@@ -214,7 +214,7 @@ describe('RTK Query over a controlled fetch', () => {
     });
 
     it('a slow answer that arrives after the limit is still a timeout', async () => {
-      mock.enqueue('GET /brands', reply.success(wireBrands(), { delayMs: 9_000 }));
+      mock.enqueue('GET /brands', reply.localized(wireBrands(), 'es', { delayMs: 9_000 }));
 
       const request = readBrands();
       await advance(8_000);
@@ -228,23 +228,23 @@ describe('RTK Query over a controlled fetch', () => {
 
   describe('latency', () => {
     it('stays pending until the answer arrives, then fulfils, with no real waiting', async () => {
-      mock.enqueue('GET /brands', reply.success(wireBrands(), { delayMs: 3_000 }));
+      mock.enqueue('GET /brands', reply.localized(wireBrands(), 'es', { delayMs: 3_000 }));
 
       const request = readBrands();
       await advance(2_999);
-      const during = productsApi.endpoints.getBrands.select()(store.getState());
+      const during = productsApi.endpoints.getBrands.select('es')(store.getState());
       expect(during.status).toBe('pending');
       expect(during.data).toBeUndefined();
 
       await advance(1);
       const result = await request;
       expect(result.isSuccess).toBe(true);
-      expect(productsApi.endpoints.getBrands.select()(store.getState()).status).toBe('fulfilled');
+      expect(productsApi.endpoints.getBrands.select('es')(store.getState()).status).toBe('fulfilled');
       request.unsubscribe();
     });
 
     it('a slow 503 delays the retry: latency, then backoff', async () => {
-      mock.enqueue('GET /brands', reply.serverError(503, undefined, { delayMs: 2_000 }), reply.success(wireBrands()));
+      mock.enqueue('GET /brands', reply.serverError(503, undefined, { delayMs: 2_000 }), reply.localized(wireBrands(), 'es'));
 
       const request = readBrands();
       await advance(2_000); // first answer
@@ -262,7 +262,7 @@ describe('RTK Query over a controlled fetch', () => {
 
   describe('invalid payload', () => {
     it('a 2xx that breaks the contract is invalid and is not retried', async () => {
-      mock.enqueue('GET /brands', reply.success({ unexpected: true }));
+      mock.enqueue('GET /brands', reply.localized({ unexpected: true }, 'es'));
 
       const request = readBrands();
       const result = await request;
@@ -276,9 +276,9 @@ describe('RTK Query over a controlled fetch', () => {
     it('one malformed product invalidates the whole page', async () => {
       const page = wireProductPage(3);
       (page.items as Record<string, unknown>[])[1] = { id: 'broken' };
-      mock.enqueue('GET /products', reply.success(page));
+      mock.enqueue('GET /products', reply.localized(page, 'es'));
 
-      const request = store.dispatch(productsApi.endpoints.getProducts.initiate(buildProductQueryArgs({})));
+      const request = store.dispatch(productsApi.endpoints.getProducts.initiate(buildProductQueryArgs({ language: 'es' })));
       const result = await request;
 
       expect(result.isError).toBe(true);
@@ -333,5 +333,63 @@ describe('RTK Query over a controlled fetch', () => {
     expect(result.error).toEqual({ kind: 'network' });
     expect(mock.unmatched).toEqual(['GET /brands', 'GET /brands', 'GET /brands']);
     request.unsubscribe();
+  });
+
+  // RF-24, RF-26, RNF-3, RNF-5 (T2). The language is part of the ARGUMENT of a localized query,
+  // so RTK Query's own identity gives two caches, deduplicates an equivalent query and keeps a
+  // late answer inside the entry it belongs to.
+  describe('localized reads: the language is part of the query identity', () => {
+    it('es and en are two independent entries, and each request carries its own Accept-Language', async () => {
+      mock.enqueue('GET /brands', reply.localized(wireBrands(), 'es'), reply.localized(wireBrands(), 'en'));
+
+      const spanish = store.dispatch(productsApi.endpoints.getBrands.initiate('es'));
+      const english = store.dispatch(productsApi.endpoints.getBrands.initiate('en'));
+      const [first, second] = await Promise.all([spanish, english]);
+
+      expect(first.isSuccess).toBe(true);
+      expect(second.isSuccess).toBe(true);
+      expect(mock.calls).toHaveLength(2);
+      expect(mock.calls.map(({ headers }) => headers['accept-language'])).toEqual(['es', 'en']);
+
+      // Two entries, each holding its own answer (the same payload, but they are not shared).
+      expect(productsApi.endpoints.getBrands.select('es')(store.getState()).data).toHaveLength(2);
+      expect(productsApi.endpoints.getBrands.select('en')(store.getState()).data).toHaveLength(2);
+      expect(productsApi.endpoints.getBrands.select('es')(store.getState())).not.toBe(
+        productsApi.endpoints.getBrands.select('en')(store.getState()),
+      );
+      spanish.unsubscribe();
+      english.unsubscribe();
+    });
+
+    it('one request per equivalent query: the same language deduplicates, another language does not', async () => {
+      mock.enqueue('GET /brands', reply.localized(wireBrands(), 'es', { delayMs: 1_000 }));
+      mock.enqueue('GET /brands', reply.localized(wireBrands(), 'en'));
+
+      const first = store.dispatch(productsApi.endpoints.getBrands.initiate('es'));
+      const sameAgain = store.dispatch(productsApi.endpoints.getBrands.initiate('es'));
+      const otherLanguage = store.dispatch(productsApi.endpoints.getBrands.initiate('en'));
+      await advance(0);
+
+      // Two subscribers for `es`, but only ONE request in flight for that identity.
+      expect(mock.calls).toHaveLength(2);
+      expect(mock.calls.map(({ headers }) => headers['accept-language'])).toEqual(['es', 'en']);
+
+      await advance(1_000);
+      await Promise.all([first, sameAgain, otherLanguage]);
+      expect(mock.calls).toHaveLength(2);
+      first.unsubscribe();
+      sameAgain.unsubscribe();
+      otherLanguage.unsubscribe();
+    });
+
+    it('a list identity changes with the language, so the page of `es` is never the page of `en`', async () => {
+      const spanish = buildProductQueryArgs({ language: 'es', search: 'zinc' });
+      const english = buildProductQueryArgs({ language: 'en', search: 'zinc' });
+
+      expect(spanish).not.toEqual(english);
+      // The language is identity, NOT a query parameter of `GET /products`.
+      expect(toProductQueryString(spanish, 1)).not.toContain('language');
+      expect(toProductQueryString(spanish, 1)).toBe(toProductQueryString(english, 1));
+    });
   });
 });

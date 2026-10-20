@@ -1,6 +1,6 @@
 # Política de seguridad
 
-HerbStore es un **proyecto didáctico** (app ficticia para aprender React Native). No procesa pagos ni datos personales reales, no tiene autenticación y su servidor mock está pensado solo para desarrollo local. No se ofrecen garantías de soporte ni de corrección de vulnerabilidades en plazos concretos.
+HerbStore es un **proyecto didáctico** (app ficticia para aprender React Native). No procesa pagos ni datos personales reales, no tiene autenticación y consume una API ficticia (HerbStore API) pensada solo para desarrollo y aprendizaje; el backend no forma parte del repositorio. No se ofrecen garantías de soporte ni de corrección de vulnerabilidades en plazos concretos.
 
 ## Cómo reportar un problema
 
@@ -13,5 +13,5 @@ No publiques credenciales, tokens ni datos personales en issues, pull requests n
 
 ## Alcance
 
-- Dentro de alcance: el código de la app, el servidor mock, la configuración y los archivos versionados del repositorio.
-- Fuera de alcance: el uso del servidor mock expuesto a Internet, las dependencias de terceros (repórtalo a su proyecto) y los servicios de Expo o de las tiendas de aplicaciones.
+- Dentro de alcance: el código de la app, la configuración y los archivos versionados del repositorio.
+- Fuera de alcance: el uso de la API ficticia en entornos expuestos a Internet, las dependencias de terceros (repórtalo a su proyecto) y los servicios de Expo o de las tiendas de aplicaciones.

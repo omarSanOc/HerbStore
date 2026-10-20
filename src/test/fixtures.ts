@@ -2,6 +2,7 @@ import { persistStore } from 'redux-persist';
 
 import { createAppStore } from '@/core/store/create-app-store';
 import { createSafeStorage, type KeyValueBackend } from '@/core/storage/persist-storage';
+import type { SupportedLanguage } from '@/core/i18n/languages';
 
 /** Fictional wire data (server shape). No real brands, people or addresses. */
 
@@ -52,14 +53,24 @@ export function wireBrands(): WireProduct[] {
   ];
 }
 
-/** `GET /categories` body: the tree the advanced-filters sheet reads. */
-export function wireCategories(): WireProduct[] {
+/**
+ * Copy of `GET /categories` in the two languages the API serves (RF-9, RF-22): names come
+ * localized with `Content-Language`, so the controlled answer carries them localized too.
+ */
+const CATEGORY_COPY = {
+  en: { name: 'Vitamins', subcategory: 'Multivitamins' },
+  es: { name: 'Vitaminas', subcategory: 'Multivitamínicos' },
+} as const;
+
+/** `GET /categories` body: the tree the category screen and the advanced-filters sheet read. */
+export function wireCategories(language: SupportedLanguage = 'en'): WireProduct[] {
+  const copy = CATEGORY_COPY[language];
   return [
     {
       id: 'vitamins',
-      name: 'Vitamins',
+      name: copy.name,
       productCount: 12,
-      subcategories: [{ id: 'multivitamins', name: 'Multivitamins', productCount: 12 }],
+      subcategories: [{ id: 'multivitamins', name: copy.subcategory, productCount: 12 }],
     },
   ];
 }

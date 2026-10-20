@@ -10,6 +10,7 @@ import {
   PRODUCT_SORTS,
   toProductQueryString,
   type ProductQueryArgs,
+  type ProductQueryInput,
 } from './product-query.ts';
 
 describe('normalizeSearchText', () => {
@@ -34,17 +35,18 @@ describe('normalizeSearchText', () => {
     assert.equal(normalizeSearchText(once), once);
   });
 
-  it('matches what the mock server does to the same text', async () => {
-    let serverNormalize: ((text: string) => string) | undefined;
-    try {
-      const path = '../../../../mock-server/src/catalog/normalize-text.js';
-      serverNormalize = ((await import(path)) as { normalizeText: (text: string) => string })
-        .normalizeText;
-    } catch {
-      return;
-    }
-    for (const sample of ['  Vitamina   Ç ', 'ÁCIDO Fólico', 'Omega-3  ', 'ñandú\t', 'AsterVale']) {
-      assert.equal(normalizeSearchText(sample), serverNormalize(sample), sample);
+  it('normalizes each wire sample to the value the search contract pins down', () => {
+    // These rows were once compared against the backend's own `normalize-text.js`; the parity with
+    // the live API belongs to the opt-in smoke, and the table now pins the expected values (RF-11).
+    const rows: readonly (readonly [string, string])[] = [
+      ['  Vitamina   Ç ', 'vitamina c'],
+      ['ÁCIDO Fólico', 'acido folico'],
+      ['Omega-3  ', 'omega-3'],
+      ['ñandú\t', 'nandu'],
+      ['AsterVale', 'astervale'],
+    ];
+    for (const [sample, expected] of rows) {
+      assert.equal(normalizeSearchText(sample), expected, sample);
     }
   });
 });
@@ -52,6 +54,7 @@ describe('normalizeSearchText', () => {
 describe('buildProductQueryArgs: canonical identity', () => {
   it('gives deeply equal args for equivalent inputs (case, diacritics, spaces and order)', () => {
     const a = buildProductQueryArgs({
+      language: 'es',
       category: 'vitamins',
       search: '  Vitamina   Ç ',
       brands: ['Solstice Grove', 'AsterVale Nutrition'],
@@ -60,6 +63,7 @@ describe('buildProductQueryArgs: canonical identity', () => {
       sort: 'price_asc',
     });
     const b = buildProductQueryArgs({
+      language: 'es',
       category: 'VITAMINS',
       search: 'vitamina c',
       brands: ['astervale  nutrition', 'SOLSTICE GROVE', 'asterVALE nutrition'],
@@ -74,6 +78,7 @@ describe('buildProductQueryArgs: canonical identity', () => {
 
   it('sorts and deduplicates the facets', () => {
     const args = buildProductQueryArgs({
+      language: 'es',
       brands: ['b', 'A', 'b', ' a '],
       subcategories: ['z', 'y', 'z'],
     });
@@ -84,6 +89,7 @@ describe('buildProductQueryArgs: canonical identity', () => {
 
   it('omits every inactive or empty key', () => {
     const args = buildProductQueryArgs({
+      language: 'es',
       search: '   ',
       category: '  ',
       brands: [],
@@ -94,7 +100,7 @@ describe('buildProductQueryArgs: canonical identity', () => {
       subscribeAndSave: false,
     });
 
-    assert.deepEqual(args, { sort: 'featured', limit: PRODUCT_LIST_LIMIT });
+    assert.deepEqual(args, { language: 'es', sort: 'featured', limit: PRODUCT_LIST_LIMIT });
     for (const key of ['q', 'category', 'brand', 'subcategory', 'inStock', 'minRating', 'ownBrand', 'subscribeAndSave']) {
       assert.equal(key in args, false, key);
     }
@@ -102,6 +108,7 @@ describe('buildProductQueryArgs: canonical identity', () => {
 
   it('maps each active quick filter to its wire value', () => {
     const args = buildProductQueryArgs({
+      language: 'es',
       inStock: true,
       topRated: true,
       ownBrand: true,
@@ -115,7 +122,7 @@ describe('buildProductQueryArgs: canonical identity', () => {
   });
 
   it('defaults to featured and always has limit 20 and no page', () => {
-    const args = buildProductQueryArgs({});
+    const args = buildProductQueryArgs({ language: 'es' });
 
     assert.equal(args.sort, 'featured');
     assert.equal(args.limit, 20);
@@ -125,22 +132,22 @@ describe('buildProductQueryArgs: canonical identity', () => {
   it('keeps the exact sort values', () => {
     assert.deepEqual(PRODUCT_SORTS, ['featured', 'price_asc', 'price_desc', 'rating', 'best_selling']);
     for (const sort of PRODUCT_SORTS) {
-      assert.equal(buildProductQueryArgs({ sort }).sort, sort);
+      assert.equal(buildProductQueryArgs({ language: 'es', sort }).sort, sort);
     }
   });
 
   it('different filters are different identities', () => {
-    const base = buildProductQueryArgs({ search: 'zinc' });
+    const base = buildProductQueryArgs({ language: 'es', search: 'zinc' });
 
-    assert.notDeepEqual(base, buildProductQueryArgs({ search: 'zinc', inStock: true }));
-    assert.notDeepEqual(base, buildProductQueryArgs({ search: 'zinc', sort: 'rating' }));
-    assert.notDeepEqual(base, buildProductQueryArgs({ search: 'zinc', brands: ['a'] }));
-    assert.notDeepEqual(base, buildProductQueryArgs({ search: 'magnesium' }));
+    assert.notDeepEqual(base, buildProductQueryArgs({ language: 'es', search: 'zinc', inStock: true }));
+    assert.notDeepEqual(base, buildProductQueryArgs({ language: 'es', search: 'zinc', sort: 'rating' }));
+    assert.notDeepEqual(base, buildProductQueryArgs({ language: 'es', search: 'zinc', brands: ['a'] }));
+    assert.notDeepEqual(base, buildProductQueryArgs({ language: 'es', search: 'magnesium' }));
   });
 
   it('does not mutate its input or share arrays with it', () => {
     const brands = ['b', 'a'];
-    const input = Object.freeze({ brands: Object.freeze(brands) });
+    const input = Object.freeze({ language: 'es' as const, brands: Object.freeze(brands) });
     const args = buildProductQueryArgs(input);
 
     assert.deepEqual(brands, ['b', 'a']);
@@ -151,6 +158,7 @@ describe('buildProductQueryArgs: canonical identity', () => {
 describe('toProductQueryString', () => {
   it('serializes every parameter, facets as CSV with each value encoded', () => {
     const args = buildProductQueryArgs({
+      language: 'es',
       category: 'vitamins',
       search: 'Vitamina Ç',
       brands: ['Solstice Grove', 'AsterVale Nutrition'],
@@ -172,13 +180,14 @@ describe('toProductQueryString', () => {
 
   it('serializes the default query with only sort, page and limit', () => {
     assert.equal(
-      toProductQueryString(buildProductQueryArgs({}), 1),
+      toProductQueryString(buildProductQueryArgs({ language: 'es' }), 1),
       'sort=featured&page=1&limit=20',
     );
   });
 
   it('encodes reserved characters in every value but keeps the CSV separator', () => {
     const args: ProductQueryArgs = {
+      language: 'es',
       q: 'a&b=c#d',
       brand: ['x y', 'p/q'],
       sort: 'featured',
@@ -193,14 +202,14 @@ describe('toProductQueryString', () => {
 
   it('uses a single subcategory without a separator', () => {
     assert.equal(
-      toProductQueryString(buildProductQueryArgs({ subcategories: ['zinc'] }), 1),
+      toProductQueryString(buildProductQueryArgs({ language: 'es', subcategories: ['zinc'] }), 1),
       'subcategory=zinc&sort=featured&page=1&limit=20',
     );
   });
 
   it('sends each quick filter exactly', () => {
-    const only = (input: Parameters<typeof buildProductQueryArgs>[0]) =>
-      toProductQueryString(buildProductQueryArgs(input), 1);
+    const only = (input: Omit<ProductQueryInput, 'language'>) =>
+      toProductQueryString(buildProductQueryArgs({ language: 'es', ...input }), 1);
 
     assert.match(only({ inStock: true }), /(^|&)inStock=true(&|$)/);
     assert.match(only({ topRated: true }), /(^|&)minRating=4(&|$)/);
@@ -209,7 +218,7 @@ describe('toProductQueryString', () => {
   });
 
   it('rejects a page that is not a positive integer', () => {
-    const args = buildProductQueryArgs({});
+    const args = buildProductQueryArgs({ language: 'es' });
 
     for (const page of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       assert.throws(() => toProductQueryString(args, page), RangeError, String(page));
@@ -217,65 +226,56 @@ describe('toProductQueryString', () => {
   });
 
   it('the page changes the URL but never the identity', () => {
-    const args = buildProductQueryArgs({ search: 'zinc' });
+    const args = buildProductQueryArgs({ language: 'es', search: 'zinc' });
 
     assert.notEqual(toProductQueryString(args, 1), toProductQueryString(args, 2));
     assert.equal(JSON.stringify(args).includes('page'), false);
   });
 });
 
-// The server is the source of truth for what the parameters mean: feed the generated query
-// string to its own parser and filter.
-describe('toProductQueryString against the real mock server query', () => {
-  it('is accepted and honoured by the server', async () => {
-    type Server = {
-      queryProducts: (products: unknown[], raw: Record<string, string>) => {
-        items: { brand: string; subcategoryId: string; inStock: boolean; rating: number }[];
-        page: number;
-        total: number;
-      };
-    };
-    let products: unknown[];
-    let server: Server;
-    try {
-      const catalogPath = '../../../../mock-server/src/catalog/generate-catalog.js';
-      const queryPath = '../../../../mock-server/src/catalog/query-products.js';
-      products = ((await import(catalogPath)) as { generateCatalog: () => unknown[] }).generateCatalog();
-      server = (await import(queryPath)) as Server;
-    } catch {
-      return;
-    }
-    const run = (input: Parameters<typeof buildProductQueryArgs>[0], page = 1) => {
-      const raw = Object.fromEntries(
-        new URLSearchParams(toProductQueryString(buildProductQueryArgs(input), page)),
-      );
-      return server.queryProducts(products, raw);
-    };
+// The query parameters are a contract with the API (RF-10 to RF-12): this table pins the exact
+// vocabulary we send for each input. How the server combines them (OR inside a facet, AND across
+// facets, normalized search, filters before totals) is the API's side of the contract and is
+// checked by the opt-in live smoke, not by the unit suite (RF-41).
+describe('toProductQueryString: the wire contract each input sends', () => {
+  const entries = (input: Omit<ProductQueryInput, 'language'>, page = 1) =>
+    Object.fromEntries(
+      new URLSearchParams(toProductQueryString(buildProductQueryArgs({ language: 'es', ...input }), page)),
+    );
 
-    const all = run({});
-    assert.equal(all.total, 300);
-    assert.equal(all.items.length, 20);
+  const cases: readonly (readonly [string, Omit<ProductQueryInput, 'language'>, Record<string, string>])[] = [
+    ['an unfiltered request only declares sort, page and limit', {}, {}],
+    ['several brands arrive as one sorted CSV (the OR facet)', { brands: ['Solstice Grove', 'AsterVale Nutrition'] }, { brand: 'astervale nutrition,solstice grove' }],
+    ['several subcategories arrive as one sorted CSV', { subcategories: ['zinc', 'vitamin-d'] }, { subcategory: 'vitamin-d,zinc' }],
+    ['the stock filter arrives as inStock=true', { inStock: true }, { inStock: 'true' }],
+    ['the top-rated filter arrives as minRating=4', { topRated: true }, { minRating: '4' }],
+    ['own brand and subscription arrive as their own flags', { ownBrand: true, subscribeAndSave: true }, { ownBrand: 'true', subscribeAndSave: 'true' }],
+    ['a sort from the allowed list travels verbatim', { sort: 'price_asc' }, { sort: 'price_asc' }],
+    ['the search travels normalized (RF-11)', { search: '  ÁCIDO   Fólico ' }, { q: 'acido folico' }],
+    ['a category travels as its id', { category: 'vitamins' }, { category: 'vitamins' }],
+  ];
 
-    const stocked = run({ inStock: true, topRated: true });
-    assert.ok(stocked.total > 0 && stocked.total < 300);
-    assert.ok(stocked.items.every((p) => p.inStock && p.rating >= 4));
+  for (const [label, input, extra] of cases) {
+    it(label, () => {
+      assert.deepEqual(entries(input), { sort: 'featured', page: '1', limit: '20', ...extra });
+    });
+  }
 
-    const brands = run({ brands: ['Solstice Grove', 'AsterVale Nutrition'] });
-    assert.ok(brands.items.every((p) => ['Solstice Grove', 'AsterVale Nutrition'].includes(p.brand)));
-    assert.ok(brands.total > run({ brands: ['Solstice Grove'] }).total, 'OR inside the same facet');
+  it('the page is one-based and travels as page', () => {
+    assert.equal(entries({}, 2).page, '2');
+  });
 
-    const and = run({ brands: ['Solstice Grove'], subcategories: ['zinc'] });
-    assert.ok(and.items.every((p) => p.brand === 'Solstice Grove' && p.subcategoryId === 'zinc'));
-
-    // Diacritics and case do not matter to the server and do not change our identity.
-    assert.equal(run({ search: 'ÁCIDO' }).total, run({ search: ' acido ' }).total);
-    assert.equal(run({}, 2).page, 2);
+  it('brands and subcategories travel together (AND across facets)', () => {
+    const params = entries({ brands: ['Solstice Grove'], subcategories: ['zinc'] });
+    assert.equal(params.brand, 'solstice grove');
+    assert.equal(params.subcategory, 'zinc');
   });
 });
 
 describe('describeQueryForLog', () => {
   it('lists category, the four filters as the server receives them, sort and page', () => {
     const args = buildProductQueryArgs({
+      language: 'es',
       category: 'vitamins',
       inStock: true,
       topRated: true,
@@ -285,25 +285,26 @@ describe('describeQueryForLog', () => {
     });
     assert.equal(
       describeQueryForLog(args, 2),
-      'category=vitamins inStock=true minRating=4 ownBrand=true subscribeAndSave=true sort=price_desc page=2',
+      'lang=es category=vitamins inStock=true minRating=4 ownBrand=true subscribeAndSave=true sort=price_desc page=2',
     );
   });
 
   it('omits the filters that are off', () => {
     assert.equal(
-      describeQueryForLog(buildProductQueryArgs({ category: 'vitamins' }), 1),
-      'category=vitamins sort=featured page=1',
+      describeQueryForLog(buildProductQueryArgs({ language: 'es', category: 'vitamins' }), 1),
+      'lang=es category=vitamins sort=featured page=1',
     );
   });
 
   it('never prints the search text or the facet values, only that they are present', () => {
     const args = buildProductQueryArgs({
+      language: 'es',
       search: 'private words',
       brands: ['Solstice Grove', 'AsterVale'],
       subcategories: ['vitamin-d'],
     });
     const line = describeQueryForLog(args, 1);
-    assert.equal(line, 'search=on brands=2 subcategories=1 sort=featured page=1');
+    assert.equal(line, 'lang=es search=on brands=2 subcategories=1 sort=featured page=1');
     assert.equal(line.includes('private'), false);
     assert.equal(line.includes('solstice'), false);
   });

@@ -1,16 +1,15 @@
 /// <reference types="node" />
-// H-4 (spec 006, T8): the release bundle must not carry development-only code. A fixture module that
-// is imported with a plain `import` ends up in the release bundle even when a flag makes it inert
-// at run time (Metro bundles what is IMPORTED, it does not reason about values). The one pattern
-// that keeps a module out is a `require` inside a `__DEV__` branch: Metro replaces `__DEV__` with
-// `false`, folds the branch away and never collects the dependency.
+// Spec 007 (RF-5, RF-17, RF-49): the persistent API replaced the local backend, and doubles and
+// fixtures exist ONLY for tests. Product sources must not import `mock-server`, `src/test` or any
+// `*testing*` module, and no runtime activator (an env value that swaps data while the app runs) may
+// survive in product code. The dev-only fixture modules (`home-fixture-env`, `home-fixtures`) and the
+// `__DEV__` audit that guarded them were deleted in T8: there is nothing left to reach through a
+// `require` under `__DEV__`, so that audit retired with them and the activator scan below now covers
+// EVERY product source with no allowlist.
 //
-// This audit reads the app sources (no tests, no helpers) and fails if a development-only module is
-// reached any other way. The real proof is still the exported bundle (`npx expo export --no-minify`
-// and searching it); this test keeps the property from regressing between exports.
-//
-// Android: the same idea as `BuildConfig.DEBUG` + R8, or a `debug` source set that the `release`
-// variant never compiles. iOS: `#if DEBUG` blocks, which the release build does not even parse.
+// Android/Kotlin: the same rule as a konsist/Gradle check that fails when `main/` imports `test/` or
+// `androidTest/`. iOS/Swift: a build-phase script that fails when `Sources/` imports `Mocking/` or
+// reads a `*FIXTURE*` variable from the environment.
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -21,16 +20,7 @@ import ts from 'typescript';
 
 const SRC = fileURLToPath(new URL('../', import.meta.url));
 
-/** Modules written for development scenarios only. Add here any new one. */
-const DEV_ONLY_MODULES: readonly string[] = ['home-fixture-env', 'home-fixtures'];
-
-/** Modules allowed to reference a dev-only module with a static import: the dev-only ones themselves. */
-const DEV_ONLY_FILES: ReadonlySet<string> = new Set(
-  DEV_ONLY_MODULES.map((name) => `features/home/data/${name}.ts`),
-);
-
-type Reference = Readonly<{ path: string; line: number; kind: 'import' | 'require'; guarded: boolean }>;
-
+/** App sources only: no `test`/`testing` trees and no `*.test.tsx?` files are scanned as product. */
 function appSources(directory = SRC): { path: string; text: string }[] {
   const files: { path: string; text: string }[] = [];
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -45,96 +35,105 @@ function appSources(directory = SRC): { path: string; text: string }[] {
   return files;
 }
 
-const isDevOnly = (specifier: string) => DEV_ONLY_MODULES.some((name) => specifier.endsWith(`/${name}`) || specifier.endsWith(`/${name}.ts`));
+/** An env value that swaps data at run time: a fixture switch or the backend's delay knob. */
+const RUNTIME_ACTIVATOR = /EXPO_PUBLIC_\w*FIXTURE\w*|ORDER_POST_DELAY_MS/;
 
-/** True when `node` sits in the branch of a conditional that only runs while `__DEV__` is true. */
-function isInsideDevBranch(node: ts.Node): boolean {
-  for (let child: ts.Node = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
-    if (ts.isConditionalExpression(parent) && parent.whenTrue === child) {
-      if (ts.isIdentifier(parent.condition) && parent.condition.text === '__DEV__') return true;
-    }
-    if (ts.isIfStatement(parent) && parent.thenStatement === child) {
-      if (ts.isIdentifier(parent.expression) && parent.expression.text === '__DEV__') return true;
-    }
-  }
-  return false;
+/** A specifier that leaves product code for the backend or for test-only trees. */
+function isNonProductiveSpecifier(specifier: string): boolean {
+  return specifier
+    .split('/')
+    .some((segment) => segment === 'mock-server' || segment === 'test' || segment.includes('testing'));
 }
 
-/** Every import or `require` of a dev-only module found in `text`. Exported shape lets the cases below feed it. */
-function findDevOnlyReferences(path: string, text: string): Reference[] {
+/** Every backend/test import and runtime activator found in `text`. Exported shape feeds the cases. */
+function findNonProductiveReferences(path: string, text: string): string[] {
   const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, path.endsWith('x') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
-  const found: Reference[] = [];
+  const found: string[] = [];
   const lineOf = (node: ts.Node) => source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+  const flag = (node: ts.Node, specifier: string, kind: string) => {
+    if (isNonProductiveSpecifier(specifier)) found.push(`${path}:${lineOf(node)} (${kind} '${specifier}')`);
+  };
 
   const visit = (node: ts.Node) => {
-    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && isDevOnly(node.moduleSpecifier.text)) {
-      // `import type` is erased by the compiler, it never reaches the bundle.
-      if (!node.importClause?.isTypeOnly) {
-        found.push({ path, line: lineOf(node), kind: 'import', guarded: false });
-      }
+    // `import type` is erased, but product code depending on test types is still a coupling.
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      flag(node, node.moduleSpecifier.text, 'import');
+    }
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      ts.isStringLiteralLike(node.arguments[0]!)
+    ) {
+      flag(node, node.arguments[0].text, 'dynamic import');
     }
     if (
       ts.isCallExpression(node) &&
       ts.isIdentifier(node.expression) &&
       node.expression.text === 'require' &&
       node.arguments.length === 1 &&
-      ts.isStringLiteralLike(node.arguments[0]!) &&
-      isDevOnly(node.arguments[0].text)
+      ts.isStringLiteralLike(node.arguments[0]!)
     ) {
-      found.push({ path, line: lineOf(node), kind: 'require', guarded: isInsideDevBranch(node) });
+      flag(node, node.arguments[0].text, 'require');
     }
     ts.forEachChild(node, visit);
   };
   visit(source);
+
+  // No allowlist (T8): every product source is scanned for a runtime activator.
+  text.split('\n').forEach((line, index) => {
+    const activator = RUNTIME_ACTIVATOR.exec(line);
+    if (activator !== null) found.push(`${path}:${index + 1} (runtime activator '${activator[0]}')`);
+  });
   return found;
 }
 
-describe('findDevOnlyReferences (the audit must see what it is meant to forbid)', () => {
-  it('flags a plain import of a dev-only module', () => {
-    const found = findDevOnlyReferences('a.ts', "import { applyHomeFixture } from './home-fixtures.ts';");
-    assert.deepEqual(found.map(({ kind, guarded }) => [kind, guarded]), [['import', false]]);
+describe('findNonProductiveReferences (the audit must see what it is meant to forbid)', () => {
+  it('flags an import of the backend', () => {
+    assert.deepEqual(
+      findNonProductiveReferences('a.ts', "import { generateCatalog } from '../mock-server/src/catalog/generate-catalog.js';"),
+      ["a.ts:1 (import '../mock-server/src/catalog/generate-catalog.js')"],
+    );
   });
 
-  it('accepts a type-only import, which the compiler erases', () => {
-    assert.deepEqual(findDevOnlyReferences('a.ts', "import type { HomeFixture } from './home-fixtures.ts';"), []);
+  it('flags imports of src/test and of any *testing* module, even type-only', () => {
+    assert.equal(findNonProductiveReferences('a.ts', "import { wireProduct } from '../../test/fixtures.ts';").length, 1);
+    assert.equal(findNonProductiveReferences('a.ts', "import type { HomeData } from '../testing/home-test-data.ts';").length, 1);
   });
 
-  it('flags a require that is not under __DEV__', () => {
-    const found = findDevOnlyReferences('a.ts', "const env = require('./home-fixture-env');");
-    assert.deepEqual(found.map(({ guarded }) => guarded), [false]);
+  it('flags a dynamic import and a require of test sources', () => {
+    assert.deepEqual(findNonProductiveReferences('a.ts', "const data = await import('../../test/fixtures.ts');"), [
+      "a.ts:1 (dynamic import '../../test/fixtures.ts')",
+    ]);
+    assert.deepEqual(findNonProductiveReferences('a.ts', "const data = require('../testing/home-test-data.ts');"), [
+      "a.ts:1 (require '../testing/home-test-data.ts')",
+    ]);
   });
 
-  it('flags a require under __DEV__ only in the wrong branch', () => {
-    const found = findDevOnlyReferences('a.ts', "const env = __DEV__ ? undefined : require('./home-fixture-env');");
-    assert.deepEqual(found.map(({ guarded }) => guarded), [false]);
+  it('flags a runtime fixture activator or the backend delay knob in ANY product source', () => {
+    assert.deepEqual(findNonProductiveReferences('a.ts', 'const raw = process.env.EXPO_PUBLIC_HOME_FIXTURE;'), [
+      "a.ts:1 (runtime activator 'EXPO_PUBLIC_HOME_FIXTURE')",
+    ]);
+    assert.deepEqual(findNonProductiveReferences('a.ts', 'const ms = Number(process.env.ORDER_POST_DELAY_MS);'), [
+      "a.ts:1 (runtime activator 'ORDER_POST_DELAY_MS')",
+    ]);
   });
 
-  it('accepts a require in the __DEV__ branch of a conditional expression or an if', () => {
-    const conditional = findDevOnlyReferences('a.ts', "const env = __DEV__ ? require('./home-fixture-env') : undefined;");
-    const statement = findDevOnlyReferences('a.ts', "let env; if (__DEV__) { env = require('./home-fixtures'); }");
-    assert.deepEqual(conditional.map(({ guarded }) => guarded), [true]);
-    assert.deepEqual(statement.map(({ guarded }) => guarded), [true]);
-  });
-
-  it('ignores a different condition that merely mentions __DEV__', () => {
-    const found = findDevOnlyReferences('a.ts', "const env = !__DEV__ ? require('./home-fixture-env') : undefined;");
-    assert.deepEqual(found.map(({ guarded }) => guarded), [false]);
+  it('accepts ordinary product imports and a clean source', () => {
+    const clean =
+      "import { parseHomePayload } from '../contracts/parse-home.ts';\n" +
+      "import type { SupportedLanguage } from '@/core/i18n/languages';";
+    assert.deepEqual(findNonProductiveReferences('a.ts', clean), []);
   });
 });
 
-describe('the release bundle (H-4)', () => {
-  const references = appSources().flatMap(({ path, text }) => findDevOnlyReferences(path, text));
-  const outsideDevModules = references.filter(({ path }) => !DEV_ONLY_FILES.has(path));
+describe('product sources are free of the backend, test code and runtime activators (RF-5, RF-49)', () => {
+  const offenders = appSources().flatMap(({ path, text }) => findNonProductiveReferences(path, text));
 
-  it('reaches a development-only module only through a `require` under __DEV__', () => {
-    const offenders = outsideDevModules
-      .filter(({ kind, guarded }) => kind !== 'require' || !guarded)
-      .map(({ path, line, kind }) => `${path}:${line} (${kind} outside a __DEV__ branch)`);
-
+  it('imports no backend, test or testing module and keeps no runtime activator', () => {
     assert.deepEqual(offenders, []);
   });
 
-  it('still reaches them from somewhere (otherwise this audit would check nothing)', () => {
-    assert.equal(outsideDevModules.length > 0, true);
+  it('the scan covers the real product sources (it would be vacuous otherwise)', () => {
+    assert.equal(appSources().length > 0, true);
   });
 });
