@@ -2,7 +2,6 @@ export const es = {
   translation: {
     tabs: {
       home: 'Inicio',
-      categories: 'Categorías',
       cart: 'Carrito',
       account: 'Cuenta',
       cartLabel_one: 'Carrito, {{count}} artículo',
@@ -11,10 +10,6 @@ export const es = {
     placeholders: {
       home: {
         title: 'Inicio',
-      },
-      categories: {
-        title: 'Categorías',
-        body: 'Aquí aparecerá el listado de categorías del catálogo.',
       },
       cart: {
         title: 'Carrito',

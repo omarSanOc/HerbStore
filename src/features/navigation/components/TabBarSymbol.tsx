@@ -2,7 +2,7 @@ import type { ColorValue } from 'react-native';
 
 import { AppIcon } from '@/design-system';
 
-export type TabKind = 'home' | 'categories' | 'cart' | 'account';
+export type TabKind = 'home' | 'cart' | 'account';
 
 /**
  * Same concept, two icon sets: SF Symbols on iOS and Material Symbols on Android.
@@ -11,7 +11,6 @@ export type TabKind = 'home' | 'categories' | 'cart' | 'account';
  */
 const symbols = {
   home: { ios: 'house.fill', android: 'home', web: 'home' },
-  categories: { ios: 'square.grid.2x2.fill', android: 'grid_view', web: 'grid_view' },
   cart: { ios: 'cart.fill', android: 'shopping_cart', web: 'shopping_cart' },
   account: { ios: 'person.fill', android: 'person', web: 'person' },
 } as const;

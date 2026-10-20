@@ -2,7 +2,6 @@ export const en = {
   translation: {
     tabs: {
       home: 'Home',
-      categories: 'Categories',
       cart: 'Cart',
       account: 'Account',
       cartLabel_one: 'Cart, {{count}} item',
@@ -11,10 +10,6 @@ export const en = {
     placeholders: {
       home: {
         title: 'Home',
-      },
-      categories: {
-        title: 'Categories',
-        body: 'The catalog category list will appear here.',
       },
       cart: {
         title: 'Cart',

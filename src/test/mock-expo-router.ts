@@ -26,10 +26,9 @@ export const router = {
  */
 export const TABS_STATE = {
   key: 'tabs-key',
-  index: 2,
+  index: 1,
   routes: [
     { name: '(home)', state: { key: 'home-stack-key', routes: [{ name: 'index' }] } },
-    { name: '(categories)' },
     { name: '(cart)', state: { key: 'cart-stack-key', routes: [{ name: 'cart' }] } },
     { name: '(account)' },
   ],

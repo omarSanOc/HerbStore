@@ -44,14 +44,6 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
-        name="(categories)"
-        options={{
-          title: t('tabs.categories'),
-          tabBarAccessibilityLabel: t('tabs.categories'),
-          tabBarIcon: ({ color }) => <TabBarSymbol color={color} kind="categories" />,
-        }}
-      />
-      <Tabs.Screen
         name="(cart)"
         options={{
           title: t('tabs.cart'),

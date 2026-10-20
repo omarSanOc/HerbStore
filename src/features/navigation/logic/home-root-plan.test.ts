@@ -20,7 +20,7 @@ type StackLike = NonNullable<TabsStateLike['routes'][number]['state']>;
 function tabsWith(home: TabsStateLike['routes'][number]): TabsStateLike {
   return {
     key: TABS_KEY,
-    routes: [home, { name: '(categories)' }, { name: '(cart)', state: { key: 'cart-stack', routes: [{ name: 'cart' }] } }, { name: '(account)' }],
+    routes: [home, { name: '(cart)', state: { key: 'cart-stack', routes: [{ name: 'cart' }] } }, { name: '(account)' }],
   };
 }
 
