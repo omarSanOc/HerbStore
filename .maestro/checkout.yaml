@@ -2,14 +2,24 @@ appId: com.herbstore.mobile
 name: Critical flow - search, add, address, double tap, ONE order
 tags:
   - critical
-# Inputs (env, override with `maestro test -e KEY=VALUE`). Nothing here is a secret or a real person.
-env:
-  API_ORIGIN: http://localhost:3001
-  METRO_URL: http://localhost:8081
-  # Exactly one catalog product matches this query (Verdant Forge, fictional), so "first result" is unambiguous.
-  PRODUCT_QUERY: Evening Magnesium Powder
-  PRODUCT_ID: product-261009-062
-  FRESH_STOCK: "99"
+# Inputs, passed with `maestro test -e KEY=VALUE` (this flow defines NO default values on
+# purpose: Maestro 2.11.0 gives a flow's own `env:` block precedence over `-e` AND over the env
+# passed by a parent runFlow — measured in spec 007 T10 — so any default here would silently
+# defeat every override; see .maestro/README.md, "Variables"). Nothing here is a secret or a real
+# person.
+#   API_ORIGIN      where the HOST reaches the persistent API (scripts run on the Mac)
+#   METRO_URL       the Metro of the Development Build, as the DEVICE reaches it
+#   PRODUCT_QUERY   query that matches exactly one catalog product (so "first result" is
+#                   unambiguous; e.g. "Evening Magnesium Powder", Verdant Forge, fictional)
+#   PRODUCT_ID      the catalog product the flow will buy (must exist and have stock > 0)
+#   E2E_EXCLUSIVE   MUST be "true": the operator's declaration of an EXCLUSIVE window. The API is
+#                   persistent and shared, so without exclusivity a stock delta cannot be
+#                   attributed to this run; reset-state.yaml stops as INCONCLUSA before mutating.
+#                   Set it to "true" ONLY when that window really holds; see .maestro/README.md.
+#   INTERFERENCE    "true" only when another client is KNOWN to have bought the same product
+#                   meanwhile: the final stock delta is then recorded INCONCLUSA (not
+#                   attributable) instead of a product failure.
+# Missing values fail closed: the exclusivity gate sees an empty E2E_EXCLUSIVE and stops.
 ---
 - runFlow:
     file: reset-state.yaml
@@ -17,7 +27,7 @@ env:
       API_ORIGIN: ${API_ORIGIN}
       METRO_URL: ${METRO_URL}
       PRODUCT_ID: ${PRODUCT_ID}
-      FRESH_STOCK: ${FRESH_STOCK}
+      E2E_EXCLUSIVE: ${E2E_EXCLUSIVE}
 
 # --- Search -------------------------------------------------------------------------------
 - tapOn: "Search products"
@@ -79,8 +89,10 @@ env:
     element: "Continue"
     timeout: 15000
 # Two real taps 50 ms apart. `retryTapIfNoChange: false` stops Maestro from adding a THIRD tap by
-# itself. The mock answers POST /orders after ORDER_POST_DELAY_MS (1500 ms, see README), so the
-# second tap always lands while the first request is in flight: that is the race window.
+# itself. The persistent API answers POST /orders on its own schedule (no ORDER_POST_DELAY_MS
+# anymore), so the second tap MAY or MAY NOT land while the first request is in flight: the flow
+# must yield ONE order in both cases. The deterministic single-POST race (delayed fetch, one key)
+# lives in Jest/RNTL (checkout-thunks.test.tsx); Maestro only asserts the real observable outcome.
 - tapOn:
     text: "Continue"
     repeat: 2
@@ -91,7 +103,8 @@ env:
 - extendedWaitUntil:
     visible: "Order in progress|Order confirmed"
     timeout: 30000
-# The default mock answers 202 pending for 1 s: the status screen unlocks "Check order status" after that.
+# The API may answer 202 pending before confirming: the status screen unlocks "Check order status"
+# once the attempt settles, and the flow polls until it confirms (or stays unresolved, which fails).
 - runFlow:
     when:
       visible: "Order in progress"
@@ -118,15 +131,17 @@ env:
 - assertVisible: "1 unit"
 
 # --- Exactly one order, checked twice ------------------------------------------------------
-# (a) Server: one order of one unit lowers the stock by exactly 1 (two orders would leave 97).
+# (a) Server: one order of one unit lowers the live stock by exactly 1. read-stock.js records the
+#     final value (and re-checks health); check-delta.js compares it with the initial one captured
+#     at preflight and decides green / real failure / INCONCLUSA (RF-43, RF-44). No reset anywhere.
 - runScript:
     file: scripts/read-stock.js
     env:
       SLOT: final
-- assertTrue:
-    condition: ${output.stock.final == output.stock.initial - 1}
-    # `label` is shown as-is (Maestro does not interpolate it): keep it a plain sentence.
-    label: "FAIL: expected exactly ONE order (final stock = initial stock - 1); the mock registered a different number."
+- runScript:
+    file: scripts/check-delta.js
+    env:
+      INTERFERENCE: ${INTERFERENCE}
 # (b) App: "My orders" has one row and no second one. A row's accessible name ends in "total <amount>".
 - tapOn: "Account"
 - runFlow: subflows/open-my-orders.yaml

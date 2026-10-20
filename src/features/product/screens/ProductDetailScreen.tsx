@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
 import { toApiError } from '@/core/api/api-error';
 import { useRevalidateWhenStale } from '@/core/api/use-revalidate-when-stale';
+import { useCurrentLanguage } from '@/core/i18n/use-current-language';
 import { useScrollReveal } from '@/core/layout/use-scroll-reveal';
 import { useAppDispatch, useAppSelector } from '@/core/store/hooks';
 import {
@@ -67,12 +68,16 @@ export function ProductDetailScreen({ rawId }: Readonly<ProductDetailScreenProps
   const reduceMotion = useReducedMotionPreference();
   const productId = parseProductId(rawId);
   const invalidLink = rawId === 'invalid';
+  // The language of the read: part of the argument, so the detail of `es` and of `en` are two
+  // entries. An invalid id never builds an argument at all (`skipToken`): zero requests (RF-40).
+  const language = useCurrentLanguage();
   // `currentData`, NOT `data`: `data` keeps the answer of the PREVIOUS id while the new one loads,
   // and the product route is singular (product B REPLACES product A, it does not stack), so with
-  // `data` the screen would show A's name, price and stock under B's id until B arrives. `currentData`
-  // is only ever the answer for the id on screen (and survives a revalidation of that same id).
+  // `data` the screen would show A's name, price and stock under B's id until B arrives. The same
+  // holds for the previous language: `currentData` is only ever the answer for the current
+  // `{ id, language }` argument (and survives a revalidation of those same args).
   const { currentData, error, isFetching, refetch, fulfilledTimeStamp } = useGetProductQuery(
-    productId ?? skipToken,
+    productId === undefined ? skipToken : { id: productId, language },
   );
   useRevalidateWhenStale({ fulfilledTimeStamp, isFetching, refetch });
 

@@ -10,6 +10,7 @@ import { act, fireEvent, isHiddenFromAccessibility, screen } from '@testing-libr
 import { AccessibilityInfo } from 'react-native';
 
 import { productAdded } from '@/features/cart/store/cart-slice';
+import { languageChanged } from '@/features/preferences/store/preferences-slice';
 import { createTestStore, startPersistence, wireProduct } from '@/test/fixtures';
 import { createMockFetch, reply } from '@/test/mock-fetch';
 import { resetRouterMock, router } from '@/test/mock-expo-router';
@@ -480,11 +481,17 @@ describe('CheckoutScreen address form', () => {
     const text = TEXT[language];
     const OUT_OF_STOCK = reply.clientError(409, { error: { code: 'OUT_OF_STOCK' } });
 
+    beforeEach(() => {
+      // The stock refresh after the 409 reads the EFFECTIVE language from the store (the persisted
+      // preference, falling back to the device): this variant pins it, never the machine's own.
+      store.dispatch(languageChanged(language));
+    });
+
     it('RF-26: says so, lists what changed, announces it, keeps the form and the cart is clamped', async () => {
       const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
       announce.mockClear();
       mock.enqueue('POST /orders', OUT_OF_STOCK);
-      mock.enqueue(`GET /products/${PRODUCT.productId}`, reply.success(wireProduct(1, { stock: 1 })));
+      mock.enqueue(`GET /products/${PRODUCT.productId}`, reply.localized(wireProduct(1, { stock: 1 }), language));
       await renderWithProviders(<CheckoutScreen />, { store, language });
       await fill(language, VALID);
 
@@ -507,7 +514,7 @@ describe('CheckoutScreen address form', () => {
       const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
       announce.mockClear();
       mock.enqueue('POST /orders', OUT_OF_STOCK);
-      mock.enqueue(`GET /products/${PRODUCT.productId}`, reply.success(wireProduct(1, { stock: 0, inStock: false })));
+      mock.enqueue(`GET /products/${PRODUCT.productId}`, reply.localized(wireProduct(1, { stock: 0, inStock: false }), language));
       await renderWithProviders(<CheckoutScreen />, { store, language });
       await fill(language, VALID);
 

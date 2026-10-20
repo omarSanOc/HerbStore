@@ -74,7 +74,7 @@ describe('ProductDetailScreen announcements', () => {
   });
 
   async function mount(language: Language) {
-    mock.enqueue(ROUTE, reply.success(wireProduct(1, { stock: 3, inStock: true })));
+    mock.enqueue(ROUTE, reply.localized(wireProduct(1, { stock: 3, inStock: true }), language));
     const store = createTestStore();
     await startPersistence(store).rehydrated;
     await renderWithProviders(<ProductDetailScreen rawId={ID} />, { language, store });

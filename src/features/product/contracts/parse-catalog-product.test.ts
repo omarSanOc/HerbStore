@@ -330,60 +330,51 @@ describe('parseCategoryTree', () => {
   });
 });
 
-// Contract check against the real server code. It needs the mock server's own dependencies
-// (`npm --prefix mock-server install`) and is skipped without them.
-const serverModules = await (async () => {
-  try {
-    const catalogPath = '../../../../mock-server/src/catalog/generate-catalog.js';
-    const queryPath = '../../../../mock-server/src/catalog/query-products.js';
-    const homePath = '../../../../mock-server/src/catalog/home-data.js';
-    const catalog = (await import(catalogPath)) as { generateCatalog: () => unknown[] };
-    const query = (await import(queryPath)) as {
-      queryProducts: (products: unknown[], raw: Record<string, string>) => unknown;
-    };
-    const home = (await import(homePath)) as {
-      createBrandData: (products: unknown[]) => unknown;
-      createCategoryTree: (products: unknown[]) => unknown;
-    };
-    return { ...catalog, ...query, ...home };
-  } catch {
-    return undefined;
-  }
-})();
-
-describe('catalog parsers against the real mock server data', () => {
-  const skip = serverModules === undefined ? 'mock-server dependencies are not installed' : false;
+// The parsers must accept everything shaped like the API contract (RF-10, RF-13, RF-14), with our
+// own immutable data: a small catalog table and the pages, details, brands and category tree built
+// from it. What the real API serves (totals, filters, sorts) is checked by the opt-in live smoke,
+// not by the unit suite (RF-41).
+describe('catalog parsers against a controlled catalog table', () => {
   const json = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
 
-  it('accepts every page of the whole catalog, with the real totals', { skip }, () => {
-    assert.ok(serverModules);
-    const products = serverModules.generateCatalog();
-    const first = parseProductPage(
-      json(serverModules.queryProducts(products, { page: '1', limit: '20' })),
-    );
+  /** Six products across three brands and two categories; one sold out, one in MXN. */
+  const table: Mutable[] = [
+    wireProduct(1),
+    wireProduct(2, { brand: 'Solstice Grove', categoryId: 'minerals', subcategoryId: 'zinc', price: 9.5, rating: 4.6, isOwnBrand: true }),
+    wireProduct(3, { brand: 'Fernlight Labs', subcategoryId: 'vitamin-d', rating: 3.8, subscribeAndSave: true }),
+    wireProduct(4, { brand: 'Solstice Grove', subcategoryId: 'zinc', price: 21, listPrice: 24.99, inStock: false }),
+    wireProduct(5, { brand: 'Fernlight Labs', categoryId: 'minerals', subcategoryId: 'magnesium', rating: 4.9 }),
+    wireProduct(6, { brand: 'Solstice Grove', categoryId: 'minerals', subcategoryId: 'magnesium', currency: 'MXN', price: 299 }),
+  ];
+
+  /** Paging as RF-10 defines it: one-based page, totals computed before answering. */
+  const pageOf = (page: number, limit = 2): Mutable => ({
+    items: table.slice((page - 1) * limit, page * limit),
+    page,
+    totalPages: Math.ceil(table.length / limit),
+    total: table.length,
+  });
+
+  it('accepts every page of the catalog, with totals and no repeated id', () => {
+    const first = parseProductPage(json(pageOf(1)));
 
     assert.ok(first);
-    assert.equal(first.total, 300);
-    assert.equal(first.totalPages, 15);
-    assert.equal(first.items.length, 20);
+    assert.equal(first.total, 6);
+    assert.equal(first.totalPages, 3);
+    assert.equal(first.items.length, 2);
 
     const seen = new Set<string>();
     for (let page = 1; page <= first.totalPages; page += 1) {
-      const parsed = parseProductPage(
-        json(serverModules.queryProducts(products, { page: String(page), limit: '20' })),
-      );
+      const parsed = parseProductPage(json(pageOf(page)));
       assert.ok(parsed, `page ${page}`);
       parsed.items.forEach(({ id }) => seen.add(id));
     }
-    assert.equal(seen.size, 300);
+    assert.equal(seen.size, 6);
   });
 
-  it('accepts the detail of every product with the stock the mock gives it', { skip }, () => {
-    assert.ok(serverModules);
-    const products = serverModules.generateCatalog() as Mutable[];
-
-    for (const product of products) {
-      // Same rule as the detail endpoints on a fresh server: 99 units, or 0 when it is sold out.
+  it('accepts the detail of every product, with inStock equal to stock > 0', () => {
+    for (const product of table) {
+      // RF-14: the detail answers the catalog product plus `stock`, and `inStock` mirrors `stock`.
       const stock = product.inStock ? 99 : 0;
       const detail = parseProductDetail(json({ ...product, stock }));
 
@@ -394,32 +385,40 @@ describe('catalog parsers against the real mock server data', () => {
     }
   });
 
-  it('accepts an empty filtered page and a page beyond the last', { skip }, () => {
-    assert.ok(serverModules);
-    const products = serverModules.generateCatalog();
-
-    const none = parseProductPage(
-      json(serverModules.queryProducts(products, { q: 'zzzz-no-match' })),
-    );
+  it('accepts an empty filtered page and a page beyond the last', () => {
+    const none = parseProductPage(json({ items: [], page: 1, totalPages: 0, total: 0 }));
     assert.deepEqual(none && [none.items.length, none.totalPages, none.total], [0, 0, 0]);
 
-    const beyond = parseProductPage(json(serverModules.queryProducts(products, { page: '99' })));
-    assert.deepEqual(beyond && [beyond.items.length, beyond.totalPages], [0, 15]);
+    const beyond = parseProductPage(json(pageOf(99)));
+    assert.deepEqual(beyond && [beyond.items.length, beyond.totalPages], [0, 3]);
   });
 
-  it('accepts the real brands and category tree', { skip }, () => {
-    assert.ok(serverModules);
-    const products = serverModules.generateCatalog();
-
-    const brands = parseBrandOptions(json(serverModules.createBrandData(products)));
-    assert.ok(brands);
-    assert.equal(brands.length, 8);
-    assert.equal(
-      brands.reduce((sum, { productCount }) => sum + productCount, 0),
-      300,
+  it('accepts brands aggregated from the table and a category tree', () => {
+    const counts = new Map<string, number>();
+    for (const { brand } of table) counts.set(brand, (counts.get(brand) ?? 0) + 1);
+    const brands = parseBrandOptions(
+      json([...counts].map(([name, productCount]) => ({ name, productCount }))),
     );
 
-    const tree = parseCategoryTree(json(serverModules.createCategoryTree(products)));
+    assert.ok(brands);
+    assert.equal(brands.length, 3);
+    assert.equal(brands.reduce((sum, { productCount }) => sum + productCount, 0), 6);
+
+    const tree = parseCategoryTree(
+      json(
+        Array.from({ length: 5 }, (_, c) => ({
+          id: `category-${c}`,
+          name: `Category ${c}`,
+          productCount: 3,
+          subcategories: Array.from({ length: 3 }, (_, s) => ({
+            id: `category-${c}-sub-${s}`,
+            name: `Subcategory ${s}`,
+            productCount: 1,
+          })),
+        })),
+      ),
+    );
+
     assert.ok(tree);
     assert.equal(tree.length, 5);
     assert.equal(tree.flatMap(({ subcategories }) => subcategories).length, 15);

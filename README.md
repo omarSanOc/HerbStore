@@ -2,7 +2,7 @@
 
 App móvil de e-commerce de suplementos para aprender React Native y preparar entrevistas técnicas mobile. Está construida con Expo SDK 57 y React Native 0.86 (New Architecture) y se compara de forma constante con Kotlin/Compose y Swift/SwiftUI.
 
-> **HerbStore es una app ficticia y didáctica.** El catálogo (300 productos) lo genera un servidor mock con Faker y una semilla fija; no hay marcas, logos ni imágenes reales, ni tienda real, ni pagos reales. Cualquier parecido con productos o empresas existentes es casual.
+> **HerbStore es una app ficticia y didáctica.** El catálogo lo sirve una API HerbStore persistente (identificada por su OpenAPI 3.1) que no forma parte de este repositorio y no tiene reset; no hay marcas, logos ni imágenes reales, ni tienda real, ni pagos reales. Cualquier parecido con productos o empresas existentes es casual.
 
 ## Qué incluye
 
@@ -18,7 +18,7 @@ App móvil de e-commerce de suplementos para aprender React Native y preparar en
 - TypeScript estricto, Expo Router, Redux Toolkit con RTK Query, redux-persist y MMKV.
 - FlashList, expo-image, Reanimated, Gesture Handler y Gorhom Bottom Sheet.
 - React Hook Form y Zod; i18next y expo-localization.
-- Servidor mock independiente en `mock-server/` con Node, Express y Faker (semilla fija).
+- API persistente HerbStore como única fuente remota (`EXPO_PUBLIC_API_ORIGIN`), con smoke opt-in (`npm run verify:live-api`).
 
 ## Requisitos
 
@@ -28,18 +28,13 @@ App móvil de e-commerce de suplementos para aprender React Native y preparar en
 
 ## Cómo arrancar
 
-1. Instala las dependencias de la app y del servidor mock:
+1. Instala las dependencias de la app:
 
    ```bash
    npm install
-   npm --prefix mock-server install
    ```
 
-2. Arranca el servidor mock (puerto `3001` por defecto):
-
-   ```bash
-   npm --prefix mock-server run dev
-   ```
+2. Ten alcanzable la API persistente de HerbStore en un origen `http(s)://host[:puerto]` sin ruta (en local, `http://localhost:3001`). El repositorio **no incluye backend**: sin un origen válido la app muestra el gate bilingüe de configuración y no inicia ninguna petición remota.
 
 3. Compila e instala el Development Build la primera vez (y cada vez que cambie una dependencia nativa, `app.json` o el módulo nativo):
 
@@ -50,22 +45,24 @@ App móvil de e-commerce de suplementos para aprender React Native y preparar en
 
    `ios/` y `android/` son salidas generadas por Continuous Native Generation (CNG), están ignoradas por Git y no se editan a mano.
 
-4. Arranca Metro para el Development Build:
+4. Arranca Metro para el Development Build con el origen declarado:
 
    ```bash
-   npx expo start --dev-client
+   EXPO_PUBLIC_API_ORIGIN=http://localhost:3001 npx expo start --dev-client
    ```
 
-### Dirección del servidor mock
+### Dirección de la API
 
-La app resuelve el origen sola en desarrollo (`src/core/network/resolve-api-origin.ts`): `http://10.0.2.2:3001` en el emulador Android y `http://localhost:3001` en el simulador de iOS. Para un Android físico por USB:
+La app no inventa un origen por plataforma: `EXPO_PUBLIC_API_ORIGIN` es obligatorio y debe ser un origen `http(s)` sin credenciales ni ruta (validado en `src/core/config/public-config.ts`); el idioma viaja en cada petición localizada (`Accept-Language`/`Content-Language`). Para un Android físico o emulador por USB redirige los puertos:
 
 ```bash
 adb reverse tcp:3001 tcp:3001
 adb reverse tcp:8081 tcp:8081
 ```
 
-Para forzar otro origen (por ejemplo un iPhone físico por LAN) define `EXPO_PUBLIC_API_ORIGIN` con un origen `http(s)://host[:puerto]` sin ruta, p. ej. en un `.env.local` ignorado por Git (hay una plantilla en `.env.example`), y reinicia Metro con `npx expo start --dev-client -c`. Los contratos y las direcciones por plataforma están en [`mock-server/README.md`](mock-server/README.md).
+En el emulador Android, `http://10.0.2.2:3001` es la alternativa documentada y no bloqueante (el simulador de iOS usa `http://localhost:3001`; un iPhone físico por LAN usa el host y puerto alcanzables de la red local). Para forzar otro origen define `EXPO_PUBLIC_API_ORIGIN` con un origen `http(s)://host[:puerto]` sin ruta, p. ej. en un `.env.local` ignorado por Git (hay una plantilla en `.env.example`), y reinicia Metro con `npx expo start --dev-client -c`.
+
+La API es persistente y **no tiene reset**: el stock y las órdenes sobreviven entre ejecuciones. El contrato observable descrito en [`specs/007-api-persistente/spec.md`](specs/007-api-persistente/spec.md) es la referencia de conformidad (el OpenAPI identifica las operaciones, pero no todos los parámetros ni errores).
 
 ## Estructura
 
@@ -75,7 +72,6 @@ Para forzar otro origen (por ejemplo un iPhone físico por LAN) define `EXPO_PUB
 | `src/features/` | Lógica y UI agrupadas por funcionalidad (carrito, checkout, búsqueda, producto, escáner...). |
 | `src/core/` | Infraestructura compartida: red, store, almacenamiento, i18n, formato, accesibilidad. |
 | `src/design-system/` | Tokens, paletas y componentes reutilizables. |
-| `mock-server/` | Backend mock (Node, Express, Faker con semilla fija), con sus propias pruebas. |
 | `modules/device-insights/` | Expo Module local en Kotlin y Swift. |
 | `.maestro/` | Flujos E2E de Maestro. |
 | `specs/` | Especificaciones, planes y tareas por día (método SDD). |
@@ -85,17 +81,18 @@ Para forzar otro origen (por ejemplo un iPhone físico por LAN) define `EXPO_PUB
 ## Pruebas y comprobaciones
 
 ```bash
-npm test                        # test:logic y test:jest, encadenados
+npm test                        # test:logic y test:jest, encadenados; 100 % offline
 npm run test:logic              # node:test, archivos *.test.ts (lógica pura)
 npm run test:jest               # Jest + React Native Testing Library, archivos *.test.tsx
-npm --prefix mock-server test   # pruebas del servidor mock
+HERBSTORE_LIVE_API_ORIGIN=http://localhost:3001 npm run verify:live-api
+                                # smoke vivo opt-in: solo GET, no muta la API
 npx expo lint                   # ESLint
 npx tsc --noEmit                # TypeScript estricto
 npx expo install --check        # compatibilidad de dependencias con el SDK
 npx expo-doctor@latest          # diagnóstico de Expo
 ```
 
-La extensión del archivo decide el ejecutor: `*.test.ts` va por `node:test` y `*.test.tsx` por Jest. El flujo crítico de compra se prueba de extremo a extremo con [Maestro](https://maestro.mobile.dev), una herramienta externa que no está en `package.json`; el procedimiento exacto está en [`.maestro/README.md`](.maestro/README.md). Una integración continua en GitHub Actions ejecuta lint, typecheck y las pruebas de lógica y Jest, y las del servidor mock, en cada `push` y `pull_request` a `main`; Maestro y los dispositivos reales no forman parte de ella.
+La extensión del archivo decide el ejecutor: `*.test.ts` va por `node:test` y `*.test.tsx` por Jest. `npm test` nunca necesita red ni API viva: los contratos se cubren con dobles y fixtures exclusivos de pruebas. La compatibilidad real con la API se comprueba de forma opt-in con el smoke `verify:live-api` (no mutante; sin la variable de entorno termina con causa clara y código de salida 2). El flujo crítico de compra se prueba de extremo a extremo con [Maestro](https://maestro.mobile.dev), una herramienta externa que no está en `package.json`; corre contra la API persistente sin reset y `checkout.yaml` exige `-e E2E_EXCLUSIVE=true`, deteniéndose como `INCONCLUSA` antes de mutar si no puede garantizar exclusividad (procedimiento exacto en [`.maestro/README.md`](.maestro/README.md)). Una integración continua en GitHub Actions ejecuta lint, typecheck y las pruebas de lógica y Jest, en cada `push` y `pull_request` a `main`; es 100 % offline, no llama a la API viva y Maestro y los dispositivos reales no forman parte de ella.
 
 ## Método de trabajo (SDD)
 
@@ -124,10 +121,10 @@ El código, los nombres de archivo y los identificadores están en inglés; las 
 HerbStore es un proyecto de aprendizaje, no un producto en producción:
 
 - No hay autenticación ni cuentas de usuario.
-- No hay pagos reales: el checkout termina en una orden contra el servidor mock, cuyo estado vive en memoria y se pierde al reiniciarlo.
+- No hay pagos reales: el checkout termina en una orden contra la API persistente, cuyo estado (stock y órdenes) sobrevive entre ejecuciones y no tiene reset documentado.
 - No hay actualizaciones OTA (`expo-updates` no está instalado), ni CI/CD de producción, ni publicación en tiendas.
-- El origen del catálogo en los perfiles de `eas.json` es un marcador de posición público (`https://api.example.test`); los builds remotos solo prueban la compilación, no la carga del catálogo.
-- La accesibilidad se verificó con TalkBack real en un Android y con herramientas de inspección en el simulador de iOS: **VoiceOver real no se probó** y el **audio de los lectores de pantalla no está verificado** (solo foco, orden, nombre, rol y estado).
+- El origen del catálogo en los perfiles de `eas.json` es un marcador de posición público (`https://api.example.test`) porque no existe backend desplegado aprobado: los builds remotos de EAS solo prueban la compilación y no cargan catálogo hasta proporcionar un origen real alcanzable.
+- La validación manual de accesibilidad se confirmó en Android e iOS por el usuario, incluyendo TalkBack/VoiceOver y audio; la evidencia de Spec 007 documenta los resultados. El iOS Simulator mantiene únicamente la limitación de cámara QR, no una limitación de accesibilidad.
 - El diálogo de permisos y el teclado los dibuja el sistema; la app no los controla.
 
 Más detalle en `LEARNING.md` (sección «Decisiones y limitaciones que deben constar») y en `docs/evidence/`.

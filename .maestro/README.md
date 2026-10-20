@@ -1,21 +1,24 @@
-# Maestro: flujo crítico (spec 006, T5, RF-6)
+# Maestro: flujo crítico contra la API persistente (spec 007, T7; RF-6 de spec 006)
 
 Maestro es una herramienta externa (CLI). **No** está en `package.json`.
 Equivalencias: Maestro ↔ Espresso/UI Automator (Android) y XCUITest (iOS), pero de caja negra y con el mismo YAML en ambas plataformas; `testID` ↔ `resource-id` (Android) / `accessibilityIdentifier` (iOS).
+
+> **La API es persistente, compartida y SIN reset** (RF-42/RF-44). El flujo crítico **compra de verdad** y baja el stock del producto en 1 unidad cada vez que pasa. Por eso: (1) exige una **ventana exclusiva** declarada (`E2E_EXCLUSIVE=true`) antes de tocar nada, (2) **nunca** reinicia ni repone stock, y (3) si falta una precondición se detiene con el marcador **`INCONCLUSA`** sin haber mutado, en vez de atribuir un fallo al producto. Ver «API persistente y `INCONCLUSA`» más abajo.
 
 ## Qué hay
 
 | Archivo | Papel |
 |---|---|
 | `checkout.yaml` | El flujo: buscar, agregar, carrito, dirección, **doble toque en «Continuar»**, UNA confirmación, UNA orden. |
-| `reset-state.yaml` | Estado limpio: comprueba el mock fresco, `fresh-app`, comprueba carrito/historial/pedidos vacíos. |
-| `subflows/fresh-app.yaml` | `clearState`, reabre el Development Build (con la carrera del lanzador resuelta), cierra el Dev Menu por plataforma y fija inglés. No toca el mock. |
+| `reset-state.yaml` | Preflight (health + `PRODUCT_ID` con stock > 0 + `E2E_EXCLUSIVE=true`) y luego solo estado LOCAL limpio: `fresh-app`, carrito/historial/pedidos vacíos. |
+| `subflows/fresh-app.yaml` | `clearState`, reabre el Development Build (con la carrera del lanzador resuelta), cierra el Dev Menu por plataforma y fija inglés. No toca la API. |
 | `subflows/fill-field.yaml` | Teclea un campo por `testID` y cierra el teclado de forma explícita. |
 | `subflows/open-my-orders.yaml` | Desde Cuenta: `scroll` + `scrollUntilVisible` + toque en «My orders» (iOS y Android listan nodos de forma distinta). |
 | `product-404.yaml` | **Extra opcional:** `herbstore://product/<inexistente>` -> «Product not found» -> «Go to Home». |
 | `deep-link-a-b.yaml` | **Extra opcional:** con el producto A abierto, el enlace a B lo REEMPLAZA (singular) y un solo Atrás va a Inicio. |
 | `cart-swipe-delete.yaml` | **Extra opcional (RF-31, spec 006 T6e):** carrito de 2 líneas, deslizar la primera, tocar la acción revelada; solo desaparece esa línea y el subtotal es el de la restante. **Usa coordenadas** (ver abajo). |
-| `scripts/read-stock.js` | Lee el stock vivo del mock (corre en el Mac). Una orden de 1 unidad lo baja en exactamente 1. |
+| `scripts/read-stock.js` | Preflight y medición: verifica `GET /health`, que `PRODUCT_ID` existe y su stock vivo; lo guarda en `output.stock[SLOT]`. Con `REQUIRE_POSITIVE=true` exige stock > 0. |
+| `scripts/check-delta.js` | Tras la compra, compara `final == initial - 1`: verde, fallo real del producto, o `INCONCLUSA` si se declaró interferencia. |
 | `config.yaml` | `maestro test .maestro` ejecuta solo `checkout.yaml` (los extras no están en el flujo por defecto). |
 
 ## Requisitos
@@ -32,25 +35,39 @@ El script añade `~/.maestro/bin` a `~/.zshrc` y `~/.bash_profile`; si no quiere
 
 ## Orden exacto (cada ejecución)
 
-Desde la raíz del repositorio, en tres terminales. **El mock se reinicia ANTES de cada ejecución**: guarda stock y órdenes en memoria y Maestro no puede reiniciarlo (`reset-state.yaml` se niega a seguir si el stock no es el inicial).
+Desde la raíz del repositorio, en tres terminales. **No hay reinicio de la API**: es persistente y no tiene reset, así que el flujo se apoya en el preflight y en una ventana exclusiva declarada. `reset-state.yaml` se niega a seguir (marcador `INCONCLUSA`) si `E2E_EXCLUSIVE` no es `true`, si `GET /health` falla o si `PRODUCT_ID` no existe o tiene stock 0.
 
 ```bash
-# 1. Mock fresco, con el POST de órdenes retrasado 1,5 s (ensancha la ventana del doble toque)
-lsof -ti tcp:3001 | xargs kill 2>/dev/null; ORDER_POST_DELAY_MS=1500 npm --prefix mock-server start
+# 1. La API persistente (se gestiona fuera de este repo; el mock-server desaparece en T8).
+#    Asegúrate de que responde y de que ningún otro cliente compra el mismo PRODUCT_ID:
+curl -s http://localhost:3001/health        # -> {"status":"ok"}
 
-# 2. Metro del Development Build, apuntando al mock (una vez; sigue vivo entre ejecuciones)
+# 2. Metro del Development Build, apuntando a la API (una vez; sigue vivo entre ejecuciones)
 EXPO_PUBLIC_API_ORIGIN=http://localhost:3001 npx expo start --dev-client
 
-# 3. El flujo
-maestro --device <UDID-o-serial> test .maestro/checkout.yaml
+# 3. El flujo, declarando la ventana exclusiva (sin ella aborta antes de mutar) y el producto
+maestro --device <UDID-o-serial> test .maestro/checkout.yaml \
+  -e E2E_EXCLUSIVE=true \
+  -e PRODUCT_ID=product-261009-062 \
+  -e "PRODUCT_QUERY=Evening Magnesium Powder"
 ```
 
 - **Marcadores de dispositivo.** En este repositorio y en `docs/evidence/` los identificadores reales se sustituyen por `<android-serial>` (Android: `adb devices -l`, primera columna) y `<ios-simulator-udid>` (iOS: `xcrun simctl list devices booted`); sustitúyelos por los de tu equipo al ejecutar los comandos. No se versionan seriales ni UDID (AGENTS.md).
 - **iOS Simulator** (iPhone 17 Pro): `xcrun simctl list devices booted` da el UDID. Necesita el Development Build instalado.
-- **Android físico**: antes `adb reverse tcp:8081 tcp:8081` y `adb reverse tcp:3001 tcp:3001`; serial con `adb devices`; pantalla desbloqueada. **`clearState` borra los datos de la app** (preferencias, carrito, historial, pedidos locales). Un paso de Maestro en un gama baja tarda ~4-7 s: el flujo dura ≈5 min en el Samsung SM-A037M frente a ≈1,5 min en el Simulator.
-- **Extras** (opcionales, no amplían RF-6; no exigen mock fresco porque no crean órdenes, pero sí hacen `clearState` y necesitan el mock y Metro arriba): `maestro --device <id> test .maestro/product-404.yaml` y `.../deep-link-a-b.yaml` (≈70 s en el Samsung, ≈35 s en el Simulator).
-- **`cart-swipe-delete.yaml`** (extra por archivo, fuera de `config.yaml`): `maestro --device <id> test .maestro/cart-swipe-delete.yaml`. No crea órdenes (no exige mock fresco) y hace `clearState`. ≈46 s en el Simulator y ≈103 s en el Samsung; verde 3 veces seguidas en cada uno (T6e, `docs/evidence/day-6-cart-swipe.md`).
-- Variables (`-e CLAVE=valor`): `API_ORIGIN` (cómo alcanza el Mac al mock), `METRO_URL` (cómo alcanza el dispositivo a Metro), `PRODUCT_QUERY`, `PRODUCT_ID`, `FRESH_STOCK`. Valores por defecto en la cabecera de cada YAML. No hay secretos ni datos personales: la dirección es ficticia.
+- **Android físico**: antes `adb reverse tcp:8081 tcp:8081` y `adb reverse tcp:3001 tcp:3001` (8081 lleva Metro, 3001 la API); serial con `adb devices`; pantalla desbloqueada. **`clearState` borra los datos de la app** (preferencias, carrito, historial, pedidos locales), nunca los de la API. Un paso de Maestro en un gama baja tarda ~4-7 s: el flujo dura ≈5 min en el Samsung SM-A037M frente a ≈1,5 min en el Simulator.
+- **Extras** (opcionales, no amplían RF-6; **no crean órdenes, así que NO necesitan ventana exclusiva** ni preflight de stock, pero sí hacen `clearState` y necesitan la API y Metro arriba): `maestro --device <id> test .maestro/product-404.yaml` y `.../deep-link-a-b.yaml` (≈70 s en el Samsung, ≈35 s en el Simulator).
+- **`cart-swipe-delete.yaml`** (extra por archivo, fuera de `config.yaml`): `maestro --device <id> test .maestro/cart-swipe-delete.yaml`. No crea órdenes (no exige ventana exclusiva) y hace `clearState`. ≈46 s en el Simulator y ≈103 s en el Samsung; verde 3 veces seguidas en cada uno (T6e, `docs/evidence/day-6-cart-swipe.md`).
+- Variables (`-e CLAVE=valor`): `API_ORIGIN` (cómo alcanza el Mac a la API), `METRO_URL` (cómo alcanza el dispositivo a Metro), `PRODUCT_QUERY`, `PRODUCT_ID`, `E2E_EXCLUSIVE`, `INTERFERENCE`. **`checkout.yaml` y `reset-state.yaml` no llevan valores por defecto a propósito:** en Maestro 2.11.0 el bloque `env:` de un flow gana a las variables `-e` de la CLI **y** a las que pasa el `runFlow` del padre (medido en spec 007 T10 con un probe mínimo: flow `env: PROBE: "false"` + `-e PROBE=true` → la aserción ve `false`), así que cualquier valor por defecto ahí anularía el override y el flujo acabaría siempre en `INCONCLUSA`. Al faltar la variable la seguridad es la misma que antes: la compuerta de exclusividad la trata como no declarada y se detiene antes de mutar («fail closed»). Los extras (`product-404.yaml`, `deep-link-a-b.yaml`, `cart-swipe-delete.yaml`) sí conservan sus valores por defecto: son los pretendidos y no necesitan override. No hay secretos ni datos personales: la dirección es ficticia.
+
+## API persistente e `INCONCLUSA`
+
+La API (spec 007) sirve un catálogo persistente, no tiene reset y puede ser compartida. El flujo crítico es el único que muta (compra 1 unidad). Cómo convive con eso:
+
+- **Preflight antes de mutar.** `reset-state.yaml` exige, en este orden y **sin haber comprado nada todavía**: `E2E_EXCLUSIVE=true` (ventana exclusiva declarada por el operador), `GET /health` ok, y que `PRODUCT_ID` responda con `stock > 0`. Si falta cualquiera, `read-stock.js` lanza una causa `INCONCLUSA: ...` y el flujo se detiene. La API nunca se reinicia ni se repone stock.
+- **Parametrización.** `PRODUCT_ID` (el que se compra; debe existir y tener stock) y `PRODUCT_QUERY` (la búsqueda que lo encuentra; debe devolver resultados no ambiguos) son entradas. Si el catálogo agota ese producto, se pasa **otro** `PRODUCT_ID`/`PRODUCT_QUERY`; nunca se restaura stock ni se reinicia la API.
+- **Delta y `INCONCLUSA`.** Tras la compra, `read-stock.js` (SLOT `final`) + `check-delta.js` comparan `final == initial - 1`. Verde si coincide. Si no coincide **y** se declaró interferencia (`INTERFERENCE=true`, hubo otro cliente), se registra `INCONCLUSA` (no es fallo del producto). Si no coincide y la exclusividad se sostuvo, es un **fallo real** del producto (una segunda orden dejaría `initial - 2`; una orden perdida dejaría `initial`).
+- **`E2E_EXCLUSIVE` y `INTERFERENCE` son declaraciones del operador, no detectores automáticos.** El YAML no puede saber si otro cliente compró: por eso el preflight exige la declaración de exclusividad y el delta permite declarar interferencia para no culpar al producto. Ninguna de las dos variables es un secreto.
+- **La carrera del doble toque es determinista en Jest, no aquí.** El doble toque de Maestro usa dos toques reales separados 50 ms; si la API responde rápido, el segundo toque puede caer fuera de la ventana. La garantía de «un solo POST con una sola clave» vive en `checkout-thunks.test.tsx` (fetch demorado + aserción de key única). Maestro solo comprueba el resultado observable: UNA confirmación, delta `-1` y una sola fila en «My orders».
 
 ## Decisiones de diseño (resumen; detalle en `plan.md`, «Decisiones de T5»)
 

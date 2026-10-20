@@ -51,6 +51,23 @@ describe('BannerCarousel and reduced motion', () => {
     scrollToOffset = jest.spyOn(FlatList.prototype, 'scrollToOffset').mockImplementation(() => {});
   });
 
+  // RF-8, RF-22 (spec 007, T3). The title and the subtitle are COPY OF THE CATALOG: they come from
+  // the localized payload, never from a local table keyed by the banner id. `daily-wellness` IS one
+  // of the ids that used to have a translation, so this assertion fails while the table exists.
+  //
+  // Android: string resources keyed by server id would drift from the backend; SwiftUI: a
+  // `Localizable` entry per server id has the same problem. The text belongs to the response.
+  it('RF-8: it shows the title and the subtitle the API sent, not a local translation of the id', async () => {
+    const known: readonly HomeBanner[] = [
+      { id: 'daily-wellness', title: 'Daily wellness essentials', subtitle: 'Explore.', imageUrl: '/images/banners/a.png', categoryId: 'vitamins' },
+    ];
+    await renderWithProviders(<BannerCarousel banners={known} isRowVisible onOpenCategory={jest.fn()} />);
+
+    expect(screen.getByText('Daily wellness essentials')).toBeOnTheScreen();
+    expect(screen.getByText('Explore.')).toBeOnTheScreen();
+    expect(screen.getByRole('button', { name: 'Daily wellness essentials. Explore.' })).toBeOnTheScreen();
+  });
+
   it('WITH MOTION: it advances to the next banner by itself after 5 s, animated', async () => {
     await renderCarousel();
     const first = position();

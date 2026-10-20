@@ -19,6 +19,7 @@ import { currencyChanged } from '@/features/preferences/store/preferences-slice'
 import { attemptOutcome, attemptSubmitted } from '@/features/checkout/store/checkout-attempt-slice';
 import { createMemoryStorage, createTestStore, startPersistence } from '@/test/fixtures';
 import { resetRouterMock, router, tabsNavigation } from '@/test/mock-expo-router';
+import { createMockFetch, reply } from '@/test/mock-fetch';
 import { renderWithProviders } from '@/test/render-with-providers';
 
 import { CartScreen } from './CartScreen';
@@ -221,6 +222,32 @@ describe('CartScreen', () => {
       await fireEvent.press(screen.getByRole('button', { name: TEXT.es.decrease }));
       expect(screen.getByLabelText(TEXT.es.quantity)).toHaveAccessibilityValue({ now: 1 });
       expect(spokenSubtotal()).toBe(before);
+    });
+
+    // RF-39 (T4): the line is a LOCAL snapshot (name, unit price, stock at add time). The cart
+    // never asks the catalog, so a product that disappeared from the API (detail 404) can neither
+    // hide the line nor freeze it: it renders from the snapshot and its quantity stays editable
+    // (spec 004 keeps the cart usable when the catalog changes).
+    it('RF-39: a line whose product vanished from the API (detail 404) keeps its snapshot and stays editable', async () => {
+      const mock = createMockFetch();
+      mock.install();
+      try {
+        mock.always('GET /products/product-261009-001', reply.clientError(404, { error: { code: 'PRODUCT_NOT_FOUND' } }));
+        const store = await unlockedStore();
+        await withLine(store, 2);
+        await renderWithProviders(<CartScreen />, { store });
+
+        expect(screen.getByRole('header', { name: PRODUCT.name })).toBeOnTheScreen();
+        expect(screen.getByLabelText(TEXT.es.quantity)).toHaveAccessibilityValue({ min: 1, max: 3, now: 2 });
+
+        await fireEvent.press(screen.getByRole('button', { name: TEXT.es.increase }));
+
+        expect(screen.getByLabelText(TEXT.es.quantity)).toHaveAccessibilityValue({ now: 3 });
+        expect(store.getState().cart.lines).toMatchObject([{ productId: PRODUCT.productId, quantity: 3, stock: 3 }]);
+        expect(mock.calls).toHaveLength(0); // the snapshot is the only source on screen
+      } finally {
+        mock.uninstall();
+      }
     });
 
     it('STOCK LIMIT: at the maximum "+" is disabled and nothing is dispatched', async () => {

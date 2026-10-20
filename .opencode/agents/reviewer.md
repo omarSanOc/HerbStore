@@ -18,19 +18,46 @@ permissions:
     resource: "npx jest *"
     effect: allow
   - action: shell
+    resource: "npm test *"
+    effect: allow
+  - action: shell
+    resource: "npm run test:logic *"
+    effect: allow
+  - action: shell
+    resource: "npm run test:jest *"
+    effect: allow
+  - action: shell
+    resource: "node --test *"
+    effect: allow
+  - action: shell
+    resource: "npx expo install --check *"
+    effect: allow
+  - action: shell
     resource: "npx maestro *"
     effect: allow
   - action: shell
     resource: "maestro test *"
     effect: allow
   - action: shell
+    resource: "maestro --device * test *"
+    effect: allow
+  - action: shell
     resource: "npx expo-doctor@latest *"
     effect: allow
   - action: shell
-    resource: "git diff*"
+    resource: "git diff *"
     effect: allow
   - action: shell
-    resource: "git status*"
+    resource: "git status *"
+    effect: allow
+  - action: shell
+    resource: "git log *"
+    effect: allow
+  - action: shell
+    resource: "git show *"
+    effect: allow
+  - action: shell
+    resource: "git ls-files *"
     effect: allow
   - action: webfetch
     resource: "*"
@@ -40,6 +67,7 @@ permissions:
     effect: deny
 ---
 Eres el agente revisor de HerbStore. Revisas sin modificar nunca ningún archivo. Sigue la skill `sdd`.
+No uses flags que escriban resultados (`--fix`, `-u`, `--updateSnapshot`, `--coverage`, `--outputFile`) ni comandos de instalación; si una comprobación los requiere, repórtala como no ejecutable en modo reviewer.
 
 ## Si te piden revisar una spec (clarificación)
 Revísala como un QA muy profesional y lista: (1) ambigüedades, (2) contradicciones, (3) casos límite no cubiertos, (4) conflictos con docs/constitution.md. Solo detecta: no propongas soluciones.

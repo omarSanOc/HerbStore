@@ -40,6 +40,7 @@ const TEXT = {
     clearSearch: 'Limpiar búsqueda',
     offline: 'Sin conexión con el servidor',
     retry: 'Reintentar',
+    errorTitle: 'No se pudieron cargar los productos',
     inStock: 'Disponible',
     loading: 'Cargando productos',
     offlineNotice: 'Sin conexión. Se muestran los últimos productos recibidos.',
@@ -53,6 +54,7 @@ const TEXT = {
     clearSearch: 'Clear search',
     offline: 'No connection to the server',
     retry: 'Try again',
+    errorTitle: "Products couldn't be loaded",
     inStock: 'Available',
     loading: 'Loading products',
     offlineNotice: 'You are offline. Showing the last products received.',
@@ -83,8 +85,6 @@ describe('SearchScreen', () => {
     setAppForeground();
     mock = createMockFetch();
     mock.install();
-    mock.always('GET /brands', reply.success(wireBrands()));
-    mock.always('GET /categories', reply.success(wireCategories()));
   });
 
   afterEach(() => {
@@ -97,11 +97,24 @@ describe('SearchScreen', () => {
   const field = (language: Language) => screen.getByLabelText(TEXT[language].field);
   const type = (language: Language, text: string) => fireEvent.changeText(field(language), text);
 
+  /**
+   * `renderWithProviders` plus the answers the filter sheet needs: the sheet is mounted (closed)
+   * with the screen and reads its options in the language of THAT render, which only the render
+   * arguments know, so the permanent replies are set here and not in `beforeEach`.
+   */
+  type RenderArgs = Parameters<typeof renderWithProviders>;
+  const render = (ui: RenderArgs[0], options: NonNullable<RenderArgs[1]> = {}) => {
+    const language = options.language ?? 'es';
+    mock.always('GET /brands', reply.localized(wireBrands(), language));
+    mock.always('GET /categories', reply.localized(wireCategories(language), language));
+    return renderWithProviders(ui, options);
+  };
+
   describe.each<Language>(['es', 'en'])('in %s', (language) => {
     const text = TEXT[language];
 
     it('HISTORY: an empty field shows the recent searches (or says there are none) and asks nothing', async () => {
-      await renderWithProviders(<SearchScreen />, { language });
+      await render(<SearchScreen />, { language });
 
       expect(field(language)).toBeOnTheScreen();
       expect(screen.getByRole('header', { name: text.historyTitle })).toBeOnTheScreen();
@@ -110,8 +123,8 @@ describe('SearchScreen', () => {
     });
 
     it('TYPING: waits for the debounce (loading placeholder, no results), then asks ONCE with the last text', async () => {
-      mock.enqueue('GET /products', reply.success(wireProductPage(2)));
-      await renderWithProviders(<SearchScreen />, { language });
+      mock.enqueue('GET /products', reply.localized(wireProductPage(2), language));
+      await render(<SearchScreen />, { language });
 
       await type(language, 'v');
       await advance(100);
@@ -132,8 +145,8 @@ describe('SearchScreen', () => {
     });
 
     it('NO RESULTS: says so with the text searched, and "clear search" goes back to the history', async () => {
-      mock.enqueue('GET /products', reply.empty());
-      await renderWithProviders(<SearchScreen />, { language });
+      mock.enqueue('GET /products', reply.empty(undefined, { headers: { 'Content-Language': language } }));
+      await render(<SearchScreen />, { language });
 
       await type(language, 'zzz');
       await advance(410);
@@ -150,8 +163,8 @@ describe('SearchScreen', () => {
     // above "No results for «zzz»" says the same thing twice and makes the outline lie (two sections
     // where there is one).
     it('NO RESULTS has ONE heading: the title of the results is not repeated above "no results" (S-5)', async () => {
-      mock.enqueue('GET /products', reply.empty());
-      await renderWithProviders(<SearchScreen />, { language });
+      mock.enqueue('GET /products', reply.empty(undefined, { headers: { 'Content-Language': language } }));
+      await render(<SearchScreen />, { language });
 
       await type(language, 'zzz');
       await advance(410);
@@ -164,8 +177,12 @@ describe('SearchScreen', () => {
     });
 
     it('NO RESULTS with filters on also has ONE heading (S-5), and the chips stay', async () => {
-      mock.enqueue('GET /products', reply.success(wireProductPage(2)), reply.empty());
-      await renderWithProviders(<SearchScreen />, { language });
+      mock.enqueue(
+        'GET /products',
+        reply.localized(wireProductPage(2), language),
+        reply.empty(undefined, { headers: { 'Content-Language': language } }),
+      );
+      await render(<SearchScreen />, { language });
       await type(language, 'vita');
       await advance(410);
       await advance(10);
@@ -181,7 +198,7 @@ describe('SearchScreen', () => {
 
     it('OFFLINE: says there is no connection, keeps the field and "retry" asks again', async () => {
       mock.enqueue('GET /products', reply.networkError(), reply.networkError(), reply.networkError());
-      await renderWithProviders(<SearchScreen />, { language });
+      await render(<SearchScreen />, { language });
 
       await type(language, 'vita');
       await advanceInSteps(2_500);
@@ -189,7 +206,7 @@ describe('SearchScreen', () => {
       expect(screen.getByRole('header', { name: text.offline })).toBeOnTheScreen();
       expect(field(language).props.value).toBe('vita');
 
-      mock.enqueue('GET /products', reply.success(wireProductPage(1)));
+      mock.enqueue('GET /products', reply.localized(wireProductPage(1), language));
       await fireEvent.press(screen.getByRole('button', { name: text.retry }));
       await advance(10);
 
@@ -200,8 +217,8 @@ describe('SearchScreen', () => {
   // RF-17 (T3b). The results of a search stay on screen when their revalidation fails.
   it.each<Language>(['es', 'en'])('PREVIOUS RESULTS (%s): a failed revalidation keeps them with an offline notice and the field', async (language) => {
     const text = TEXT[language];
-    mock.enqueue('GET /products', reply.success(wireProductPage(2)));
-    await renderWithProviders(<SearchScreen />, { language });
+    mock.enqueue('GET /products', reply.localized(wireProductPage(2), language));
+    await render(<SearchScreen />, { language });
     await type(language, 'vita');
     await advanceInSteps(500);
     expect(screen.getByRole('header', { name: text.results('vita') })).toBeOnTheScreen();
@@ -220,9 +237,9 @@ describe('SearchScreen', () => {
   });
 
   it('SENDING a search (keyboard key) writes it in the history; merely typing does not', async () => {
-    mock.enqueue('GET /products', reply.success(wireProductPage(1)));
+    mock.enqueue('GET /products', reply.localized(wireProductPage(1), 'es'));
     const store = createTestStore();
-    await renderWithProviders(<SearchScreen />, { store });
+    await render(<SearchScreen />, { store });
 
     await type('es', 'vita');
     await advance(420);
@@ -233,16 +250,46 @@ describe('SearchScreen', () => {
   });
 
   it('a recent search can be run again from the history', async () => {
-    mock.enqueue('GET /products', reply.success(wireProductPage(1)));
+    mock.enqueue('GET /products', reply.localized(wireProductPage(1), 'es'));
     const store = createTestStore();
     store.dispatch(searchSent('magnesio'));
-    await renderWithProviders(<SearchScreen />, { store });
+    await render(<SearchScreen />, { store });
 
     await fireEvent.press(screen.getByRole('button', { name: 'magnesio' }));
     await advance(10);
 
     expect(queryOf(0)).toBe('magnesio');
     expect(field('es').props.value).toBe('magnesio');
+  });
+
+  // RF-39 (T4): the history is TEXT stored locally — it does not depend on the catalog still having
+  // any product. A search the list answers with a 404 gets the safe error (ONE request: a 4xx is
+  // never replayed), every entry stays in the store, and clearing the field brings the same history
+  // back, still runnable.
+  it('RF-39: a search the catalog answers 404 leaves the local history untouched and re-runnable', async () => {
+    mock.enqueue('GET /products', reply.clientError(404, { error: { code: 'NOT_FOUND' } }));
+    const store = createTestStore();
+    store.dispatch(searchSent('magnesio'));
+    await render(<SearchScreen />, { store });
+
+    expect(screen.getByRole('button', { name: 'magnesio' })).toBeOnTheScreen();
+
+    await fireEvent.press(screen.getByRole('button', { name: 'magnesio' }));
+    await advance(10);
+
+    expect(screen.getByRole('header', { name: TEXT.es.errorTitle })).toBeOnTheScreen(); // safe copy, no echo
+    expect(screen.getByRole('button', { name: TEXT.es.retry })).toBeOnTheScreen();
+    expect(productRequests()).toHaveLength(1);
+    expect(store.getState().searchHistory.entries).toEqual(['magnesio']);
+
+    // Clearing the field returns to the history: the same entry, untouched and usable again.
+    await fireEvent.changeText(field('es'), '');
+    await advance(10);
+
+    expect(screen.getByRole('header', { name: TEXT.es.historyTitle })).toBeOnTheScreen();
+    expect(screen.getByRole('button', { name: 'magnesio' })).toBeOnTheScreen();
+    expect(store.getState().searchHistory.entries).toEqual(['magnesio']);
+    expect(productRequests()).toHaveLength(1);
   });
 
   // The hint of the field (its placeholder) must leave the screen with the FIRST character.
@@ -265,7 +312,7 @@ describe('SearchScreen', () => {
 
     it('the first commit after a key already shows the text and no hint, WITHOUT the results view yet', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
-      mock.enqueue('GET /products', reply.success(wireProductPage(2)));
+      mock.enqueue('GET /products', reply.localized(wireProductPage(2), 'es'));
       const commits: { value: unknown; hint: boolean; resultsView: boolean }[] = [];
       let watching = false;
       const onRender: ProfilerOnRenderCallback = () => {
@@ -276,7 +323,7 @@ describe('SearchScreen', () => {
           resultsView: screen.queryByLabelText(TEXT.es.loading) !== null,
         });
       };
-      await renderWithProviders(
+      await render(
         <Profiler id="search" onRender={onRender}>
           <SearchScreen />
         </Profiler>,
@@ -294,8 +341,8 @@ describe('SearchScreen', () => {
 
     it('is drawn only while the field is empty, and again after "clear"', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
-      mock.enqueue('GET /products', reply.success(wireProductPage(1)));
-      await renderWithProviders(<SearchScreen />);
+      mock.enqueue('GET /products', reply.localized(wireProductPage(1), 'es'));
+      await render(<SearchScreen />);
       expect(screen.getByText(HINT, HIDDEN_FROM_READER)).toBeOnTheScreen();
 
       await type('es', 'vita');
@@ -306,7 +353,7 @@ describe('SearchScreen', () => {
     });
 
     it('iOS keeps the NATIVE placeholder: drawn nowhere, the prop carries it', async () => {
-      await renderWithProviders(<SearchScreen />);
+      await render(<SearchScreen />);
       expect(screen.queryByText(HINT, HIDDEN_FROM_READER)).not.toBeOnTheScreen();
       expect(field('es').props.placeholder).toBe(HINT);
     });
@@ -314,8 +361,8 @@ describe('SearchScreen', () => {
 
   describe('S-11 (decision): a search of only spaces is an empty search', () => {
     it('leaves the results view, drops its filters, and does not query', async () => {
-      mock.enqueue('GET /products', reply.success(wireProductPage(2)), reply.success(wireProductPage(2)), reply.success(wireProductPage(2)));
-      await renderWithProviders(<SearchScreen />);
+      mock.enqueue('GET /products', reply.localized(wireProductPage(2), 'es'), reply.localized(wireProductPage(2), 'es'), reply.localized(wireProductPage(2), 'es'));
+      await render(<SearchScreen />);
       await type('es', 'vita');
       await advance(420);
       await fireEvent.press(screen.getByRole('button', { name: TEXT.es.inStock }));

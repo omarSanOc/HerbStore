@@ -55,7 +55,7 @@ test('scanner exposes recoverable navigation failure and ignores late navigation
 
 test('invalid code blocks until explicit rearm', () => {
   const ready = readyState();
-  const invalid = scannerReducer(ready, { type: 'codeRead', code: '123' });
+  const invalid = scannerReducer(ready, { type: 'invalidRead' });
   assert.equal(invalid.kind, 'invalid-code');
   assert.equal(scannerReducer(invalid, { type: 'codeRead', code }).kind, 'invalid-code');
   assert.equal(scannerReducer(invalid, { type: 'rearm' }).kind, 'ready');

@@ -162,7 +162,8 @@ describe('hasActiveFilters / countActiveFilters', () => {
 
 describe('toProductQueryArgs: screen state to canonical query', () => {
   it('sends nothing for the default params but the category, the sort and the limit', () => {
-    assert.deepEqual(toProductQueryArgs({ category: 'vitamins' }, DEFAULT_LIST_PARAMS), {
+    assert.deepEqual(toProductQueryArgs({ category: 'vitamins' }, DEFAULT_LIST_PARAMS, 'es'), {
+      language: 'es',
       category: 'vitamins',
       sort: 'featured',
       limit: 20,
@@ -178,7 +179,7 @@ describe('toProductQueryArgs: screen state to canonical query', () => {
     ] as const;
     for (const [key, expected] of cases) {
       const params = toggleQuickFilter(DEFAULT_LIST_PARAMS, key);
-      const query = toProductQueryString(toProductQueryArgs({ category: 'vitamins' }, params), 1);
+      const query = toProductQueryString(toProductQueryArgs({ category: 'vitamins' }, params, 'es'), 1);
       assert.equal(query, `category=vitamins&${expected}&sort=featured&page=1&limit=20`, key);
     }
   });
@@ -193,14 +194,14 @@ describe('toProductQueryArgs: screen state to canonical query', () => {
       sort: 'best_selling',
     };
     assert.equal(
-      toProductQueryString(toProductQueryArgs({ category: 'minerals' }, params), 2),
+      toProductQueryString(toProductQueryArgs({ category: 'minerals' }, params, 'es'), 2),
       'category=minerals&inStock=true&minRating=4&ownBrand=true&subscribeAndSave=true&sort=best_selling&page=2&limit=20',
     );
   });
 
   it('gives different identities for different filters or sorts, and equal ones for equal state', () => {
     const identity = (params: ListParams) =>
-      JSON.stringify(toProductQueryArgs({ category: 'vitamins' }, params));
+      JSON.stringify(toProductQueryArgs({ category: 'vitamins' }, params, 'es'));
     const inStock = toggleQuickFilter(DEFAULT_LIST_PARAMS, 'inStock');
     assert.notEqual(identity(inStock), identity(DEFAULT_LIST_PARAMS));
     assert.notEqual(identity(setSort(inStock, 'rating')), identity(inStock));
@@ -212,13 +213,14 @@ describe('toProductQueryArgs: screen state to canonical query', () => {
     const args = toProductQueryArgs(
       { category: 'vitamins' },
       { ...DEFAULT_LIST_PARAMS, brands: ['B', 'a'], subcategories: ['vitamin-d'] },
+      'es',
     );
     assert.deepEqual(args.brand, ['a', 'b']);
     assert.deepEqual(args.subcategory, ['vitamin-d']);
   });
 
   it('keeps the search text for the future search screen', () => {
-    const args = toProductQueryArgs({ search: '  Vitamina   Ç ' }, DEFAULT_LIST_PARAMS);
+    const args = toProductQueryArgs({ search: '  Vitamina   Ç ' }, DEFAULT_LIST_PARAMS, 'es');
     assert.equal(args.q, 'vitamina c');
     assert.equal(args.category, undefined);
   });
@@ -319,6 +321,7 @@ describe('applyAdvancedFilters (draft to applied, T11)', () => {
         toProductQueryArgs(
           { category: 'vitamins' },
           applyAdvancedFilters(DEFAULT_LIST_PARAMS, { brands, subcategories }),
+          'es',
         ),
         1,
       );
@@ -338,6 +341,7 @@ describe('applyAdvancedFilters (draft to applied, T11)', () => {
         toProductQueryArgs(
           { category: 'vitamins' },
           applyAdvancedFilters(DEFAULT_LIST_PARAMS, { brands, subcategories: [] }),
+          'es',
         ),
       );
     assert.equal(identity(['A', 'b']), identity(['B', 'a']));

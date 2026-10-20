@@ -7,25 +7,47 @@
 //
 // Compose/Android: a `MockWebServer` with `enqueue(MockResponse())`. Swift: a `URLProtocol` stub.
 
+import type { SupportedLanguage } from '@/core/i18n/languages';
+
 type Behavior =
-  | Readonly<{ kind: 'respond'; status: number; body: unknown }>
+  | Readonly<{
+      kind: 'respond';
+      status: number;
+      body: unknown;
+      headers?: Readonly<Record<string, string>>;
+    }>
   | Readonly<{ kind: 'network-error' }>
   | Readonly<{ kind: 'hang' }>;
 
 export type MockReply = Readonly<{ behavior: Behavior; delayMs: number }>;
 
-type ReplyOptions = Readonly<{ delayMs?: number }>;
+type ReplyOptions = Readonly<{
+  delayMs?: number;
+  /** Response headers. No localization header is implied by a normal reply. */
+  headers?: Readonly<Record<string, string>>;
+}>;
 type SuccessOptions = ReplyOptions & Readonly<{ status?: number }>;
 
-const respond = (status: number, body: unknown, { delayMs = 0 }: ReplyOptions = {}): MockReply => ({
-  behavior: { kind: 'respond', status, body },
+const respond = (status: number, body: unknown, { delayMs = 0, headers }: ReplyOptions = {}): MockReply => ({
+  behavior: {
+    kind: 'respond',
+    status,
+    body,
+    ...(headers === undefined ? {} : { headers }),
+  },
   delayMs,
 });
 
 /** Builders for what the server does. The body of an error is optional JSON. */
 export const reply = {
   /** 2xx with a JSON body (200 unless `status` says otherwise). */
-  success: (body: unknown, { status = 200, delayMs }: SuccessOptions = {}) => respond(status, body, { delayMs }),
+  success: (body: unknown, { status = 200, ...options }: SuccessOptions = {}) => respond(status, body, options),
+  /** 2xx localized JSON with the explicit response language required by the HTTP boundary. */
+  localized: (body: unknown, language: SupportedLanguage, { status = 200, ...options }: SuccessOptions = {}) =>
+    respond(status, body, {
+      ...options,
+      headers: { ...options.headers, 'Content-Language': language },
+    }),
   /** 200 with an empty catalog page (`GET /products` shape); pass `body` for another endpoint. */
   empty: (body: unknown = { items: [], page: 1, totalPages: 0, total: 0 }, options: ReplyOptions = {}) =>
     respond(200, body, options),
@@ -87,10 +109,11 @@ function bodyOf(init: RequestInit | undefined): unknown {
 }
 
 /** A fake response with only what the app reads (`ok`, `status`, `json()`), typed as `Response`. */
-function toResponse(status: number, body: unknown): Response {
+function toResponse(status: number, body: unknown, headers?: Readonly<Record<string, string>>): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: new Headers(headers),
     json: () => Promise.resolve(JSON.parse(JSON.stringify(body))),
   } as Response;
 }
@@ -136,7 +159,7 @@ export function createMockFetch() {
         signal?.removeEventListener('abort', onAbort);
         const { behavior } = next;
         if (behavior.kind === 'network-error') reject(new TypeError('Network request failed'));
-        else if (behavior.kind === 'respond') resolve(toResponse(behavior.status, behavior.body));
+        else if (behavior.kind === 'respond') resolve(toResponse(behavior.status, behavior.body, behavior.headers));
         // 'hang': stays pending until the abort listener above rejects it.
       };
 

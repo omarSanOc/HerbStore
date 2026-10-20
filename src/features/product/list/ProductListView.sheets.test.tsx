@@ -74,9 +74,6 @@ describe('ProductListView sheets and the screen reader', () => {
     jest.mocked(useReducedMotionPreference).mockReturnValue(false);
     mock = createMockFetch();
     mock.install();
-    mock.always('GET /products', reply.success(wireProductPage(3)));
-    mock.always('GET /brands', reply.success(wireBrands()));
-    mock.always('GET /categories', reply.success(wireCategories()));
     focus = jest.spyOn(AccessibilityInfo, 'sendAccessibilityEvent');
     announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility');
     focus.mockClear();
@@ -98,6 +95,10 @@ describe('ProductListView sheets and the screen reader', () => {
   };
 
   async function mount(language: Language) {
+    // The list and the options of the sheet are read in the language of the screen under test.
+    mock.always('GET /products', reply.localized(wireProductPage(3), language));
+    mock.always('GET /brands', reply.localized(wireBrands(), language));
+    mock.always('GET /categories', reply.localized(wireCategories(language), language));
     await renderWithProviders(
       <ProductListView header={null} onOpenProduct={jest.fn()} scope={{ category: 'vitamins' }} />,
       { language },

@@ -11,13 +11,16 @@
 import { act, fireEvent, screen } from '@testing-library/react-native';
 
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
-import { wireBrands, wireCategories, wireProductPage } from '@/test/fixtures';
+import { i18n } from '@/core/i18n';
+import { wireBrands, wireCategories, wireProduct, wireProductPage } from '@/test/fixtures';
 import { createMockFetch, reply } from '@/test/mock-fetch';
 import { setAppForeground } from '@/test/app-state';
 import { resetRouterMock } from '@/test/mock-expo-router';
 import { emitReconnect, resetReconnectionMock } from '@/test/mock-reconnection';
 import { renderWithProviders } from '@/test/render-with-providers';
 
+import { productsApi } from '../data/products-api';
+import { buildProductQueryArgs } from '../logic/product-query';
 import { ProductListFooterRow } from './ProductListStatus';
 import { ProductListView } from './ProductListView';
 
@@ -83,9 +86,6 @@ describe('ProductListView states', () => {
     jest.mocked(useReducedMotionPreference).mockReturnValue(false);
     mock = createMockFetch();
     mock.install();
-    // The advanced-filters sheet is mounted (closed) and reads its options; they are not under test.
-    mock.always('GET /brands', reply.success(wireBrands()));
-    mock.always('GET /categories', reply.success(wireCategories()));
   });
 
   afterEach(() => {
@@ -97,6 +97,10 @@ describe('ProductListView states', () => {
   const productRequests = () => mock.calls.filter(({ path }) => path === '/products');
 
   async function mount(language: Language = 'es', onOpenProduct = jest.fn()) {
+    // The advanced-filters sheet is mounted (closed) and reads its options in the language of the
+    // screen (they are not under test), so the permanent answers belong to THAT language.
+    mock.always('GET /brands', reply.localized(wireBrands(), language));
+    mock.always('GET /categories', reply.localized(wireCategories(language), language));
     const view = await renderWithProviders(
       <ProductListView header={null} onOpenProduct={onOpenProduct} scope={{ category: 'vitamins' }} />,
       { language },
@@ -108,7 +112,7 @@ describe('ProductListView states', () => {
     const text = TEXT[language];
 
     it('LOADING: shows one busy, named placeholder and offers no retry', async () => {
-      mock.enqueue('GET /products', reply.success(wireProductPage(2), { delayMs: 1_000 }));
+      mock.enqueue('GET /products', reply.localized(wireProductPage(2), language, { delayMs: 1_000 }));
       await mount(language);
 
       expect(screen.getByLabelText(text.loading)).toBeOnTheScreen();
@@ -122,7 +126,7 @@ describe('ProductListView states', () => {
     });
 
     it('READY: shows the counter and each product as a button; tapping one opens it', async () => {
-      mock.enqueue('GET /products', reply.success(wireProductPage(3)));
+      mock.enqueue('GET /products', reply.localized(wireProductPage(3), language));
       const { onOpenProduct } = await mount(language);
       await advance(10);
 
@@ -135,7 +139,7 @@ describe('ProductListView states', () => {
     });
 
     it('EMPTY: says there is nothing (not an error) and has no retry', async () => {
-      mock.enqueue('GET /products', reply.empty());
+      mock.enqueue('GET /products', reply.empty(undefined, { headers: { 'Content-Language': language } }));
       await mount(language);
       await advance(10);
 
@@ -145,7 +149,7 @@ describe('ProductListView states', () => {
     });
 
     it('EMPTY because of filters: offers "clear filters" and pressing it asks for the full list again', async () => {
-      mock.enqueue('GET /products', reply.success(wireProductPage(2)), reply.empty());
+      mock.enqueue('GET /products', reply.localized(wireProductPage(2), language), reply.empty(undefined, { headers: { 'Content-Language': language } }));
       await mount(language);
       await advance(10);
 
@@ -172,7 +176,7 @@ describe('ProductListView states', () => {
       expect(screen.getByRole('header', { name: text.errorTitle })).toBeOnTheScreen();
       expect(screen.queryByText(text.offlineTitle)).not.toBeOnTheScreen();
 
-      mock.enqueue('GET /products', reply.success(wireProductPage(2)));
+      mock.enqueue('GET /products', reply.localized(wireProductPage(2), language));
       await fireEvent.press(screen.getByRole('button', { name: text.retry }));
       await advance(10);
 
@@ -189,7 +193,7 @@ describe('ProductListView states', () => {
       expect(screen.getByRole('header', { name: text.offlineTitle })).toBeOnTheScreen();
       expect(screen.queryByText(text.errorTitle)).not.toBeOnTheScreen();
 
-      mock.enqueue('GET /products', reply.success(wireProductPage(1)));
+      mock.enqueue('GET /products', reply.localized(wireProductPage(1), language));
       await fireEvent.press(screen.getByRole('button', { name: text.retry }));
       await advance(10);
 
@@ -234,7 +238,7 @@ describe('ProductListView states', () => {
     const text = TEXT[language];
 
     async function loadThenGoStale() {
-      mock.enqueue('GET /products', reply.success(wireProductPage(2)));
+      mock.enqueue('GET /products', reply.localized(wireProductPage(2), language));
       await mount(language);
       await advance(10);
       expect(screen.getByText(text.count(2))).toBeOnTheScreen();
@@ -255,7 +259,7 @@ describe('ProductListView states', () => {
       expect(screen.getByText(text.count(2))).toBeOnTheScreen();
       expect(screen.queryByRole('header', { name: text.offlineTitle })).not.toBeOnTheScreen();
 
-      mock.enqueue('GET /products', reply.success(wireProductPage(3)));
+      mock.enqueue('GET /products', reply.localized(wireProductPage(3), language));
       await fireEvent.press(screen.getByRole('button', { name: text.retry }));
       await advance(10);
 
@@ -275,6 +279,60 @@ describe('ProductListView states', () => {
       expect(screen.getByText(text.failedNotice)).toBeOnTheScreen();
       expect(screen.queryByText(text.offlineNotice)).not.toBeOnTheScreen();
       expect(screen.getByText(text.count(2))).toBeOnTheScreen();
+    });
+  });
+
+  // RF-24, RNF-3, RNF-5 (T2). The language is part of the query identity: switching it opens the
+  // entry of the new language, and the answer of the OLD one, when it finally lands, writes only
+  // its own entry — the screen never shows the previous language under the new chrome.
+  describe('a language change while the first read is in flight', () => {
+    const spanishPage = { ...wireProductPage(1), items: [wireProduct(1, { name: 'Polvo en espanol' })] };
+    const englishPage = { ...wireProductPage(1), items: [wireProduct(1, { name: 'English powder' })] };
+    const listArgs = (language: Language) => buildProductQueryArgs({ category: 'vitamins', language });
+
+    it('never paints the previous language and keeps the two entries apart', async () => {
+      mock.enqueue(
+        'GET /products',
+        reply.localized(spanishPage, 'es', { delayMs: 3_000 }),
+        // The new language answers, but not instantly: the "chrome changed, content did not
+        // arrive yet" moment has to be observable before the English payload lands.
+        reply.localized(englishPage, 'en', { delayMs: 500 }),
+      );
+      const { store } = await mount('es');
+      await advance(0);
+
+      expect(productRequests()).toHaveLength(1);
+      expect(productRequests()[0]?.headers['accept-language']).toBe('es');
+      expect(screen.getByLabelText(TEXT.es.loading)).toBeOnTheScreen();
+
+      // The sheet asks for its options again in the new language: answer with that language.
+      mock.always('GET /brands', reply.localized(wireBrands(), 'en'));
+      mock.always('GET /categories', reply.localized(wireCategories('en'), 'en'));
+      await act(async () => {
+        await i18n.changeLanguage('en');
+      });
+      await advance(10);
+
+      // English chrome and STILL no content: the Spanish payload is not painted under it.
+      expect(screen.getByLabelText(TEXT.en.loading)).toBeOnTheScreen();
+      expect(screen.queryByText('Polvo en espanol')).not.toBeOnTheScreen();
+      expect(productRequests()).toHaveLength(2);
+      expect(productRequests()[1]?.headers['accept-language']).toBe('en');
+
+      await advance(510);
+      expect(screen.getByText(TEXT.en.count(1))).toBeOnTheScreen();
+      expect(screen.getByText('English powder')).toBeOnTheScreen();
+
+      // The slow Spanish answer arrives afterwards: it only fills the `es` entry.
+      await advance(3_000);
+      await advance(10);
+      expect(screen.getByText('English powder')).toBeOnTheScreen();
+      expect(screen.queryByText('Polvo en espanol')).not.toBeOnTheScreen();
+
+      const spanish = productsApi.endpoints.getProducts.select(listArgs('es'))(store.getState());
+      const english = productsApi.endpoints.getProducts.select(listArgs('en'))(store.getState());
+      expect(JSON.stringify(spanish?.data ?? '')).toContain('Polvo en espanol');
+      expect(JSON.stringify(english?.data ?? '')).toContain('English powder');
     });
   });
 

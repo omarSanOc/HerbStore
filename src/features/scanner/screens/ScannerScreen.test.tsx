@@ -27,7 +27,7 @@ jest.mock('expo-router', () => jest.requireActual('@/test/mock-expo-router').exp
 jest.mock('@/core/network/reconnection', () => jest.requireActual('@/test/mock-reconnection').reconnectionModule);
 
 // The `mock` prefix lets the hoisted factory read the variable.
-let mockCamera: { onCameraReady?: () => void; onBarcodeScanned?: (result: { data: string }) => void } = {};
+let mockCamera: { onCameraReady?: () => void; onBarcodeScanned?: (result: { data: string; type?: string }) => void } = {};
 jest.mock('expo-camera', () => ({
   Camera: { getCameraPermissionsAsync: jest.fn(), requestCameraPermissionsAsync: jest.fn() },
   CameraView: (props: typeof mockCamera) => {
@@ -124,7 +124,7 @@ describe('ScannerScreen: a lookup that cannot reach the server', () => {
       expect(screen.getByRole('button', { name: text.retry })).toBeOnTheScreen();
       expect(screen.getByRole('button', { name: text.cancel })).toBeOnTheScreen();
 
-      mock.enqueue(ROUTE, reply.success(wireProduct(4, { ean13: VALID, stock: 7 })));
+      mock.enqueue(ROUTE, reply.localized(wireProduct(4, { ean13: VALID, stock: 7 }), language));
       await fireEvent.press(screen.getByRole('button', { name: text.retry }));
       await advance(10);
 
@@ -137,7 +137,7 @@ describe('ScannerScreen: a lookup that cannot reach the server', () => {
     it.each([
       { label: 'a 503', failure: () => reply.serverError(503), title: 'temporaryError' as const, wait: ALL_ATTEMPTS_MS },
       { label: 'a timeout', failure: () => reply.timeout(), title: 'timeout' as const, wait: 8_000 },
-      { label: 'a 200 with an invalid body', failure: () => reply.success({ nope: true }), title: 'invalidData' as const, wait: ALL_ATTEMPTS_MS },
+      { label: 'a 200 with an invalid body', failure: () => reply.localized({ nope: true }, language), title: 'invalidData' as const, wait: ALL_ATTEMPTS_MS },
     ])('$label: the title is the translated sentence, with Retry and Cancel', async ({ failure, title, wait }) => {
       mock.always(ROUTE, failure());
       await scan(language);
@@ -206,14 +206,22 @@ describe('ScannerScreen: a lookup that cannot reach the server', () => {
 //
 // Compose: `Column(Modifier.verticalScroll(rememberScrollState()))`. SwiftUI: a `ScrollView` around the `VStack`.
 describe('ScannerScreen: its message states scroll', () => {
+  let cameraMock: ReturnType<typeof createMockFetch>;
+
   beforeEach(() => {
     jest.useFakeTimers();
     resetRouterMock();
     resetReconnectionMock();
     mockCamera = {};
     setAppForeground();
+    cameraMock = createMockFetch();
+    cameraMock.install();
     jest.mocked(Camera.getCameraPermissionsAsync).mockResolvedValue({ granted: true, canAskAgain: true, status: 'granted' as never, expires: 'never' });
     jest.mocked(Camera.requestCameraPermissionsAsync).mockResolvedValue({ granted: true, canAskAgain: true, status: 'granted' as never, expires: 'never' });
+  });
+
+  afterEach(() => {
+    cameraMock.uninstall();
   });
 
   it.each<Language>(['es', 'en'])('the first screen (preview, in %s) keeps "Continue" and "Close" inside a ScrollView', async (language) => {
@@ -235,6 +243,35 @@ describe('ScannerScreen: its message states scroll', () => {
 
     expect(screen.queryByTestId('scanner-message-scroll')).not.toBeOnTheScreen();
     expect(screen.getByRole('button', { name: TEXT.en.cancel })).toBeOnTheScreen();
+  });
+
+  it('configures CameraView for both EAN-13 and QR without changing the accessible flow', async () => {
+    await renderWithProviders(<ScannerScreen />, { language: 'en' });
+    await fireEvent.press(screen.getByRole('button', { name: TEXT.en.continue }));
+    await advance(0);
+    await act(async () => {
+      mockCamera.onCameraReady?.();
+    });
+
+    expect(mockCamera).toHaveProperty('barcodeScannerSettings', { barcodeTypes: ['ean13', 'qr'] });
+    expect(screen.getByRole('button', { name: TEXT.en.cancel })).toBeOnTheScreen();
+  });
+
+  it.each<Language>(['es', 'en'])('shows an accessible localized invalid-code state for a rejected QR without a request (%s)', async (language) => {
+    const text = TEXT[language];
+    await renderWithProviders(<ScannerScreen />, { language });
+    await fireEvent.press(screen.getByRole('button', { name: text.continue }));
+    await advance(0);
+    await act(async () => {
+      mockCamera.onCameraReady?.();
+    });
+    await act(async () => {
+      mockCamera.onBarcodeScanned?.({ type: 'qr', data: 'https://example.test/not-a-product' });
+    });
+
+    expect(screen.getByRole('header', { name: language === 'es' ? 'El código no es un EAN-13 válido.' : 'The code is not a valid EAN-13.' })).toBeOnTheScreen();
+    expect(screen.getByRole('button', { name: language === 'es' ? 'Aceptar' : 'OK' })).toBeOnTheScreen();
+    expect(cameraMock.calls).toHaveLength(0);
   });
 
   // The title of every state is one or two long words ("Consultando producto…"): at iOS AX5 (about 3.5x,

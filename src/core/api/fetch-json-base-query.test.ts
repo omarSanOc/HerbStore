@@ -21,10 +21,10 @@ function parseName(payload: unknown): string | undefined {
   return undefined;
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
+function jsonResponse(body: unknown, status = 200, headers: HeadersInit = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...Object.fromEntries(new Headers(headers)) },
   });
 }
 
@@ -65,6 +65,53 @@ describe('createFetchJsonBaseQuery', () => {
     );
 
     assert.deepEqual(seen, { url: 'http://api.test/home?fail=true', method: 'GET' });
+  });
+
+  it('forwards the localized opt-in and maps a matching response to data', async () => {
+    let requestHeaders: Headers | undefined;
+
+    const result = await run(
+      async (_url, init) => {
+        requestHeaders = new Headers(init?.headers);
+        return jsonResponse({ name: 'Home' }, 200, { 'Content-Language': 'en' });
+      },
+      { path: '/home', language: 'en', parse: parseName },
+    );
+
+    assert.equal(requestHeaders?.get('Accept-Language'), 'en');
+    assert.deepEqual(result, { data: 'Home' });
+  });
+
+  it('maps a missing, invalid or different localized response header to invalid', async () => {
+    for (const contentLanguage of [undefined, 'fr', 'en'] as const) {
+      const result = await run(
+        async () =>
+          jsonResponse(
+            { name: 'Inicio' },
+            200,
+            contentLanguage === undefined ? {} : { 'Content-Language': contentLanguage },
+          ),
+        { path: '/home', language: 'es', parse: parseName },
+      );
+
+      assert.deepEqual(result, { error: { kind: 'invalid' } });
+    }
+  });
+
+  it('keeps non-localized health and order responses compatible without Content-Language', async () => {
+    const health = await run(async () => jsonResponse({ name: 'healthy' }), {
+      path: '/health',
+      parse: parseName,
+    });
+    const order = await run(async () => jsonResponse({ name: 'confirmed' }), {
+      path: '/orders',
+      method: 'POST',
+      body: {},
+      parse: parseName,
+    });
+
+    assert.deepEqual(health, { data: 'healthy' });
+    assert.deepEqual(order, { data: 'confirmed' });
   });
 
   it('maps a rejection with FetchError (no response) to { error: { kind: network } }', async () => {
@@ -152,8 +199,13 @@ describe('createFetchJsonBaseQuery', () => {
     const events: SettledRequest[] = [];
 
     await run(
-      async () => jsonResponse({ name: 'x' }),
-      { path: '/products?q=vitamina&page=1', parse: parseName },
+      async () => jsonResponse({ name: 'x' }, 200, { 'Content-Language': 'es' }),
+      {
+        path: '/products?q=vitamina&page=1',
+        language: 'es',
+        headers: { 'X-Private-Input': 'do-not-log' },
+        parse: parseName,
+      },
       undefined,
       (event) => events.push(event),
     );

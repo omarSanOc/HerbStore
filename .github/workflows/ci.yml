@@ -27,9 +27,7 @@ jobs:
         with:
           node-version: 22.x # package.json requires >=22.18
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            mock-server/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install app dependencies
         run: npm ci
@@ -42,9 +40,3 @@ jobs:
 
       - name: App tests (node:test and Jest)
         run: npm test
-
-      - name: Install mock server dependencies
-        run: npm --prefix mock-server ci
-
-      - name: Mock server tests
-        run: npm --prefix mock-server test

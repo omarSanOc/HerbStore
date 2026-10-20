@@ -1,5 +1,5 @@
 /**
- * Types of `GET /home`, taken from the real server (`mock-server/src/catalog/home-data.js`).
+ * Types of `GET /home` of the persistent HerbStore API (observable contract: spec 007, RF-8).
  *
  * These are what the app TRUSTS after validation (`parseHomePayload`), not what the wire
  * carries: the product is a projection with only the fields Home renders. The full product

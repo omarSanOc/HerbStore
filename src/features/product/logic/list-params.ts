@@ -7,6 +7,7 @@
 // result is the identity of the RTK Query entry: change a filter and the identity changes, so
 // the list starts again on page 1 and on top (RF-15). Nothing here is Redux or a URL parameter.
 
+import type { SupportedLanguage } from '../../../core/i18n/languages.ts';
 import {
   buildProductQueryArgs,
   PRODUCT_SORTS,
@@ -166,9 +167,20 @@ export function hasActiveFilters(params: ListParams): boolean {
   return countActiveFilters(params) > 0;
 }
 
-/** Screen state to the canonical identity of the query (`buildProductQueryArgs` normalizes it). */
-export function toProductQueryArgs(scope: ListScope, params: ListParams): ProductQueryArgs {
+/**
+ * Screen state to the canonical identity of the query (`buildProductQueryArgs` normalizes it).
+ *
+ * The language is a separate parameter on purpose: it is neither what the route decides (`scope`)
+ * nor what the user toggles (`params`), but the environment the read happens in. It becomes part
+ * of the RTK Query identity, so changing it re-queries without touching the filters chosen.
+ */
+export function toProductQueryArgs(
+  scope: ListScope,
+  params: ListParams,
+  language: SupportedLanguage,
+): ProductQueryArgs {
   return buildProductQueryArgs({
+    language,
     ...scope,
     inStock: params.inStock,
     topRated: params.topRated,

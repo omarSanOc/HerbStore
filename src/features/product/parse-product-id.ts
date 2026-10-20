@@ -1,4 +1,4 @@
-// Matches the ids produced by `mock-server/src/catalog/generate-catalog.js`:
+// Matches the catalog ids served by the persistent HerbStore API:
 // `product-<6-digit seed token>-<3-digit position>`, e.g. `product-261009-001`.
 const PRODUCT_ID_PATTERN = /^product-\d{6}-\d{3}$/;
 

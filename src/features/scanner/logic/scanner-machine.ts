@@ -8,7 +8,7 @@ export type ScannerState =
   | { kind: 'mounting-camera'; epoch: number }
   | { kind: 'unavailable'; reason: string; epoch: number }
   | { kind: 'ready'; epoch: number }
-  | { kind: 'invalid-code'; code: string; epoch: number }
+  | { kind: 'invalid-code'; epoch: number }
   | { kind: 'querying'; code: string; epoch: number }
   | { kind: 'offline'; code: string; epoch: number }
   | { kind: 'timeout'; code: string; epoch: number }
@@ -26,6 +26,7 @@ export type ScannerEvent =
   | { type: 'cameraReady' }
   | { type: 'cameraUnavailable'; reason: string }
   | { type: 'codeRead'; code: string }
+  | { type: 'invalidRead' }
   | { type: 'queryFinished'; epoch: number; product?: ProductDetail; error?: ApiError }
   | { type: 'navigationSucceeded' }
   | { type: 'navigationFailed' }
@@ -71,7 +72,9 @@ export function scannerReducer(state: ScannerState, event: ScannerEvent): Scanne
       if (state.kind !== 'ready') return state;
       return isValidEan13(event.code)
         ? { kind: 'querying', code: event.code, epoch: state.epoch + 1 }
-        : { kind: 'invalid-code', code: event.code, epoch: state.epoch };
+        : { kind: 'invalid-code', epoch: state.epoch };
+    case 'invalidRead':
+      return state.kind === 'ready' ? { kind: 'invalid-code', epoch: state.epoch } : state;
     case 'queryFinished':
       if (state.kind !== 'querying' || state.epoch !== event.epoch) return state;
       if (event.product !== undefined) return { ...state, kind: 'navigating', product: event.product };

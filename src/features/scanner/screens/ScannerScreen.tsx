@@ -56,10 +56,10 @@ export function ScannerScreen() {
         </AppText>
         <CameraView
           active={controller.cameraActive}
-          barcodeScannerSettings={{ barcodeTypes: ['ean13'] }}
+          barcodeScannerSettings={{ barcodeTypes: ['ean13', 'qr'] }}
           facing="back"
           mute
-          onBarcodeScanned={(result) => controller.readCode(result.data)}
+          onBarcodeScanned={(result) => controller.readCode(result)}
           onCameraReady={controller.cameraReady}
           onMountError={(error) => controller.mountError(error.message)}
           style={styles.camera}

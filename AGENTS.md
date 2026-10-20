@@ -8,7 +8,7 @@ App didáctica de e-commerce de suplementos para aprender React Native y prepara
 - i18next/expo-localization, expo-camera, expo-notifications, expo-haptics y un Expo Module en Kotlin/Swift.
 - Rutas delgadas en `src/app/`; lógica y UI agrupadas por feature en `src/features/`.
 - Infraestructura compartida en `src/core/` y componentes/tokens en `src/design-system/`.
-- Backend mock independiente en `mock-server/` con Node, Express y Faker con seed fija.
+- API persistente HerbStore (OpenAPI 3.1) como única fuente remota; el repo no incluye backend y el origen se declara con `EXPO_PUBLIC_API_ORIGIN`.
 - `ios/` y `android/` son salidas generadas por CNG y permanecen ignoradas por Git.
 
 ## Convenciones
@@ -21,7 +21,7 @@ App didáctica de e-commerce de suplementos para aprender React Native y prepara
 - No uses marcas, logos ni imágenes reales; HerbStore y sus datos son ficticios.
 
 ## Datos
-- El catálogo proviene del servidor Express; RTK Query gestiona requests, caché, reintentos y paginación.
+- El catálogo proviene de la API persistente (`EXPO_PUBLIC_API_ORIGIN`); RTK Query gestiona requests, caché, reintentos y paginación.
 - Redux guarda solo estado global de cliente; el carrito se persiste mediante redux-persist + MMKV.
 - La búsqueda mantiene historial persistido y el checkout usa una Idempotency-Key estable por intento.
 - Moneda MXN/USD con `Intl.NumberFormat`; interfaz localizada en español e inglés.
@@ -62,9 +62,9 @@ npx expo run:ios --device        # Compilar/instalar iOS
 npx expo lint                    # ESLint
 npx tsc --noEmit                 # TypeScript strict
 npx expo-doctor@latest           # Diagnóstico Expo
-npm --prefix mock-server run dev # Servidor mock, cuando esté creado
+npm run verify:live-api          # Smoke vivo opt-in; exige HERBSTORE_LIVE_API_ORIGIN
 ```
-- Tests: `npm test` ejecuta ambos runners; `npm run test:logic` (`node:test`, `*.test.ts`) y `npm run test:jest` (Jest + RNTL, `*.test.tsx`). La extensión decide el runner. Maestro para E2E cuando esa infraestructura esté disponible.
+- Tests: `npm test` ejecuta ambos runners SIN red ni API viva; `npm run test:logic` (`node:test`, `*.test.ts`) y `npm run test:jest` (Jest + RNTL, `*.test.tsx`). La extensión decide el runner. El smoke vivo es opt-in y no muta (`HERBSTORE_LIVE_API_ORIGIN=http://localhost:3001 npm run verify:live-api`, solo GET; nunca forma parte de `npm test`). Maestro cubre el flujo de compra contra la API persistente SIN reset: `.maestro/checkout.yaml` exige `-e E2E_EXCLUSIVE=true` y se detiene como `INCONCLUSA` antes de mutar si no hay exclusividad.
 - No ejecutes `npm audit fix --force`; puede sustituir versiones coordinadas por Expo.
 
 ## Memoria

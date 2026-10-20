@@ -1,5 +1,4 @@
 import { FlatList, StyleSheet, useWindowDimensions, View } from 'react-native';
-import { useTranslation } from 'react-i18next';
 
 import { AppText, spacing } from '@/design-system';
 import { ProductCard } from '@/features/product/components/ProductCard';
@@ -29,15 +28,15 @@ type ProductSectionProps = {
  * with the width of its cell.
  */
 export function ProductSection({ section, onOpenProduct }: Readonly<ProductSectionProps>) {
-  const { t } = useTranslation();
   const { fontScale } = useWindowDimensions();
   const cardWidth = getProductCardWidth(PRODUCT_CARD_WIDTH, fontScale);
 
   return (
     <View style={styles.section}>
       <AppText accessibilityRole="header" variant="subheading">
-        {/* Our resources by section id; the server text (English) is only the fallback. */}
-        {t(`home.sections.${section.id}`, { defaultValue: section.title })}
+        {/* RF-8, RF-22: copy OF THE CATALOG, printed as the localized response sent it (no
+            translation by section id: i18n owns the chrome, not the words of the row). */}
+        {section.title}
       </AppText>
       <FlatList
         contentContainerStyle={styles.content}

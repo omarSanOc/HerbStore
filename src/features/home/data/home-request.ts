@@ -1,42 +1,34 @@
+import type { SupportedLanguage } from '../../../core/i18n/languages.ts';
 import type { HomeData } from '../contracts/home.ts';
 import { parseHomePayload } from '../contracts/parse-home.ts';
-import type { HomeFixture } from './home-fixtures.ts';
 
 /**
- * What the `getHome` endpoint asks the base query for: a path and the validator of its payload.
+ * What the `getHome` endpoint asks the base query for: a path, the language of the read and the
+ * validator of its payload. `language` is the identity of the request: the base query turns it into
+ * `Accept-Language` and requires the matching `Content-Language` (T1), so `getHome('es')` and
+ * `getHome('en')` are two cache entries and two requests (RF-22 to RF-24).
  * `parse` returns exactly `HomeData | undefined` (not `unknown`), so the endpoint can state its
  * result type with a single, bounded cast (see `home-api.ts`).
  */
 export type HomeRequest = {
   path: string;
+  language: SupportedLanguage;
   parse: (payload: unknown) => HomeData | undefined;
 };
 
 /**
- * `GET /home`, pure and free of React Native so it is tested on its own. The development fixture
- * (already gated by `resolveHomeFixture`) is applied here:
- *
- * - `server-fail` asks the real server for its simulated 500 (`?fail=true`).
- * - the data fixtures transform an already valid payload, so a real failure is never hidden.
- *
- * `applyFixture` is INJECTED instead of imported: a static `import` of `home-fixtures.ts` would put
- * the fixtures in the release bundle even though `fixture` is always `undefined` there (Metro
- * bundles what is imported, not what runs). `home-api.ts` supplies it only under `__DEV__`
- * (see `src/test/production-bundle-audit.test.ts`).
+ * `GET /home`, pure and free of React Native so it is tested on its own. The language comes FIRST
+ * because every Home read is localized. The path is a fixed `/home` with no query string: the
+ * persistent API is the only source (spec 007, T8). The dev-only runtime fixtures that used to
+ * swap this answer (an env-activated fixture switch and a simulated-failure query) were retired
+ * with the local backend; see the bundle audit for the anti-regression guard.
  *
  * Timeout (8 s), retries and the error taxonomy are the base query's job, not this file's.
  */
-export function buildHomeRequest(
-  fixture: HomeFixture | undefined,
-  applyFixture?: (fixture: HomeFixture, data: HomeData) => HomeData,
-): HomeRequest {
+export function buildHomeRequest(language: SupportedLanguage): HomeRequest {
   return {
-    path: fixture === 'server-fail' ? '/home?fail=true' : '/home',
-    parse: (payload) => {
-      const data = parseHomePayload(payload);
-      return data !== undefined && fixture !== undefined && applyFixture !== undefined
-        ? applyFixture(fixture, data)
-        : data;
-    },
+    path: '/home',
+    language,
+    parse: parseHomePayload,
   };
 }

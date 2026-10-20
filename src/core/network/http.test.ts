@@ -14,10 +14,10 @@ function parseName(payload: unknown): string | undefined {
   return undefined;
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
+function jsonResponse(body: unknown, status = 200, headers: HeadersInit = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...Object.fromEntries(new Headers(headers)) },
   });
 }
 
@@ -209,6 +209,76 @@ describe('fetchJson', () => {
     controller.abort();
 
     assert.equal(outcome.kind, 'ok');
+  });
+
+  describe('localized responses', () => {
+    it('sends Accept-Language and accepts an exactly matching Content-Language', async () => {
+      let requestHeaders: Headers | undefined;
+
+      const outcome = await fetchJson('http://x.test/home', {
+        language: 'es',
+        parse: parseName,
+        fetchImpl: async (_url, init) => {
+          requestHeaders = new Headers(init?.headers);
+          return jsonResponse({ name: 'Inicio' }, 200, { 'Content-Language': 'es' });
+        },
+      });
+
+      assert.equal(requestHeaders?.get('Accept-Language'), 'es');
+      assert.deepEqual(outcome, { kind: 'ok', data: 'Inicio', status: 200 });
+    });
+
+    for (const [label, contentLanguage] of [
+      ['missing', undefined],
+      ['invalid', 'fr'],
+      ['different', 'en'],
+    ] as const) {
+      it(`returns invalid before parsing when Content-Language is ${label}`, async () => {
+        let parseCalls = 0;
+        const outcome = await fetchJson('http://x.test/home', {
+          language: 'es',
+          parse: (payload, status) => {
+            parseCalls += 1;
+            return parseName(payload);
+          },
+          fetchImpl: async () =>
+            jsonResponse(
+              { name: 'Inicio' },
+              200,
+              contentLanguage === undefined ? {} : { 'Content-Language': contentLanguage },
+            ),
+        });
+
+        assert.deepEqual(outcome, { kind: 'invalid' });
+        assert.equal(parseCalls, 0);
+      });
+    }
+
+    it('does not require Content-Language for health or order requests without the opt-in', async () => {
+      const health = await fetchJson('http://x.test/health', {
+        parse: parseName,
+        fetchImpl: async () => jsonResponse({ name: 'healthy' }),
+      });
+      const order = await fetchJson('http://x.test/orders', {
+        method: 'POST',
+        body: {},
+        parse: parseName,
+        fetchImpl: async () => jsonResponse({ name: 'confirmed' }),
+      });
+
+      assert.deepEqual(health, { kind: 'ok', data: 'healthy', status: 200 });
+      assert.deepEqual(order, { kind: 'ok', data: 'confirmed', status: 200 });
+    });
+
+    it('keeps a localized non-2xx as http without requiring Content-Language', async () => {
+      const outcome = await fetchJson('http://x.test/products', {
+        language: 'en',
+        parse: parseName,
+        fetchImpl: async () => jsonResponse({ error: {} }, 422),
+      });
+
+      assert.deepEqual(outcome, { kind: 'http', status: 422 });
+    });
   });
 
   describe('requests with a method, body and headers', () => {

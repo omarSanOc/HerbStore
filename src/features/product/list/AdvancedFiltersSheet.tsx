@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 import type { ScreenReaderFocusTarget } from '@/core/accessibility/screen-reader-focus';
 import { useReducedMotionPreference } from '@/core/accessibility/use-reduced-motion';
+import { useCurrentLanguage } from '@/core/i18n/use-current-language';
 import {
   AppBottomSheet,
   AppBottomSheetScrollView,
@@ -18,10 +19,15 @@ import {
   useAppTheme,
   type AppBottomSheetHandle,
 } from '@/design-system';
-import { subcategoryLabelKey } from '@/features/categories/category-labels';
+import { toApiError } from '@/core/api/api-error';
 
+import type { BrandOption, CategoryNode } from '../contracts/catalog-product';
 import { useGetBrandsQuery, useGetCategoriesQuery } from '../data/products-api';
 import { shouldStackActions } from '../logic/action-bar-layout';
+import {
+  classifyFacetQueryState,
+  type FacetProblemState,
+} from '../logic/facet-query-state';
 import { selectSubcategoryOptions } from '../logic/facet-options';
 import {
   toggleFacetValue,
@@ -95,6 +101,9 @@ function AdvancedFiltersForm({
 }: Readonly<AdvancedFiltersFormProps>) {
   const { t } = useTranslation();
   const { dismiss } = useAppBottomSheet();
+  // Facet options are localized reads (RF-9, RF-22): the language is part of the query argument,
+  // so the panel shows the names of the language the list is being read in, never a mix of both.
+  const language = useCurrentLanguage();
   // The draft. `useState` keeps ONLY the first value: later renders (even with other applied
   // params) do not reset it while the sheet is open.
   const [draft, setDraft] = useState<AdvancedFiltersDraft>(() => ({
@@ -102,8 +111,8 @@ function AdvancedFiltersForm({
     subcategories: applied.subcategories,
   }));
   const { fontScale, width: windowWidth } = useWindowDimensions();
-  const brandsQuery = useGetBrandsQuery();
-  const categoriesQuery = useGetCategoriesQuery();
+  const brandsQuery = useGetBrandsQuery(language);
+  const categoriesQuery = useGetCategoriesQuery(language);
 
   // One row while a half of it holds "Cancelar" on one line; otherwise one button above the other.
   const stackActions = shouldStackActions({
@@ -117,11 +126,25 @@ function AdvancedFiltersForm({
     buttonChrome: 2 * spacing.md + 2,
   });
 
-  const brandOptions = brandsQuery.data;
+  // RF-23, RF-30, RF-34: the panel's state is a pure rule over the query snapshot (`facet-query-state`),
+  // the same way Home and the list classify theirs. `currentData` (never `data`) keeps the options
+  // of the CURRENT language only, so a switch never prints names of the language being left.
+  const brandsState = classifyFacetQueryState<BrandOption>({
+    currentData: brandsQuery.currentData,
+    error: toApiError(brandsQuery.error),
+    isFetching: brandsQuery.isFetching,
+  });
+  const categoriesState = classifyFacetQueryState<CategoryNode>({
+    currentData: categoriesQuery.currentData,
+    error: toApiError(categoriesQuery.error),
+    isFetching: categoriesQuery.isFetching,
+  });
+  // The subcategories offered: only the ones of this category (a vitamin filter never lists
+  // "zinc"); empty when the tree is not there or knows no subcategory of it (never invented).
   const subcategoryOptions =
-    categoriesQuery.data === undefined
-      ? undefined
-      : selectSubcategoryOptions(categoriesQuery.data, category);
+    categoriesState.status === 'ready' || categoriesState.status === 'stale'
+      ? selectSubcategoryOptions(categoriesState.options, category)
+      : [];
 
   const handleApply = () => {
     // Apply first, then close: the list already queries the new filters when the sheet leaves. The
@@ -142,25 +165,31 @@ function AdvancedFiltersForm({
             variant="subheading">
             {t('productList.advanced.brandsHeading')}
           </AppText>
-          {brandOptions === undefined ? (
+          {brandsState.status === 'ready' || brandsState.status === 'stale' ? (
+            <>
+              {brandsState.status === 'stale' ? (
+                <OptionsNotice onRetry={() => void brandsQuery.refetch()} />
+              ) : null}
+              {brandsState.options.map((brand) => (
+                <FacetOption
+                  key={brand.name}
+                  label={brand.name}
+                  onPress={() =>
+                    setDraft((current) => ({
+                      ...current,
+                      brands: toggleFacetValue(current.brands, brand.name),
+                    }))
+                  }
+                  selected={draft.brands.includes(brand.name)}
+                />
+              ))}
+            </>
+          ) : (
             <OptionsStatus
-              failed={!brandsQuery.isFetching}
+              emptyLabel={t('productList.advanced.noBrands')}
+              problem={brandsState}
               onRetry={() => void brandsQuery.refetch()}
             />
-          ) : (
-            brandOptions.map((brand) => (
-              <FacetOption
-                key={brand.name}
-                label={brand.name}
-                onPress={() =>
-                  setDraft((current) => ({
-                    ...current,
-                    brands: toggleFacetValue(current.brands, brand.name),
-                  }))
-                }
-                selected={draft.brands.includes(brand.name)}
-              />
-            ))
           )}
         </View>
         <View style={styles.section}>
@@ -170,31 +199,39 @@ function AdvancedFiltersForm({
             variant="subheading">
             {t('productList.advanced.subcategoriesHeading')}
           </AppText>
-          {subcategoryOptions === undefined ? (
+          {categoriesState.status === 'ready' || categoriesState.status === 'stale' ? (
+            <>
+              {categoriesState.status === 'stale' ? (
+                <OptionsNotice onRetry={() => void categoriesQuery.refetch()} />
+              ) : null}
+              {subcategoryOptions.length === 0 ? (
+                <AppText accessibilityLiveRegion="polite" tone="muted">
+                  {t('productList.advanced.noSubcategories')}
+                </AppText>
+              ) : (
+                subcategoryOptions.map((subcategory) => (
+                  // RF-9, RF-22: the label is the name the API sent in this language. No translation
+                  // by id: the sheet shows the same words the server owns, never a mix of both.
+                  <FacetOption
+                    key={subcategory.id}
+                    label={subcategory.name}
+                    onPress={() =>
+                      setDraft((current) => ({
+                        ...current,
+                        subcategories: toggleFacetValue(current.subcategories, subcategory.id),
+                      }))
+                    }
+                    selected={draft.subcategories.includes(subcategory.id)}
+                  />
+                ))
+              )}
+            </>
+          ) : (
             <OptionsStatus
-              failed={!categoriesQuery.isFetching}
+              emptyLabel={t('productList.advanced.noSubcategories')}
+              problem={categoriesState}
               onRetry={() => void categoriesQuery.refetch()}
             />
-          ) : subcategoryOptions.length === 0 ? (
-            <AppText tone="muted">{t('productList.advanced.noSubcategories')}</AppText>
-          ) : (
-            subcategoryOptions.map((subcategory) => {
-              // Our translation of the 15 known ones; any other shows the text the server sent.
-              const labelKey = subcategoryLabelKey(subcategory.id);
-              return (
-                <FacetOption
-                  key={subcategory.id}
-                  label={labelKey === undefined ? subcategory.name : t(labelKey)}
-                  onPress={() =>
-                    setDraft((current) => ({
-                      ...current,
-                      subcategories: toggleFacetValue(current.subcategories, subcategory.id),
-                    }))
-                  }
-                  selected={draft.subcategories.includes(subcategory.id)}
-                />
-              );
-            })
           )}
         </View>
       </AppBottomSheetScrollView>
@@ -223,27 +260,66 @@ function AdvancedFiltersForm({
 }
 
 type OptionsStatusProps = {
-  /** True when the request ended without options; false while it is still loading. */
-  failed: boolean;
+  /** One of the states that show a message instead of options: loading, empty, offline or error. */
+  problem: FacetProblemState;
+  /** What "there is nothing here" says: brands and subcategories say it differently. */
+  emptyLabel: string;
   onRetry: () => void;
 };
 
-/** What a facet shows before it has options: static "loading" text, or the failure and Retry. */
-function OptionsStatus({ failed, onRetry }: Readonly<OptionsStatusProps>) {
+/**
+ * What a facet shows when it has no options to offer (RF-30): a polite live-region message for
+ * every state of the matrix, and a retry when the state is a failure. `ready` and `stale` never
+ * come here: they show the options.
+ */
+function OptionsStatus({ problem, emptyLabel, onRetry }: Readonly<OptionsStatusProps>) {
   const { t } = useTranslation();
 
-  if (!failed) {
-    // Text only, no spinner: nothing moves, so reduced motion needs no special case (RNF-3).
-    return (
-      <AppText accessibilityLiveRegion="polite" tone="muted">
-        {t('productList.advanced.loading')}
-      </AppText>
-    );
+  switch (problem.status) {
+    case 'loading':
+      // Text only, no spinner: nothing moves, so reduced motion needs no special case (RNF-3).
+      return (
+        <AppText accessibilityLiveRegion="polite" tone="muted">
+          {t('productList.advanced.loading')}
+        </AppText>
+      );
+    case 'empty':
+      // A valid empty array: the panel stays operable, it just has nothing to offer.
+      return (
+        <AppText accessibilityLiveRegion="polite" tone="muted">
+          {emptyLabel}
+        </AppText>
+      );
+    case 'offline':
+    case 'error':
+      // Different words for a dead connection and for a server that answered badly (RF-30/RF-34),
+      // the same retry: the user never has to guess what happened.
+      return (
+        <View style={styles.status}>
+          <AppText accessibilityLiveRegion="polite">
+            {problem.status === 'offline'
+              ? t('productList.advanced.offline')
+              : t('productList.advanced.loadFailed')}
+          </AppText>
+          <AppButton
+            accessibilityHint={t('productList.advanced.retryHint')}
+            label={t('productList.advanced.retry')}
+            onPress={onRetry}
+          />
+        </View>
+      );
   }
+}
+
+/** RF-30: a failed refresh keeps the options on screen, with this notice and a retry above them. */
+function OptionsNotice({ onRetry }: Readonly<{ onRetry: () => void }>) {
+  const { t } = useTranslation();
 
   return (
     <View style={styles.status}>
-      <AppText accessibilityLiveRegion="polite">{t('productList.advanced.loadFailed')}</AppText>
+      <AppText accessibilityLiveRegion="polite" tone="muted">
+        {t('productList.advanced.updateFailed')}
+      </AppText>
       <AppButton
         accessibilityHint={t('productList.advanced.retryHint')}
         label={t('productList.advanced.retry')}

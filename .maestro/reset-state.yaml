@@ -1,47 +1,53 @@
 appId: com.herbstore.mobile
-name: Reset to a clean, deterministic state
-# Inputs (env, all with defaults; override with `maestro test -e KEY=VALUE`):
-#   API_ORIGIN    where the HOST reaches the mock server (scripts run on the Mac)
-#   METRO_URL     the Metro of the Development Build, as the DEVICE reaches it
-#   PRODUCT_ID    product whose live stock proves the mock was restarted
-#   FRESH_STOCK   stock a freshly started mock reports for it
-# Requires, in this order: (1) the mock restarted, (2) Metro running with
-# EXPO_PUBLIC_API_ORIGIN, (3) on a physical Android, `adb reverse` for 8081 and 3001.
-# See .maestro/README.md. Ends on Home, in English, with empty cart, history and orders.
-env:
-  API_ORIGIN: http://localhost:3001
-  METRO_URL: http://localhost:8081
-  PRODUCT_ID: product-261009-062
-  FRESH_STOCK: "99"
+name: Preflight the API and clear LOCAL state only
+# The API has NO reset (RF-44): this flow NEVER restarts it, never posts an order and never invents
+# a fresh stock. It only OBSERVES (health, product, stock) and refuses to continue when a
+# precondition is missing, marking the run INCONCLUSA before any mutation. LOCAL app data is cleared
+# with clearState, which does not touch the API. See .maestro/README.md.
+# Inputs: received from the parent flow's runFlow (checkout.yaml), which takes them from `-e`.
+# This flow defines NO default values on purpose: Maestro 2.11.0 gives a flow's own `env:` block
+# precedence over `-e` AND over runFlow-passed env (measured in spec 007 T10), so a default here
+# would silently defeat every override. Missing values fail closed (the exclusivity gate below
+# sees an empty E2E_EXCLUSIVE and stops as INCONCLUSA). See .maestro/README.md, "Variables".
+#   API_ORIGIN     where the HOST reaches the persistent API (scripts run on the Mac)
+#   METRO_URL      the Metro of the Development Build, as the DEVICE reaches it
+#   PRODUCT_ID     the catalog product the flow will buy (must exist and have stock > 0)
+#   E2E_EXCLUSIVE  MUST be "true": the operator's declaration of an EXCLUSIVE window
 ---
-# 1. The mock keeps orders and stock in memory and Maestro cannot restart it: it can only REFUSE
-#    to run on top of a used one. A used mock means a previous purchase exists on the server.
+# 1. Exclusivity declaration (RF-43). Without it the delta measured at the end proves nothing about
+#    THIS run, so the flow stops before it observes or mutates anything.
+- assertTrue:
+    condition: ${E2E_EXCLUSIVE == 'true'}
+    # `label` is shown as-is (Maestro does not interpolate it): keep it a plain sentence.
+    label: "INCONCLUSA: E2E_EXCLUSIVE is not 'true'. The persistent API is shared and has no reset, so this run cannot claim an exclusive window. Re-run with -e E2E_EXCLUSIVE=true when nothing else is buying, or do not run the mutating flow."
+
+# 2. Live preflight against the API (RF-43, RF-7): health is ok, PRODUCT_ID exists and its stock is
+#    > 0. read-stock.js throws an INCONCLUSA cause (before any mutation) if a precondition is
+#    missing, and records output.stock.initial for the delta measured after the purchase.
 - runScript:
     file: scripts/read-stock.js
     env:
       SLOT: initial
-- assertTrue:
-    condition: ${output.stock.initial == Number(FRESH_STOCK)}
-    # `label` is shown as-is (Maestro does not interpolate it): keep it a plain sentence.
-    label: "FAIL: the mock server already has orders (stock is not the fresh one). Restart it before running the flow."
+      REQUIRE_POSITIVE: "true"
 
-# 1b. A failed earlier run can leave the OS notification-permission alert on screen (it belongs to the
-#     system, not to the app, and survives the app being killed). It would cover the whole reset.
+# 3. A failed earlier run can leave the OS notification-permission alert on screen (it belongs to the
+#    system, not to the app, and survives the app being killed). It would cover the whole reset.
 - runFlow:
     when:
       visible: "Don.t Allow|No permitir"
     commands:
       - tapOn: "Don.t Allow|No permitir"
 
-# 2-4. App data to zero (clearState), Development Build pointed at Metro, English pinned, on Home.
-#      Shared with the extra flows: see `subflows/fresh-app.yaml` (launcher race, Dev Menu, language).
+# 4. App data to zero (clearState), Development Build pointed at Metro, English pinned, on Home.
+#    Shared with the extra flows: see `subflows/fresh-app.yaml` (launcher race, Dev Menu, language).
 - runFlow:
     file: subflows/fresh-app.yaml
     env:
       METRO_URL: ${METRO_URL}
 
-# 5. Nothing from a previous run survives (RF-6 edge case: never continue over an existing purchase).
-#    Opening "My orders" also proves the language is English now (the button is found by its English text).
+# 5. Nothing from a previous LOCAL run survives (RF-6 edge case: never continue over an existing
+#    purchase). Opening "My orders" also proves the language is English now (the button is found by
+#    its English text).
 - tapOn: "Account"
 - runFlow: subflows/open-my-orders.yaml
 - assertVisible: "You don't have any orders yet"

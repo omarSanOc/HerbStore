@@ -22,7 +22,7 @@ import { useProductList } from './use-product-list';
 jest.mock('expo-router', () => ({ useIsFocused: () => true }));
 jest.mock('@/core/network/reconnection', () => ({ onReconnect: () => () => undefined }));
 
-const ARGS = buildProductQueryArgs({});
+const ARGS = buildProductQueryArgs({ language: 'es' });
 const PAGE_SIZE = 20;
 
 /** `GET /products?page=N` as the server sends it: ids are unique across pages. */
@@ -60,7 +60,7 @@ describe('useProductList: pull-to-refresh vs "load more"', () => {
 
   /** Mounts the hook and lets page 1 land (the server answers at once). */
   async function mountWithFirstPage() {
-    mock.enqueue('GET /products', reply.success(wirePage(1)));
+    mock.enqueue('GET /products', reply.localized(wirePage(1), 'es'));
     const view = await renderHook(() => useProductList(ARGS), { wrapper });
     await advance(0);
     expect(view.result.current.state).toMatchObject({ status: 'ready', footer: 'idle' });
@@ -73,7 +73,7 @@ describe('useProductList: pull-to-refresh vs "load more"', () => {
     const { result } = await mountWithFirstPage();
     expect(readyProducts(result.current.state)).toHaveLength(PAGE_SIZE);
 
-    mock.enqueue('GET /products', reply.success(wirePage(2), { delayMs: 1_000 }));
+    mock.enqueue('GET /products', reply.localized(wirePage(2), 'es', { delayMs: 1_000 }));
     await act(async () => { result.current.onViewableItemsChanged(LAST_ITEM_VISIBLE); });
     // FlashList fires the callback many times per scroll: only the first one asks.
     await act(async () => { result.current.onViewableItemsChanged(LAST_ITEM_VISIBLE); });
@@ -96,13 +96,13 @@ describe('useProductList: pull-to-refresh vs "load more"', () => {
     const { result } = await mountWithFirstPage();
 
     // Page 2 is slow. The user pulls to refresh while it is still travelling.
-    mock.enqueue('GET /products', reply.success(wirePage(2), { delayMs: 3_000 }));
+    mock.enqueue('GET /products', reply.localized(wirePage(2), 'es', { delayMs: 3_000 }));
     await act(async () => { result.current.onViewableItemsChanged(LAST_ITEM_VISIBLE); });
     await advance(1_000);
     expect(result.current.state).toMatchObject({ footer: 'loading-more' });
 
     // The refresh answers page 1 with different names, so we can tell old from new.
-    mock.enqueue('GET /products', reply.success(wirePage(1, { nameSuffix: ' (fresh)' }), { delayMs: 500 }));
+    mock.enqueue('GET /products', reply.localized(wirePage(1, { nameSuffix: ' (fresh)' }), 'es', { delayMs: 500 }));
     await act(async () => { result.current.onRefresh(); });
     await advance(0);
 
@@ -132,16 +132,16 @@ describe('useProductList: pull-to-refresh vs "load more"', () => {
 
   it('RACE: after the pull the "load more" guard is open again, so page 2 can be requested once more', async () => {
     const { result } = await mountWithFirstPage();
-    mock.enqueue('GET /products', reply.success(wirePage(2), { delayMs: 3_000 }));
+    mock.enqueue('GET /products', reply.localized(wirePage(2), 'es', { delayMs: 3_000 }));
     await act(async () => { result.current.onViewableItemsChanged(LAST_ITEM_VISIBLE); });
     await advance(100);
-    mock.enqueue('GET /products', reply.success(wirePage(1, { nameSuffix: ' (fresh)' })));
+    mock.enqueue('GET /products', reply.localized(wirePage(1, { nameSuffix: ' (fresh)' }), 'es'));
     await act(async () => { result.current.onRefresh(); });
     await advance(0);
     await advance(3_000);
     expect(pagesRequested()).toEqual(['1', '2', '1']);
 
-    mock.enqueue('GET /products', reply.success(wirePage(2, { nameSuffix: ' (fresh)' })));
+    mock.enqueue('GET /products', reply.localized(wirePage(2, { nameSuffix: ' (fresh)' }), 'es'));
     await act(async () => { result.current.onViewableItemsChanged(LAST_ITEM_VISIBLE); });
     await advance(0);
 
@@ -152,7 +152,7 @@ describe('useProductList: pull-to-refresh vs "load more"', () => {
 
   it('RACE: while a pull is running, reaching the end of the list does not request another page', async () => {
     const { result } = await mountWithFirstPage();
-    mock.enqueue('GET /products', reply.success(wirePage(1, { nameSuffix: ' (fresh)' }), { delayMs: 2_000 }));
+    mock.enqueue('GET /products', reply.localized(wirePage(1, { nameSuffix: ' (fresh)' }), 'es', { delayMs: 2_000 }));
 
     await act(async () => { result.current.onRefresh(); });
     await advance(100);
@@ -168,7 +168,7 @@ describe('useProductList: pull-to-refresh vs "load more"', () => {
 
   it('RACE: pulling twice in a row sends one refresh (the second pull is ignored while refreshing)', async () => {
     const { result } = await mountWithFirstPage();
-    mock.enqueue('GET /products', reply.success(wirePage(1, { nameSuffix: ' (fresh)' }), { delayMs: 2_000 }));
+    mock.enqueue('GET /products', reply.localized(wirePage(1, { nameSuffix: ' (fresh)' }), 'es', { delayMs: 2_000 }));
 
     await act(async () => { result.current.onRefresh(); });
     await advance(100);
@@ -193,7 +193,7 @@ describe('useProductList: pull-to-refresh vs "load more"', () => {
     await advance(5_000);
     expect(pagesRequested()).toEqual(['1', '2']);
 
-    mock.enqueue('GET /products', reply.success(wirePage(2)));
+    mock.enqueue('GET /products', reply.localized(wirePage(2), 'es'));
     await act(async () => { result.current.retryNextPage(); });
     await advance(0);
     expect(pagesRequested()).toEqual(['1', '2', '2']);

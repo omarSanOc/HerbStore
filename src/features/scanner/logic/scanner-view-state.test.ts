@@ -24,7 +24,7 @@ test('states that are not a failed lookup never offer retry', () => {
     { kind: 'ready', epoch: 0 },
     { kind: 'querying', code: '4006381333931', epoch: 1 },
     { kind: 'not-found', code: '4006381333931', epoch: 1 },
-    { kind: 'invalid-code', code: 'x', epoch: 1 },
+    { kind: 'invalid-code', epoch: 1 },
     { kind: 'closed', epoch: 2 },
   ] as const) {
     assert.equal(getScannerViewState(state).actions.retry, false, state.kind);
@@ -32,7 +32,7 @@ test('states that are not a failed lookup never offer retry', () => {
 });
 
 test('invalid and unavailable states expose an accessible, blocking state', () => {
-  assert.equal(getScannerViewState({ kind: 'invalid-code', code: 'x', epoch: 1 }).blocking, true);
+  assert.equal(getScannerViewState({ kind: 'invalid-code', epoch: 1 }).blocking, true);
   assert.equal(getScannerViewState({ kind: 'unavailable', reason: 'camera', epoch: 1 }).actions.cancel, true);
 });
 

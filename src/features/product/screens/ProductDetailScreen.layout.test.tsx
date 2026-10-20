@@ -45,7 +45,7 @@ describe('ProductDetailScreen: the failed-share message at a large font', () => 
     scrollTo = jest.spyOn(ScrollView.prototype, 'scrollTo').mockReset();
     jest.spyOn(View.prototype, 'measureLayout').mockReset();
 
-    mock.enqueue(ROUTE, reply.success(wireProduct(1, { stock: 3, inStock: true })));
+    mock.enqueue(ROUTE, reply.localized(wireProduct(1, { stock: 3, inStock: true }), 'en'));
     const store = createTestStore();
     await startPersistence(store).rehydrated;
     await renderWithProviders(<ProductDetailScreen rawId={ID} />, { language: 'en', store });

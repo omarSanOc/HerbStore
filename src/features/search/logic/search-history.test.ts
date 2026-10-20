@@ -240,3 +240,16 @@ describe('restoreSearchHistory (Day 4: reading the persisted history back)', () 
     assert.deepEqual(clearHistory(restored), []);
   });
 });
+
+// RF-39 (spec 007, T4): an entry is only the TEXT the user typed (`readonly string[]`) — no product
+// id, no price, no snapshot, nothing that could point at a catalog record. A product that stops
+// existing in the API therefore cannot orphan, break or hide an entry: there is nothing in it to
+// invalidate. If an entry ever grew a catalog reference, the guard below fails.
+describe('RF-39: an entry never references the catalog', () => {
+  it('stores plain text only, whatever happened to the product that motivated the search', () => {
+    const history = addSearch(addSearch(EMPTY_SEARCH_HISTORY, 'Magnesio'), 'Magnesio glicinato');
+
+    assert.deepEqual(history, ['Magnesio glicinato', 'Magnesio']);
+    for (const entry of history) assert.equal(typeof entry, 'string');
+  });
+});

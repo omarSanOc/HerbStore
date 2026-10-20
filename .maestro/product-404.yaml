@@ -3,10 +3,10 @@ name: Extra - link to an unknown product shows "Product not found" and leaves th
 tags:
   - extra
 # Optional (not part of RF-6, not run by default): `maestro test .maestro/product-404.yaml`.
-# Needs the mock server running, but NOT a fresh one: it never creates an order.
+# Needs the persistent API running, but it never creates an order, so it needs NO exclusive window.
 env:
   METRO_URL: http://localhost:8081
-  # Catalog-shaped but absent (the mock has product-<seed>-001..300): the server answers 404.
+  # Catalog-shaped but absent (the API serves product-<seed>-001..300): the server answers 404.
   MISSING_PRODUCT_ID: product-261009-999
 ---
 - runFlow:

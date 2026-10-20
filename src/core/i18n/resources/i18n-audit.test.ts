@@ -15,9 +15,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
-import { KNOWN_CATEGORY_IDS } from '../../../features/categories/category-labels.ts';
 import { ADDRESS_FIELD_NAMES } from '../../../features/checkout/logic/field-errors.ts';
-import { KNOWN_BANNER_IDS } from '../../../features/home/logic/banner-copy.ts';
 import { collectKeyUsage, findUntranslatedLiterals, type AuditedFile } from '../../../test/source-audit.ts';
 import { en } from './en.ts';
 import { es } from './es.ts';
@@ -69,14 +67,8 @@ const DYNAMIC_GROUPS: Readonly<Record<string, readonly string[]>> = {
   'checkout.fields.': ADDRESS_FIELD_NAMES,
   'checkout.hints.': ADDRESS_FIELD_NAMES,
   'checkout.placeholders.': ADDRESS_FIELD_NAMES,
-  // `ProductSection`: the section ids of the Home contract.
-  'home.sections.': ['best_sellers', 'new', 'offers'],
   // `ProductCard`: the badges of the catalog contract.
   'productCard.badge.': ['offer', 'new', 'best_seller'],
-  // `categoryLabelKey` and `bannerCopyKeys` build the key from a KNOWN id (an explicit list, so an
-  // id such as `constructor` never resolves to something that is not text).
-  'home.categories.': KNOWN_CATEGORY_IDS,
-  'home.banners.items.': KNOWN_BANNER_IDS.flatMap((id) => [`${id}.title`, `${id}.subtitle`]),
 };
 
 /**
@@ -162,5 +154,33 @@ describe('i18n audit of the sources', () => {
       findUntranslatedLiterals(file, isKnownKey).map(({ path, line, detail }) => `${path}:${line} ${detail}`),
     );
     assert.deepEqual(hardCoded, []);
+  });
+});
+
+describe('the resources hold no copy of the catalog (the API owns it)', () => {
+  // Spec 007, T3: banner titles, section titles and category/subcategory names arrive localized
+  // from the API. These groups used to translate them by id, which let a screen disagree with the
+  // server; they were removed, and this guard keeps them from coming back in either language.
+  const RETIRED_CATALOG_PREFIXES: readonly string[] = [
+    'home.banners.items.',
+    'home.sections.',
+    'home.categories.',
+    'subcategories.',
+  ];
+
+  it('has no key of the retired catalog copy in es or en', () => {
+    for (const language of [
+      { name: 'es', keys: spanishKeys },
+      { name: 'en', keys: englishKeys },
+    ]) {
+      for (const prefix of RETIRED_CATALOG_PREFIXES) {
+        const found = [...language.keys].filter((key) => key.startsWith(prefix));
+        assert.deepEqual(
+          found,
+          [],
+          `${language.name}: ${prefix}* is back in the resources; that copy belongs to the API`,
+        );
+      }
+    }
   });
 });

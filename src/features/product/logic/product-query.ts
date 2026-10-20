@@ -7,6 +7,8 @@
 // The PAGE is deliberately not part of the arg: it is the infinite query's `pageParam`, so every
 // page of one list lives in one entry (refetch, abort and "reset to the top" act on the list).
 
+import type { SupportedLanguage } from '../../../core/i18n/languages.ts';
+
 export const PRODUCT_SORTS = [
   'featured',
   'price_asc',
@@ -27,8 +29,14 @@ export const TOP_RATED_MIN_RATING = 4;
  * Canonical identity of one product list. Inactive flags have NO key (`inStock: false` would be a
  * different identity from "no key" for the serializer, though both mean the same). Facets are
  * normalized, deduplicated and sorted. No `page`.
+ *
+ * `language` is part of the identity and is NOT sent as a query parameter: the same filters in
+ * `es` and in `en` are two cache entries with two in-flight requests (RF-24, RF-26, RNF-5). The
+ * header carries it (`Accept-Language`) through the base query (T1).
  */
 export type ProductQueryArgs = Readonly<{
+  /** The effective language of the read (`es` | `en`): identity, never a `?` parameter. */
+  language: SupportedLanguage;
   /** Category id from the route (`GET /products?category=`). */
   category?: string;
   /** Normalized search text (`q`): brand, name and description on the server. */
@@ -47,6 +55,8 @@ export type ProductQueryArgs = Readonly<{
 
 /** What a screen knows, in the user's spelling. `buildProductQueryArgs` canonicalizes it. */
 export type ProductQueryInput = Readonly<{
+  /** The effective language of the read: required, so no query can be built without one. */
+  language: SupportedLanguage;
   category?: string;
   /** Raw search text, as typed. */
   search?: string;
@@ -63,8 +73,9 @@ export type ProductQueryInput = Readonly<{
 /**
  * Normalized form of a search text: no outer spaces, inner runs of whitespace as one space,
  * lowercase and no diacritics (NFD splits "ç" into "c" + a combining mark, then every mark is
- * dropped). Same steps and order as `normalizeText` of the mock server, so both sides agree on
- * what "the same text" means. The UI keeps the human text; this is only the identity.
+ * dropped). Same steps and order as the API's own text normalization (search matches on the
+ * server side, RF-11), so both sides agree on what "the same text" means. The UI keeps the
+ * human text; this is only the identity.
  */
 export function normalizeSearchText(text: string): string {
   return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim().replace(/\s+/g, ' ');
@@ -86,7 +97,9 @@ export function buildProductQueryArgs(input: ProductQueryInput): ProductQueryArg
   const subcategory = normalizeFacet(input.subcategories);
 
   // Fixed insertion order: even `JSON.stringify` of equivalent args is identical.
+  // `language` leads so a serialized identity names the cache it belongs to at a glance.
   return {
+    language: input.language,
     ...(category === '' ? {} : { category }),
     ...(q === '' ? {} : { q }),
     ...(brand.length === 0 ? {} : { brand }),
@@ -107,7 +120,9 @@ export function buildProductQueryArgs(input: ProductQueryInput): ProductQueryArg
  * server's CSV; brands and subcategory ids come from `GET /brands` and `GET /categories`, which
  * have none.)
  *
- * The page is a request detail, not identity, so it is a separate argument.
+ * The page is a request detail, not identity, so it is a separate argument. The language is not
+ * serialized either: it travels as `Accept-Language` (T1), never as a parameter of `/products`,
+ * and the server's contract for this path does not include one.
  */
 export function toProductQueryString(args: ProductQueryArgs, page: number): string {
   if (!Number.isInteger(page) || page < 1) {
@@ -157,7 +172,8 @@ export function toProductQueryString(args: ProductQueryArgs, page: number): stri
  * are NOT printed: only that they are present (and how many values a facet has).
  */
 export function describeQueryForLog(args: ProductQueryArgs, page: number): string {
-  const parts: string[] = [];
+  // `lang` first: it says WHICH cache entry is being asked for (safe to print, not user data).
+  const parts: string[] = [`lang=${args.language}`];
 
   if (args.category !== undefined) {
     parts.push(`category=${args.category}`);

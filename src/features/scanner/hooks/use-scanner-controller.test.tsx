@@ -15,6 +15,7 @@ import { Camera, type PermissionResponse } from 'expo-camera';
 import type { ReactNode } from 'react';
 import { Provider as ReduxProvider } from 'react-redux';
 
+import { i18n } from '@/core/i18n';
 import { createTestStore, wireProduct } from '@/test/fixtures';
 import { createMockFetch, reply } from '@/test/mock-fetch';
 import { resetRouterMock } from '@/test/mock-expo-router';
@@ -48,7 +49,10 @@ describe('useScannerController', () => {
   let mock: ReturnType<typeof createMockFetch>;
   let store: ReturnType<typeof createTestStore>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    // The controller asks for the barcode in the current language, so the test fixes it BEFORE the
+    // fake clock starts (`changeLanguage` must not race a frozen timer).
+    await i18n.changeLanguage('es');
     jest.useFakeTimers();
     resetRouterMock();
     resetReconnectionMock();
@@ -129,13 +133,13 @@ describe('useScannerController', () => {
       });
       await advance(2_000);
 
-      expect(result.current.state).toMatchObject({ kind: 'invalid-code', code });
+      expect(result.current.state).toMatchObject({ kind: 'invalid-code' });
       expect(barcodeRequests()).toHaveLength(0);
       expect(mock.calls).toHaveLength(0);
     });
 
     it('after an invalid read the user can scan again, and a valid code then queries once', async () => {
-      mock.enqueue(`GET /products/barcode/${VALID}`, reply.success(wireProduct(4, { ean13: VALID, stock: 7 })));
+      mock.enqueue(`GET /products/barcode/${VALID}`, reply.localized(wireProduct(4, { ean13: VALID, stock: 7 }), 'es'));
       const { result } = await readyScanner();
 
       await act(async () => {
@@ -157,7 +161,7 @@ describe('useScannerController', () => {
     });
 
     it('a valid code queries the server once and the found product is the one to open', async () => {
-      mock.enqueue(`GET /products/barcode/${VALID}`, reply.success(wireProduct(4, { ean13: VALID, stock: 7 }), { delayMs: 500 }));
+      mock.enqueue(`GET /products/barcode/${VALID}`, reply.localized(wireProduct(4, { ean13: VALID, stock: 7 }), 'es', { delayMs: 500 }));
       const { result } = await readyScanner();
 
       await act(async () => {
@@ -172,11 +176,54 @@ describe('useScannerController', () => {
         product: { id: 'product-261009-004', stock: 7 },
       });
     });
+
+    it('a valid QR payload is trimmed, queried through the barcode endpoint, and opens the product', async () => {
+      mock.enqueue(`GET /products/barcode/${VALID}`, reply.localized(wireProduct(4, { ean13: VALID, stock: 7 }), 'es'));
+      const { result } = await readyScanner();
+
+      await act(async () => {
+        result.current.readCode({ type: 'qr', data: `  ${VALID}\n` });
+      });
+      await advance(10);
+
+      expect(barcodeRequests().map(({ path }) => path)).toEqual([`/products/barcode/${VALID}`]);
+      expect(result.current.state).toMatchObject({ kind: 'navigating', code: VALID });
+    });
+
+    it('a valid but unknown QR payload uses the barcode endpoint and shows not found without retrying', async () => {
+      mock.enqueue(`GET /products/barcode/${VALID}`, reply.clientError(404, { error: 'not found' }));
+      const { result } = await readyScanner();
+
+      await act(async () => {
+        result.current.readCode({ type: 'qr', data: `\t${VALID}  ` });
+      });
+      await advance(10);
+
+      expect(result.current.state).toMatchObject({ kind: 'not-found', code: VALID });
+      expect(barcodeRequests()).toHaveLength(1);
+    });
+
+    it.each([
+      'https://example.test/products/product-261009-004',
+      'product-261009-004',
+      'herbstore://scanner/product-261009-004',
+      '200261 0090004',
+    ])('rejects a QR payload %s without a request', async (data) => {
+      const { result } = await readyScanner();
+
+      await act(async () => {
+        result.current.readCode({ type: 'qr', data });
+      });
+      await advance(2_000);
+
+      expect(result.current.state.kind).toBe('invalid-code');
+      expect(mock.calls).toHaveLength(0);
+    });
   });
 
   describe('one frame, one request', () => {
     it('two callbacks for the same frame (same JS turn) query ONCE', async () => {
-      mock.enqueue(`GET /products/barcode/${VALID}`, reply.success(wireProduct(4, { ean13: VALID, stock: 7 })));
+      mock.enqueue(`GET /products/barcode/${VALID}`, reply.localized(wireProduct(4, { ean13: VALID, stock: 7 }), 'es'));
       const { result } = await readyScanner();
       const readCode = result.current.readCode; // the closure the camera holds: it sees `ready`
 
@@ -220,7 +267,7 @@ describe('useScannerController', () => {
 
     it('the server is down but the system is connected: after the 3 attempts it is "offline" and the user CAN retry', async () => {
       mock.enqueue(`GET /products/barcode/${VALID}`, reply.networkError(), reply.networkError(), reply.networkError());
-      mock.enqueue(`GET /products/barcode/${VALID}`, reply.success(wireProduct(4, { ean13: VALID, stock: 7 })));
+      mock.enqueue(`GET /products/barcode/${VALID}`, reply.localized(wireProduct(4, { ean13: VALID, stock: 7 }), 'es'));
       const view = await readyScanner();
 
       await lookup(view);
@@ -306,7 +353,7 @@ describe('useScannerController', () => {
     it.each([
       { label: 'timeout', failure: reply.timeout(), kind: 'timeout' },
       { label: '503', failure: reply.serverError(503), kind: 'temporary-error' },
-      { label: '200 with an invalid body', failure: reply.success({ nope: true }), kind: 'invalid-data' },
+      { label: '200 with an invalid body', failure: reply.localized({ nope: true }, 'es'), kind: 'invalid-data' },
     ])('$label -> "$kind" and a retry asks the server again', async ({ failure, kind }) => {
       mock.always(`GET /products/barcode/${VALID}`, failure);
       const view = await readyScanner();
@@ -316,7 +363,7 @@ describe('useScannerController', () => {
       expect(view.result.current.state.kind).toBe(kind);
       const before = barcodeRequests().length;
 
-      mock.enqueue(`GET /products/barcode/${VALID}`, reply.success(wireProduct(4, { ean13: VALID, stock: 7 })));
+      mock.enqueue(`GET /products/barcode/${VALID}`, reply.localized(wireProduct(4, { ean13: VALID, stock: 7 }), 'es'));
       await act(async () => {
         view.result.current.retry();
       });
@@ -329,7 +376,7 @@ describe('useScannerController', () => {
 
   describe('leaving', () => {
     it('cancelling while the product is being looked up ends in "closed" and the late answer opens nothing', async () => {
-      mock.enqueue(`GET /products/barcode/${VALID}`, reply.success(wireProduct(4, { ean13: VALID, stock: 7 }), { delayMs: 3_000 }));
+      mock.enqueue(`GET /products/barcode/${VALID}`, reply.localized(wireProduct(4, { ean13: VALID, stock: 7 }), 'es', { delayMs: 3_000 }));
       const { result } = await readyScanner();
 
       await act(async () => {
@@ -347,7 +394,7 @@ describe('useScannerController', () => {
     });
 
     it('unmounting while a lookup is in flight leaves no work running and no state update', async () => {
-      mock.enqueue(`GET /products/barcode/${VALID}`, reply.success(wireProduct(4, { ean13: VALID, stock: 7 }), { delayMs: 3_000 }));
+      mock.enqueue(`GET /products/barcode/${VALID}`, reply.localized(wireProduct(4, { ean13: VALID, stock: 7 }), 'es', { delayMs: 3_000 }));
       const view = await readyScanner();
       await act(async () => {
         view.result.current.readCode(VALID);

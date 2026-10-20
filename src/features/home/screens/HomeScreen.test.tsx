@@ -82,7 +82,7 @@ describe('HomeScreen states', () => {
     const text = TEXT[language];
 
     it('LOADING: a busy, named placeholder and no retry', async () => {
-      mock.enqueue('GET /home', reply.success(wirePayload(), { delayMs: 1_000 }));
+      mock.enqueue('GET /home', reply.localized(wirePayload(language), language, { delayMs: 1_000 }));
       await renderWithProviders(<HomeScreen />, { language });
 
       expect(screen.getByLabelText(text.loading)).toBeBusy();
@@ -93,7 +93,7 @@ describe('HomeScreen states', () => {
     });
 
     it('CONTENT: the search entry, the categories and every section of products', async () => {
-      mock.enqueue('GET /home', reply.success(wirePayload()));
+      mock.enqueue('GET /home', reply.localized(wirePayload(language), language));
       await renderWithProviders(<HomeScreen />, { language });
       await advance(10);
 
@@ -108,7 +108,7 @@ describe('HomeScreen states', () => {
     // T6a. The scanner is a MODAL route. Closing it must give the screen-reader focus back to the
     // control that opened it ("Scan a product"), not leave it on the title TalkBack finds first.
     it('SCANNER: opens it, and once it closes the screen reader goes back to the scan button', async () => {
-      mock.enqueue('GET /home', reply.success(wirePayload()));
+      mock.enqueue('GET /home', reply.localized(wirePayload(language), language));
       const focus = jest.spyOn(AccessibilityInfo, 'sendAccessibilityEvent');
       focus.mockClear();
       const view = await renderWithProviders(<HomeScreen />, { language });
@@ -130,7 +130,7 @@ describe('HomeScreen states', () => {
     });
 
     it('EMPTY: says there is nothing (not an error) and still offers a retry', async () => {
-      mock.enqueue('GET /home', reply.success({ banners: [], categories: [], sections: [] }));
+      mock.enqueue('GET /home', reply.localized({ banners: [], categories: [], sections: [] }, language));
       await renderWithProviders(<HomeScreen />, { language });
       await advance(10);
 
@@ -148,7 +148,7 @@ describe('HomeScreen states', () => {
       expect(screen.getByRole('header', { name: text.errorTitle })).toBeOnTheScreen();
       expect(screen.queryByText(text.offlineTitle)).not.toBeOnTheScreen();
 
-      mock.enqueue('GET /home', reply.success(wirePayload()));
+      mock.enqueue('GET /home', reply.localized(wirePayload(language), language));
       await fireEvent.press(screen.getByRole('button', { name: text.retry }));
       await advance(10);
 
@@ -165,7 +165,7 @@ describe('HomeScreen states', () => {
       expect(screen.getByRole('header', { name: text.offlineTitle })).toBeOnTheScreen();
       expect(screen.queryByText(text.errorTitle)).not.toBeOnTheScreen();
 
-      mock.enqueue('GET /home', reply.success(wirePayload()));
+      mock.enqueue('GET /home', reply.localized(wirePayload(language), language));
       await fireEvent.press(screen.getByRole('button', { name: text.retry }));
       await advance(10);
 
@@ -181,7 +181,7 @@ describe('HomeScreen states', () => {
     const text = TEXT[language];
 
     async function loadThenGoStale() {
-      mock.enqueue('GET /home', reply.success(wirePayload()));
+      mock.enqueue('GET /home', reply.localized(wirePayload(language), language));
       await renderWithProviders(<HomeScreen />, { language });
       await advance(10);
       expect(screen.getByRole('button', { name: text.search })).toBeOnTheScreen();
@@ -202,7 +202,7 @@ describe('HomeScreen states', () => {
       expect(screen.getByRole('button', { name: text.search })).toBeOnTheScreen();
       expect(screen.queryByRole('header', { name: text.offlineTitle })).not.toBeOnTheScreen();
 
-      mock.enqueue('GET /home', reply.success(wirePayload()));
+      mock.enqueue('GET /home', reply.localized(wirePayload(language), language));
       await fireEvent.press(screen.getByRole('button', { name: text.retry }));
       await advance(10);
 
@@ -226,7 +226,7 @@ describe('HomeScreen states', () => {
     });
 
     it('FRESH data (< 60 s) is not requested again on reconnection: nothing can fail, nothing is warned', async () => {
-      mock.enqueue('GET /home', reply.success(wirePayload()));
+      mock.enqueue('GET /home', reply.localized(wirePayload(language), language));
       await renderWithProviders(<HomeScreen />, { language });
       await advance(10);
 

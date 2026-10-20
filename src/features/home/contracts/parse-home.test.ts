@@ -118,51 +118,29 @@ describe('parseHomePayload: invalid payloads', () => {
   }
 });
 
-// Contract check against the real server code (the same data `GET /home` serves). It needs the
-// mock server's own dependencies (`npm --prefix mock-server install`) and is skipped without them.
-const serverModules = await (async () => {
-  try {
-    const homeModulePath = '../../../../mock-server/src/catalog/home-data.js';
-    const catalogModulePath = '../../../../mock-server/src/catalog/generate-catalog.js';
-    const home = (await import(homeModulePath)) as {
-      createHomeData: (products: unknown[]) => unknown;
-    };
-    const catalog = (await import(catalogModulePath)) as { generateCatalog: () => unknown[] };
-    return { createHomeData: home.createHomeData, generateCatalog: catalog.generateCatalog };
-  } catch {
-    return undefined;
-  }
-})();
+// The same property with our own immutable fixture: whatever the payload holds, the parser keeps
+// every banner, category, section and item with its ids, prices and currency (RF-8). What the
+// real API serves is checked by the opt-in live smoke, not by the unit suite (RF-41).
+describe('parseHomePayload keeps the whole payload', () => {
+  it('keeps every banner, category, section and product', () => {
+    const wire = wirePayload() as Mutable;
 
-describe('parseHomePayload against the real mock server data', () => {
-  const skip = serverModules === undefined ? 'mock-server dependencies are not installed' : false;
+    const data = parseHomePayload(wire);
 
-  it(
-    'accepts what the server builds, keeping every banner, category, section and product',
-    { skip },
-    () => {
-      assert.ok(serverModules);
-      const wire = JSON.parse(
-        JSON.stringify(serverModules.createHomeData(serverModules.generateCatalog())),
-      ) as Mutable;
-
-      const data = parseHomePayload(wire);
-
-      assert.ok(data);
-      assert.equal(data.banners.length, wire.banners.length);
-      assert.equal(data.categories.length, wire.categories.length);
-      assert.deepEqual(
-        data.sections.map(({ id, items }) => [id, items.length]),
-        wire.sections.map(({ id, items }: Mutable) => [id, items.length]),
-      );
-      assert.deepEqual(
-        data.sections.flatMap(({ items }) =>
-          items.map(({ id, price, currency }) => [id, price, currency]),
-        ),
-        wire.sections.flatMap(({ items }: Mutable) =>
-          items.map(({ id, price, currency }: Mutable) => [id, price, currency]),
-        ),
-      );
-    },
-  );
+    assert.ok(data);
+    assert.equal(data.banners.length, wire.banners.length);
+    assert.equal(data.categories.length, wire.categories.length);
+    assert.deepEqual(
+      data.sections.map(({ id, items }) => [id, items.length]),
+      wire.sections.map(({ id, items }: Mutable) => [id, items.length]),
+    );
+    assert.deepEqual(
+      data.sections.flatMap(({ items }) =>
+        items.map(({ id, price, currency }) => [id, price, currency]),
+      ),
+      wire.sections.flatMap(({ items }: Mutable) =>
+        items.map(({ id, price, currency }: Mutable) => [id, price, currency]),
+      ),
+    );
+  });
 });
