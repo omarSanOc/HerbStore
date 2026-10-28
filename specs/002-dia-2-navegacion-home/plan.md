@@ -3,7 +3,8 @@
 ## Cambios tras revisión
 Corrección del plan tras el informe de @reviewer y las decisiones del usuario (sin tocar `spec.md`):
 - **Timebox** (H-12): 5–6 h totales en 10 tareas; se elimina la contradicción de "siete checkpoints / 3 horas". RF-1/2/3 dejan de ser código: son "Teoría" por tarea y `LEARNING.md`.
-- **Estructura** (H-1): un `Stack` por tab (grupos `(home)`, `(categories)`, `(cart)`, `(account)`); producto, categoría y búsqueda viven en el stack de Home, que es quien los origina; escáner como modal en el stack raíz.
+- **Estructura** (H-1): un `Stack` por tab (grupos `(home)`, `(cart)`, `(account)`); producto, categoría y búsqueda viven en el stack de Home, que es quien los origina; escáner como modal en el stack raíz.
+- **Cambio aprobado de navegación:** se elimina la pestaña y el placeholder de Categorías. La barra ofrece exactamente Inicio, Carrito y Cuenta; las categorías siguen accesibles desde Home mediante `/category/[id]` (RF-4, RF-11, RF-20). La implementación ya existe; este plan queda alineado documentalmente.
 - **Deep links** (H-2, H-15): `+native-intent`, `+not-found`, `anchor`, regla "un destino por tipo" con `dangerouslySingular` y prueba de multitoque.
 - **Producto inexistente** (H-3): cliente mínimo `GET /products/:id` con loading/404/error-offline.
 - **Imágenes** (H-4): el mock sirve PNG ficticios generados; `resolveAssetUrl` y `RemoteImage` con dimensiones reservadas y alternativa etiquetada.
@@ -31,23 +32,22 @@ src/app/
   +not-found.tsx               adaptador de NotFoundScreen
   scanner.tsx                  modal placeholder (cámara real: Día 5)
   (tabs)/
-    _layout.tsx                Tabs (orden explícito) ; unstable_settings.anchor = '(home)'
+    _layout.tsx                Tabs (Inicio, Carrito, Cuenta) ; unstable_settings.anchor = '(home)'
     (home)/_layout.tsx         Stack ; anchor = 'index'
     (home)/index.tsx           Home
     (home)/product/[id].tsx    existencia del producto (detalle: Día 4)
-    (home)/category/[id].tsx   placeholder (listado: Día 3)
+    (home)/category/[id].tsx   categoría desde Home (listado: Día 3)
     (home)/search.tsx          placeholder (búsqueda: Día 3)
-    (categories)/_layout.tsx   Stack ; categories.tsx   placeholder
     (cart)/_layout.tsx         Stack ; cart.tsx         placeholder + control __DEV__ del badge
     (account)/_layout.tsx      Stack ; account.tsx      placeholder + enlace a /foundations ; foundations.tsx
 ```
-Cada tab con `index` propio colisionaría en la URL `/`; por eso solo Home usa `index` y el resto usa un nombre (`categories`, `cart`, `account`). En Día 2 solo Home origina producto, categoría y búsqueda. Cuando Categorías o Carrito los originen (Días 3–4) se compartirán con grupos en array `(home,categories)/…` (el parser de layouts lo documenta en `getRoutesCore.js`; se verifica entonces).
+Cada tab con `index` propio colisionaría en la URL `/`; por eso solo Home usa `index` y el resto usa un nombre (`cart`, `account`). En Día 2 solo Home origina producto, categoría y búsqueda; no existe un grupo ni placeholder de Categorías. La ruta `/category/[id]` permanece dentro del stack de Home.
 
 ## Archivos y responsabilidades
 **Rutas (`src/app/`)**, delgadas: solo adaptan parámetros y montan pantallas.
 - `_layout.tsx`: i18n, tema, `StatusBar`, `Stack` raíz con modal del escáner. RF-7.
-- `(tabs)/_layout.tsx`: cuatro `Tabs.Screen` en orden Inicio/Categorías/Carrito/Cuenta, iconos `SymbolView`, `tabBarLabel`/`title`/`tabBarAccessibilityLabel` localizados, `tabBarBadge` derivado. RF-4, RF-16, RNF-1.
-- Grupos `(home)`, `(categories)`, `(cart)`, `(account)`: `Stack` con títulos localizados y `dangerouslySingular` en producto/categoría/búsqueda. RF-5, RF-6.
+- `(tabs)/_layout.tsx`: tres `Tabs.Screen` en orden Inicio/Carrito/Cuenta, iconos `SymbolView`, `tabBarLabel`/`title`/`tabBarAccessibilityLabel` localizados, `tabBarBadge` derivado; no registra una pantalla Categorías. RF-4, RF-16, RNF-1.
+- Grupos `(home)`, `(cart)`, `(account)`: `Stack` con títulos localizados; producto, categoría y búsqueda son destinos del stack de Home con `dangerouslySingular`. RF-5, RF-6, RF-11, RF-20.
 
 **Features**
 - `src/features/navigation/screens/{PlaceholderScreen,NotFoundScreen}.tsx`: destinos explícitos y estado "no encontrado" (volver + ir a Inicio). RF-8, RF-9.
@@ -85,11 +85,11 @@ Cada tab con `index` propio colisionaría en la URL `/`; por eso solo Home usa `
 1. El layout raíz monta un `Stack` con `(tabs)` y el modal `scanner`; `(tabs)` mantiene un `Stack` por tab. Todos los destinos nuevos se **empujan en el stack del tab que los origina**; Atrás vuelve al anterior sin cambiar de tab. RF-5, RF-6.
 2. Cada ruta delega en una pantalla de feature. `product/[id]` valida con `parseProductId`; si es válido consulta `GET /products/:id` (loading → found | 404 | error/offline con reintento); si falta o es inválido muestra `NotFoundScreen` sin petición. RF-8.
 3. Un enlace entrante pasa por `redirectSystemPath({ path, initial })`, que recibe la **URL completa** (`herbstore://product/<id>`; en un arranque normal recibe la URL raíz `herbstore:///`). `linking.ts`: raíz → `/`; `herbstore://product/<id>` → `/product/<id>` normalizado (sin query/fragmento/barra final); esquema ajeno → `null` (se ignora); cualquier otro host del esquema propio → se deja pasar y lo atrapa `+not-found`; nunca lanza (la doc advierte que un error puede cerrar la app). RF-9.
-4. Home: `useHome` → `home-client` → `fetchJson` → `classifyHomeResult(previous, outcome)` → `HomeScreen` solo presenta. Acciones producen rutas tipadas: banner → `/category/<categoryId>`, categoría → `/category/<id>`, producto → `/product/<id>`, buscador → `/search`, escáner → `/scanner`. RF-10, RF-11.
+ 4. Home: `useHome` → `home-client` → `fetchJson` → `classifyHomeResult(previous, outcome)` → `HomeScreen` solo presenta. Acciones producen rutas tipadas: banner → `/category/<categoryId>`, categoría → `/category/<id>`, producto → `/product/<id>`, buscador → `/search`, escáner → `/scanner`; no hay navegación a un tab de categorías. RF-10, RF-11, RF-20.
 5. El Día 3 sustituye únicamente `home-client`/`use-home` por RTK Query y conserva `HomeScreen`, componentes y estados.
 
 ## Estado e interfaz
-- **Badge (RF-4).** `Tabs.Screen` de Carrito recibe `tabBarBadge={getCartBadge(count)}`; `getCartBadge` devuelve `undefined` si `count <= 0` (verificado en `TabBarIcon.js`: el badge se muestra con `badge != null`, por lo que `0` mostraría "0"), el número hasta 99 y `'99+'` desde 100. `tabBarAccessibilityLabel` usa i18n con plural (`Carrito, 3 artículos`) y el conteo real (100 → "100 artículos"). En iOS React Navigation añade por defecto una etiqueta en inglés (`"<label>, tab, n of N"`, `BottomTabBar.js:283-287`); definir `tabBarAccessibilityLabel` en **los cuatro tabs** evita ese texto sin localizar. El Día 4 conecta el store real sin reescribir tabs. Control de apoyo **solo `__DEV__`** en el placeholder de Carrito (+1, +10, restablecer) para llevar el conteo a 0, 5 y 100; se retira en el Día 4.
+- **Badge (RF-4).** `Tabs.Screen` de Carrito recibe `tabBarBadge={getCartBadge(count)}`; `getCartBadge` devuelve `undefined` si `count <= 0` (verificado en `TabBarIcon.js`: el badge se muestra con `badge != null`, por lo que `0` mostraría "0"), el número hasta 99 y `'99+'` desde 100. `tabBarAccessibilityLabel` usa i18n con plural (`Carrito, 3 artículos`) y el conteo real (100 → "100 artículos"). En iOS React Navigation añade por defecto una etiqueta en inglés (`"<label>, tab, n of N"`, `BottomTabBar.js:283-287`); definir `tabBarAccessibilityLabel` en **los tres tabs** evita ese texto sin localizar. El Día 4 conecta el store real sin reescribir tabs. El control de apoyo **solo `__DEV__`** del placeholder de Carrito (+1, +10, restablecer) se retira en el Día 4.
 - **Iconos de tab.** `SymbolView` de `expo-symbols` 57.0.3 con `name={{ ios, android, web }}`; en Android renderiza un glifo Material Symbols (carga una fuente con `expo-font`, vacío mientras carga, y `fallback` si falta el nombre de plataforma); los nombres de Android están tipados (`AndroidSymbol`). Se verifica visualmente en T1. Si el glifo no aparece en Android no se añade `@expo/vector-icons` sin aprobación: se informa.
 - **Persistencia de pila y scroll por tab (RF-5).** El tab permanece montado (`lazy` y `popToTopOnBlur` por defecto; `popToTopOnBlur` defecto `false`, verificado en `bottom-tabs/types.d.ts`), así que **no se guarda la posición a mano**. Se verifica en Android e iOS y se documenta como lección; tocar el tab activo hace *pop to top* de su stack, no duplica rutas.
 - **Home.** `FlatList` vertical con filas heterogéneas (banners, categorías, una fila por sección visible), `RefreshControl` para pull-to-refresh y filas con `key` estable. Estados vía `classifyHomeResult`:
@@ -126,7 +126,7 @@ Cada tab con `index` propio colisionaría en la URL `/`; por eso solo Home usa `
 - Rendimiento: sin memoización sin medición; props inmutables y *keys* estables; secciones de ≤10 elementos en `FlatList` horizontal (la migración a FlashList es del Día 3). Si se mide algo con Profiler/DevTools se documenta (ver React Compiler en "Decisiones abiertas").
 
 ## Decisiones y alternativas
-- **Stack por tab (H-1).** Elegida: grupos `(home)/(categories)/(cart)/(account)` con `Stack` propio; destinos compartidos en el stack del tab que los origina. Trade-off: más archivos de layout y, cuando otros tabs originen producto, rutas compartidas con grupos en array. Descartada: producto/categoría/búsqueda en el stack raíz (más simple, pero Atrás/estado dejan de pertenecer al tab y rompe RF-6).
+- **Stack por tab (H-1).** Elegida: grupos `(home)/(cart)/(account)` con `Stack` propio; producto, categoría y búsqueda pertenecen al stack de Home, que es quien los origina. Trade-off: más archivos de layout y los destinos siguen ligados al origen; si otro tab los origina en un día posterior, habrá que revisar la agrupación. Descartada: conservar una pestaña/grupo de navegación separado para Categorías (ofrecería un destino sin comportamiento propio y rompería la decisión aprobada de exactamente tres tabs) o colocar producto/categoría/búsqueda en el stack raíz (más simple, pero Atrás/estado dejan de pertenecer al tab y rompe RF-6).
 - **Tabs estables vs nativos.** Elegida: `Tabs` de Expo Router (`Tabs`/`Stack`). Trade-off: apariencia menos nativa. Descartada: conservar `unstable-native-tabs` del template, por riesgo didáctico/API inestable.
 - **Anchors.** Elegida: `unstable_settings.anchor` en el layout raíz (`'(tabs)'`), en `(tabs)` (`'(home)'`) y en el stack de Home (`'index'`), verificado en `getRoutesCore.js` (`anchor ?? initialRouteName`; error si el anchor no es hijo). Garantiza que un enlace a `/product/<id>` o `/scanner` tenga Home debajo y Atrás funcione. Trade-off: configuración implícita que hay que probar con enlaces. Descartada: confiar en el anchor por defecto (solo busca un hijo con el nombre del grupo, que `index` no cumple).
 - **Un destino por tipo (H-2, H-15).** Elegida: `dangerouslySingular={(name) => name}` en `product/[id]`, `category/[id]`, `search` y `scanner`: el identificador es el nombre de la ruta, así que A seguido de B deja **una sola pantalla de producto (B)**, un doble toque o un toque simultáneo en dos tarjetas no abre dos instancias, y un enlace con la app activa reemplaza al anterior. Verificado en 57.0.25: `getId` está **deprecado** (`useScreens.js:93` avisa y exige renombrar) y `Stack.Screen` expone `dangerouslySingular`. Trade-off: no se puede apilar producto sobre producto (no existe ese flujo en Día 2; si el Día 4 lo necesita se pasa a `dangerouslySingular` por parámetro `id` con `true`, que usa `product/<id>` como identidad, o se aplica la opción solo por navegación imperativa). Descartada: `getId` (deprecado) y desactivar toques con estado manual en cada `Pressable` (duplica lógica por pantalla).
@@ -158,7 +158,7 @@ Cada tab con `index` propio colisionaría en la URL `/`; por eso solo Home usa `
 Cada tarea: `npx expo lint`, `npx tsc --noEmit` (tras arrancar Metro al menos una vez, para `.expo/types/router.d.ts`), `npm run test:logic` y, si se toca el mock, `npm --prefix mock-server test`. Sin dependencias ni `app.json` nuevos, por lo que `expo install --check` y Expo Doctor solo se repiten en T9 como comprobación de regresión.
 
 Matriz de T9 (Android físico + simulador iOS × tema claro/oscuro × texto ampliado × reduced motion):
-- **Tabs y pilas:** cambio y reselección del tab activo (en raíz y con producto apilado), posición de scroll de Home conservada, Atrás de Android y gesto de iOS, Foundations desde Cuenta.
+- **Tabs y pilas:** aparecen exactamente Inicio, Carrito y Cuenta; no aparece Categorías; cambio y reselección del tab activo (en raíz y con producto apilado), posición de scroll de Home conservada, Atrás de Android y gesto de iOS, Foundations desde Cuenta; una categoría abierta desde Home usa `/category/[id]` y vuelve a Home.
 - **Modal:** abrir/cerrar escáner (botón, gesto iOS, Atrás Android) y Home con su posición previa.
 - **Producto:** id válido, ausente, inválido, inexistente (404), servidor detenido (offline). El 5xx de producto comparte `fetchJson` con Home y queda cubierto por la clasificación probada en T4.
 - **Deep links:** `herbstore://product/<id>` en frío, con app activa, A luego B, id inválido, host desconocido; multitoque (dos dedos / toque doble rápido) sin segunda instancia.
@@ -178,7 +178,7 @@ Matriz de T9 (Android físico + simulador iOS × tema claro/oscuro × texto ampl
 |---|---|
 | RF-1 (teoría ≤10 min) | "Teoría" al inicio de T1–T8; compendio en T10 |
 | RF-2, RF-3 | Teoría T1–T8 y decisiones citadas; documento final en T10 |
-| RF-4 | T1 (tabs y badge); T9 |
+| RF-4 | T1 (tres tabs y badge); T9 |
 | RF-5 | T1 (pilas por tab, reselección); T5 (scroll de Home); T9 |
 | RF-6 | T1 (stacks), T2 (producto apilado), T3 (anchor) |
 | RF-7 | T3 (modal); T9 |
@@ -186,6 +186,7 @@ Matriz de T9 (Android físico + simulador iOS × tema claro/oscuro × texto ampl
 | RF-9 | T3 |
 | RF-10 | T5 (buscador, escáner, estructura), T6 (categorías, secciones), T7 (banners) |
 | RF-11 | T5 (buscador, escáner), T6 (categoría, producto), T7 (banner) |
+| RF-20 | T1 (sin tab ni placeholder de Categorías), T6 (categoría desde Home en `/category/[id]`), T9 (ausencia del tab y ruta de detalle) |
 | RF-12 | T7 (manual y paginación), T8 (autoplay) |
 | RF-13 | T8 |
 | RF-14 | T4 (clasificador), T5 (UI, refetch) |
